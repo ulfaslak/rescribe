@@ -8,6 +8,14 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-24 · #22 · a tab moved to the background, the start path still written for a visible one `[learned]`
+
+Leaving the app tab hidden on a Meet click was a one-line routing change, but the start path had three assumptions that only held for a visible tab: a note is seen (a missing-microphone note was shown, then overwritten by the ticking clock a second later, after yanking the human out of the call for it), a permission prompt shows (Chrome queues prompts from hidden tabs; the tab-capture id was consumed first, so a queued prompt would have muted the call with nobody hearing it), and a second click reaches a guard (`starting` was set after the first await, and a click landing after the start finished met a stale `idle`). Found by the adversarial review. Rule: when a change alters *where the human is looking*, re-read every line that assumes they can see or act, not just the line that moved them.
+
+### 2026-09-24 · #22 · an absolute count asserted in a profile that persists `[learned]`
+
+The new e2e asserted zero recordings after a failed start; the reused profile held two from the previous test, so the test passed alone and failed in the suite. Measure against what was there before, or clear first.
+
 ### 2026-09-24 · #12 · state machine without exits `[learned]`
 
 The Meet adapter tracked "speaking" per participant but only left the state through the signal going quiet; a tile or meter disappearing mid-speech left the interval open forever. The happy path was tested, the exits were not. Found by the adversarial review, not by self-testing. Codified as INVARIANTS § "Every speaking start has a matching stop", pinned by the e2e fixture that removes a tile mid-speech.

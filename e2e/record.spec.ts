@@ -447,15 +447,21 @@ test('a second app tab is inert: no badge change, no second recording', async ({
   expect(
     await b.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'query-status' }), aTabId),
   ).toBe('recording');
-  // A broadcast toggle (as a keyboard command would be, before the fix) starts nothing in B.
-  await b.evaluate(() => chrome.runtime.sendMessage({ type: 'toggle-recording', tabId: 1 }));
-  await b.waitForTimeout(1000);
-  await expect(a.locator('#status')).toHaveText('recording');
-  expect(await badge()).toBe('REC');
-
   // "Go to the Rescribe tab" focuses A and closes the duplicate.
   await b.click('#focus-app');
   await expect.poll(() => b.isClosed(), { timeout: 10_000 }).toBe(true);
+
+  // A broadcast toggle (as a keyboard command would be, before the fix) starts nothing in a
+  // duplicate. The owner, recording, answers a toggle by coming forward (the service worker
+  // sent it on a stale `idle`), and that closes the duplicate again.
+  const b2 = await context.newPage();
+  await b2.goto(`chrome-extension://${extensionId}/app/app.html`);
+  await expect(b2.locator('#duplicate')).toBeVisible();
+  await b2.evaluate(() => chrome.runtime.sendMessage({ type: 'toggle-recording', tabId: 1 }));
+  await expect(a.locator('#status')).toHaveText('recording');
+  expect(await badge()).toBe('REC');
+  await expect.poll(() => b2.isClosed(), { timeout: 10_000 }).toBe(true);
+  await expect(a.locator('#status')).toHaveText('recording');
   await a.click('#stop');
   await expect(a.locator('#status')).toHaveText('idle', { timeout: 30_000 });
   const recs = await recordings(a);
@@ -525,4 +531,80 @@ test('a lost video chunk fails the recording at once and releases everything', a
   const [next] = await recordings(page);
   expect(next!.id).not.toBe(rec!.id);
   expect(next!.status).toBe('recorded');
+});
+
+test('toolbar click: a Meet tab keeps the app tab in the background, any other tab and a failed start bring it forward', async ({
+  context,
+  extensionId,
+}) => {
+  // The real toolbar click cannot be made here, and without it getMediaStreamId refuses the
+  // target ("not been invoked"), so every start below fails after the routing decision. What is
+  // exercised: the service worker's routing (`onToggle` with a Tab-shaped object) and the app
+  // tab's answer to a start it cannot honour. A successful start staying in the background is
+  // the live check.
+  const target = await openTarget(context);
+  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  const appUrl = `chrome-extension://${extensionId}/app/app.html`;
+  type Created = { id: number; active: boolean; pinned: boolean };
+  type Hooked = { rescribe: { onToggle: (tab: object) => Promise<void> }; __created: Created[] };
+  const targetId = await worker.evaluate(async (title) => {
+    const g = globalThis as unknown as Hooked;
+    g.__created = [];
+    chrome.tabs.onCreated.addListener((t) =>
+      g.__created.push({ id: t.id!, active: t.active, pinned: t.pinned }),
+    );
+    return (await chrome.tabs.query({ title }))[0]!.id!;
+  }, CAPTURE_TARGET_TITLE);
+  const created = () => worker.evaluate(() => (globalThis as unknown as Hooked).__created);
+  const toggle = (url: string) =>
+    worker.evaluate(
+      ({ id, url }) =>
+        (globalThis as unknown as Hooked).rescribe.onToggle({ id, url, title: 'Some tab' }),
+      { id: targetId, url },
+    );
+  const activeTab = (id: number) =>
+    worker.evaluate(async (id) => (await chrome.tabs.get(id)).active, id);
+  const nextAppPage = () => context.waitForEvent('page', { predicate: (p) => p.url() === appUrl });
+
+  // A Meet tab: the app tab is created pinned in the background...
+  let appPage = nextAppPage();
+  await toggle('https://meet.google.com/abc-defg-hij');
+  let app = await appPage;
+  await expect(app.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  await setSettings(app, { autoTranscribe: false });
+  let made = await created();
+  expect(made).toHaveLength(1);
+  expect(made[0]).toMatchObject({ active: false, pinned: true });
+  // ...and the start that could not get a stream id brings it forward, with the reason.
+  await expect(app.locator('#record-status')).toContainText("Couldn't capture that tab (");
+  await expect.poll(() => activeTab(made[0]!.id), { timeout: 5000 }).toBe(true);
+  await expect(app.locator('#status')).toHaveText('idle');
+  const before = (await recordings(app)).length;
+  expect(await app.evaluate(() => chrome.action.getBadgeText({}))).toBe('');
+
+  // Any other tab: the app tab comes forward at once (created active here).
+  await worker.evaluate((id) => chrome.tabs.remove(id), made[0]!.id);
+  appPage = nextAppPage();
+  await toggle('https://www.youtube.com/watch?v=x');
+  app = await appPage;
+  await expect(app.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  made = await created();
+  expect(made).toHaveLength(2);
+  expect(made[1]).toMatchObject({ active: true, pinned: true });
+  await expect(app.locator('#record-status')).toContainText("Couldn't capture that tab (");
+  expect(await recordings(app)).toHaveLength(before);
+
+  // While recording, a click on a Meet tab focuses the app tab (Stop lives there), starts nothing.
+  await app.click('#record-screen');
+  await expect(app.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+  await worker.evaluate((id) => chrome.tabs.update(id, { active: true }), targetId);
+  expect(await activeTab(made[1]!.id)).toBe(false);
+  await toggle('https://meet.google.com/abc-defg-hij');
+  await expect.poll(() => activeTab(made[1]!.id), { timeout: 5000 }).toBe(true);
+  await expect(app.locator('#status')).toHaveText('recording');
+  expect(await created()).toHaveLength(2);
+  await app.click('#stop');
+  await expect(app.locator('#status')).toHaveText('idle', { timeout: 30_000 });
+  expect(await recordings(app)).toHaveLength(before + 1);
+  await target.close();
 });
