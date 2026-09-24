@@ -7,7 +7,7 @@ npm install
 npm run build          # src/ → dist/
 ```
 
-Load `dist/` once in Chrome: `chrome://extensions` → Developer mode → Load unpacked. Chrome keeps pointing at that folder; after every build, click the reload icon on the Rescribe card (or `⌘R` on the app tab is not enough, the service worker and content scripts need the extension reload).
+Load `dist/` once in the human's browser (Brave): `brave://extensions` → Developer mode → Load unpacked. Chrome keeps pointing at that folder; after every build, click the reload icon on the Rescribe card (or `⌘R` on the app tab is not enough, the service worker and content scripts need the extension reload).
 
 `npm run watch` rebuilds on change. You still reload the extension by hand.
 
@@ -56,7 +56,7 @@ There is no deploy. After a merge, from the primary clone:
 git checkout main && git pull && npm run build
 ```
 
-Then the human reloads the extension at `chrome://extensions`. Say so in the closer of any session that merges.
+Then the human reloads the extension at `brave://extensions`. Say so in the closer of any session that merges.
 
 ## Worktrees
 
