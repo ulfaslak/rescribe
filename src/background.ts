@@ -2,6 +2,7 @@
 // here. Everything stateful happens in the app tab (app/app.ts). See ARCHITECTURE § Runtime
 // topology.
 import type { AppStatus, BadgeState, Message } from './lib/messages.ts';
+import { platformOf } from './lib/platform.ts';
 
 const APP_URL = chrome.runtime.getURL('app/app.html');
 const READY_TIMEOUT_MS = 5000;
@@ -102,6 +103,12 @@ async function setBadge(state: BadgeState): Promise<void> {
  * The toolbar button. Idle: start recording the clicked tab (plus mic) through the app tab.
  * Otherwise: bring the app tab forward, where Stop lives. Misclicks must not stop a recording.
  *
+ * On a call platform tab (Meet, `lib/platform.ts`) the human stays in the call: the app tab is
+ * opened, or left, in the background and the badge is the feedback. It comes forward on its own
+ * when the start needs the human (app.ts `comeForward`: a microphone permission prompt, which
+ * Chrome only shows for a visible tab, or a start that failed). On any other tab, and on any
+ * click while not idle, the app tab comes forward as before.
+ *
  * The tab-capture stream id is bound to the app tab (`consumerTabId`) and requested last. Without
  * `consumerTabId` Chromium binds the id to the caller's render process, the service worker's; the
  * app tab is cross-origin isolated (COOP/COEP, for multithreaded WASM) and runs in another
@@ -115,7 +122,8 @@ async function setBadge(state: BadgeState): Promise<void> {
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
   const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
   const status = await queryStatus();
-  const app = await ensureAppTab(true);
+  const stayInCall = status === 'idle' && platformOf(target?.url) !== undefined;
+  const app = await ensureAppTab(!stayInCall);
   if (app?.id === undefined || status !== 'idle' || !target?.id) return;
   let streamId: string | undefined;
   let error: string | undefined;

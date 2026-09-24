@@ -69,6 +69,27 @@ function note(text: string, isError = false): void {
   el.className = `hint${isError ? ' error' : ''}`;
 }
 
+/**
+ * Bring this tab forward. A toolbar click on a call platform tab leaves this tab in the
+ * background (background.ts `onToggle`), so anything that needs the human's eyes or hands during a
+ * start asks for the foreground: a permission prompt (Chrome shows it only for a visible tab; in
+ * a hidden one the request waits, and with it the recording) or a start that failed, whose note
+ * would otherwise sit unseen while the human waits for the badge. A no-op when already in front.
+ */
+function comeForward(): void {
+  void send({ type: 'focus-app' });
+}
+
+/** Whether getUserMedia for the microphone will prompt. Unknown counts as a prompt. */
+async function micWillPrompt(): Promise<boolean> {
+  try {
+    const p = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+    return p.state === 'prompt';
+  } catch {
+    return true;
+  }
+}
+
 // --- Messages from the service worker and content scripts ---------------------------------
 // Registered by main() only in the tab that owns the recorder; a duplicate tab never listens.
 function onMessage(
@@ -131,12 +152,18 @@ function tick(): void {
 async function onToggleRecording(
   msg: Extract<Message, { type: 'toggle-recording' }>,
 ): Promise<void> {
-  if (status !== 'idle' || starting) return;
+  if (status !== 'idle' || starting) {
+    // A second click while a start is still pending in the background: whatever it waits on
+    // (a permission prompt) shows once this tab is visible.
+    if (starting) comeForward();
+    return;
+  }
   if (!msg.streamId) {
     note(
       `Couldn't capture that tab${msg.error ? ` (${msg.error})` : ''}. Use "Record screen…" and pick it instead.`,
       true,
     );
+    comeForward();
     return;
   }
   let display: Captured;
@@ -144,6 +171,7 @@ async function onToggleRecording(
     display = await captureTab(msg.streamId, msg.tabTitle);
   } catch (err) {
     note(`Couldn't capture that tab: ${String(err)}`, true);
+    comeForward();
     return;
   }
   await startRecording(display, msg.tabTitle || 'Tab recording', msg.tabId);
@@ -174,8 +202,12 @@ async function startRecording(display: Captured, title: string, tabId?: number):
   try {
     const settings = await loadSettings();
     const wantMic = $<HTMLInputElement>('#mic').checked;
+    if (wantMic && (await micWillPrompt())) comeForward();
     const mic = wantMic ? await captureMic() : undefined;
-    if (wantMic && !mic) note('Microphone unavailable; recording without it.', true);
+    if (wantMic && !mic) {
+      note('Microphone unavailable; recording without it.', true);
+      comeForward();
+    }
     recorder = await Recorder.start(
       {
         display,
@@ -189,6 +221,7 @@ async function startRecording(display: Captured, title: string, tabId?: number):
     );
   } catch (err) {
     note(`Couldn't start: ${err instanceof Error ? err.message : String(err)}`, true);
+    comeForward();
     recordedTabId = undefined;
     setStatus('idle');
   } finally {

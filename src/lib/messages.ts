@@ -15,7 +15,11 @@ export type Message =
    * with an AppStatus by the one app tab that owns the recorder (a duplicate tab never listens).
    */
   | { type: 'query-status' }
-  /** A duplicate app tab → service worker: bring the owning app tab forward and close me. */
+  /**
+   * A duplicate app tab → service worker: bring the owning app tab forward and close me. Also the
+   * owning app tab → service worker: a start left in the background needs the human (a permission
+   * prompt, an error), bring me forward.
+   */
   | { type: 'focus-app' }
   /**
    * Service worker → app tab: the toolbar button or the keyboard command fired on `tabId`.
