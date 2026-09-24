@@ -25,9 +25,11 @@ Every recording produces, in the folder chosen in Settings, under a per-recordin
 - Transcription (2026-09-24): when a recording stops (or from the library), each audio channel goes through Parakeet in the browser, with the model download and the region count on the status line and the badge, and `transcript.md`, `transcript.json` and `meta.json` land next to the video, the microphone under the name from Settings and everything else under "Speaker"; without a folder they wait inside Rescribe for Save now, and a Rescribe tab reloaded mid-transcription picks it up again. Settings offer the WebGPU backend and turning auto-transcription off. Verified with the fake microphone in headless Chromium; the first real transcript in Brave, and WebGPU there, are pending live checks.
 - Meet speaker attribution (2026-09-24): during a recording the Meet adapter's speaker and roster events are kept with the recording, and the transcript names each display-channel turn after the Meet participant whose indicator was on, lists the participants in `transcript.md` and `meta.json`, and shows an adapter diagnostic on the recording's row. The event path is verified end to end with injected events; the names on a real two-person call are a pending live check.
 
+- Recording library (2026-09-24): every recording is a row with an editable title (renaming never renames the exported folder), date, duration, sources, status, folder path, channel levels and local size; a row offers **Re-export** (Save now on a row that never got a folder: the video and every transcript file still in local storage into the folder, recreating the folder if it was deleted), **Re-run transcription** (again from the audio, or from the kept recogniser output when the audio is gone), **Delete media** (frees the video and audio in local storage, keeps the record, the transcript files and the exported files; refused while the exported video cannot be found) and **Delete** (record and local files; the exported files stay), each deletion an in-page two-step click; a running recording's row ticks and a transcribing row shows the pipeline's progress; the section shows the local storage total with one button that deletes the media of every fully exported (`done`) recording.
+
 ### Planned, in order
 
-4. **Recording library.** List of recordings with status, re-run transcription, re-export, delete media.
+Nothing queued; see Later.
 
 ### Later
 

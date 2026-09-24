@@ -49,6 +49,25 @@ export async function ensureExportPermission(): Promise<PermissionState | 'none'
   }
 }
 
+export type ExportedFileState = 'present' | 'missing' | 'no-folder' | 'permission';
+
+/**
+ * Whether the recording's exported video is in the export folder right now (`findExportDirectory`
+ * as a question). `missing` covers the file, its directory and a root that was deleted or moved
+ * on disk; a folder that cannot be looked at because none is chosen or its permission is not
+ * granted is reported as that, never as `missing`, so a caller about to delete the local copy can
+ * refuse instead of guessing. Anything else (an I/O error) throws.
+ */
+export async function exportedFileState(rec: Recording): Promise<ExportedFileState> {
+  try {
+    await findExportDirectory(rec);
+    return 'present';
+  } catch (err) {
+    if (err instanceof ExportError && err.reason !== 'io') return err.reason;
+    throw err;
+  }
+}
+
 async function exists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
   try {
     await dir.getDirectoryHandle(name);

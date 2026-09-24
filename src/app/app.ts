@@ -12,18 +12,12 @@ import {
   stopAll,
 } from '../recorder/capture.ts';
 import type { Captured } from '../recorder/capture.ts';
-import { exportVideoName, finalize, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
-import {
-  ensureExportPermission,
-  exportArtifacts,
-  ExportError,
-  getExportRoot,
-  setExportRoot,
-} from '../storage/export.ts';
-import { getRecording, getVideoFile, listRecordings, updateRecording } from '../storage/store.ts';
+import { exportVideoName, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
+import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
+import { getRecording } from '../storage/store.ts';
+import { describeSources, formatDuration, renderList } from './library.ts';
 import {
   isPipelineBusy,
-  isTranscribing,
   onPipelineProgress,
   recoverInterruptedTranscriptions,
   transcribeRecording,
@@ -127,21 +121,6 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // --- Recording ----------------------------------------------------------------------------
-function describeSources(rec: Recording): string {
-  const display = rec.sources.find((s) => s.channel === 'display');
-  const mic = rec.sources.some((s) => s.channel === 'mic');
-  return `${display?.kind ?? 'display'}${mic ? ' + mic' : ', no mic'}`;
-}
-
-function formatDuration(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  const mm = String(m % 60).padStart(h ? 2 : 1, '0');
-  const ss = String(s % 60).padStart(2, '0');
-  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
-}
-
 function tick(): void {
   const rec = recorder?.recording;
   if (!rec || rec.status !== 'recording') return;
@@ -280,143 +259,6 @@ async function onStop(): Promise<void> {
   // Inside the click: the folder permission prompt needs a user gesture.
   await ensureExportPermission().catch(() => undefined);
   await r.stop();
-}
-
-// --- Library (plain list; #4 grows it) ---------------------------------------------------------
-/** What "Save now" is offered on: not (fully) exported, and not owned by the pipeline. */
-function canSaveNow(rec: Recording): boolean {
-  if (isTranscribing(rec.id)) return false;
-  return (rec.status === 'recorded' && !rec.exportPath) || (rec.status === 'done' && !!rec.error);
-}
-
-/**
- * "Save now", from a click so the folder permission can be re-requested (after a browser
- * restart, or when the share ended from Chrome's bar and finalize ran outside a gesture): the
- * video through `finalize` unless it is already in the folder, then every artifact present in
- * OPFS through `exportArtifacts`. `error` is cleared only when both are in the folder. Works from
- * the stored record, never the rendered one, and refuses while the pipeline owns the recording.
- */
-async function saveNow(rec: Recording, button: HTMLButtonElement): Promise<void> {
-  button.disabled = true;
-  button.textContent = 'Saving…';
-  try {
-    await ensureExportPermission().catch(() => undefined);
-    const settings = await loadSettings();
-    let current = await getRecording(rec.id);
-    if (!current) return;
-    if (current.status === 'transcribing' || isTranscribing(current.id)) {
-      note('Wait for the transcription to finish, then save.', true);
-      return;
-    }
-    const artifactsFailed = async (err: unknown): Promise<void> => {
-      current = await updateRecording(current!.id, {
-        error: `Transcript not exported: ${describe(err)}`,
-      });
-      note(`Saved the video, but ${current.error}`, true);
-    };
-    // 1. Artifacts next to a video that is already in the folder; `missing` means redo both.
-    let needVideo = !current.exportPath;
-    if (!needVideo) {
-      try {
-        await exportArtifacts(current);
-      } catch (err) {
-        if (err instanceof ExportError && err.reason === 'missing') needVideo = true;
-        else return artifactsFailed(err);
-      }
-    }
-    // 2. The video first, then the artifacts, when the folder does not have the video.
-    if (needVideo) {
-      if (!(await getVideoFile(current.id, current.container))) {
-        current = await updateRecording(current.id, {
-          error: "Not exported: the video is no longer in Rescribe's storage.",
-        });
-        note(current.error!, true);
-        return;
-      }
-      current = await finalize(current, settings.pathTemplate);
-      if (current.error || !current.exportPath) {
-        note(`Still not saved: ${current.error ?? '?'}`, true);
-        return;
-      }
-      try {
-        await exportArtifacts(current);
-      } catch (err) {
-        return artifactsFailed(err);
-      }
-    }
-    current = await updateRecording(current.id, { error: undefined });
-    note(`Saved to ${current.exportPath ?? '?'}/`);
-  } finally {
-    await renderList();
-  }
-}
-
-function formatLevels(levels: Recording['levels']): string | undefined {
-  if (!levels) return undefined;
-  const parts = (['mic', 'display'] as const)
-    .filter((ch) => levels[ch] !== undefined)
-    .map((ch) => `${ch} ${levels[ch]} dBFS`);
-  return parts.length ? parts.join(' · ') : undefined;
-}
-
-function item(rec: Recording): HTMLLIElement {
-  const li = document.createElement('li');
-  li.className = 'recording-item';
-  li.dataset['id'] = rec.id;
-  li.dataset['status'] = rec.status;
-  const title = document.createElement('div');
-  title.className = 'title';
-  title.textContent = rec.title;
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  const when = document.createElement('span');
-  when.textContent = new Date(rec.startedAt).toLocaleString();
-  const dur = document.createElement('span');
-  dur.textContent = formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt);
-  const src = document.createElement('span');
-  src.textContent = describeSources(rec);
-  const pill = document.createElement('span');
-  pill.className = `pill ${rec.status}`;
-  pill.textContent = rec.status;
-  meta.append(when, dur, src, pill);
-  const levels = formatLevels(rec.levels);
-  if (levels) {
-    const lv = document.createElement('span');
-    lv.className = 'levels';
-    lv.textContent = levels;
-    meta.append(lv);
-  }
-  li.append(title, meta);
-  if (rec.exportPath) {
-    const path = document.createElement('div');
-    path.className = 'path';
-    path.textContent = `${rec.exportPath}/`;
-    li.append(path);
-  }
-  for (const [text, cls] of [
-    [rec.error, 'hint error'],
-    [rec.note, 'hint'],
-  ] as const) {
-    if (!text) continue;
-    const p = document.createElement('div');
-    p.className = cls;
-    p.textContent = text;
-    li.append(p);
-  }
-  if (canSaveNow(rec)) {
-    const save = document.createElement('button');
-    save.className = 'save-now';
-    save.textContent = 'Save now';
-    save.addEventListener('click', () => void saveNow(rec, save));
-    li.append(save);
-  }
-  return li;
-}
-
-async function renderList(): Promise<void> {
-  const recs = await listRecordings();
-  $<HTMLUListElement>('#recordings-list').replaceChildren(...recs.map(item));
-  $<HTMLElement>('#recordings-empty').hidden = recs.length > 0;
 }
 
 // --- Settings -----------------------------------------------------------------------------

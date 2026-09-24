@@ -439,15 +439,25 @@ export async function finalize(
   const video = await getVideoFile(rec.id, rec.container);
   if (!video || video.size === 0)
     return updateRecording(rec.id, { status: 'failed', error: 'No video reached disk.' });
-  const status = rec.status === 'done' ? 'done' : 'recorded';
+  // A `done` or `failed` recording saved again from the library keeps its status; a failed one
+  // also keeps its `error`, which is why it failed, not an export message.
+  const status = rec.status === 'done' || rec.status === 'failed' ? rec.status : 'recorded';
+  const keepError = rec.status === 'failed';
   onExporting?.(rec);
   try {
     const { dir, path } = await getExportDirectory(rec, pathTemplate);
     await writeExportFile(dir, exportVideoName(rec.container), video.stream());
-    return await updateRecording(rec.id, { status, exportPath: path, error: undefined });
+    return await updateRecording(rec.id, {
+      status,
+      exportPath: path,
+      ...(keepError ? {} : { error: undefined }),
+    });
   } catch (err) {
     const msg = err instanceof ExportError ? err.message : String(err);
-    return updateRecording(rec.id, { status, error: `Not exported: ${msg}` });
+    return updateRecording(rec.id, {
+      status,
+      ...(keepError ? {} : { error: `Not exported: ${msg}` }),
+    });
   }
 }
 

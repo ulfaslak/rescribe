@@ -8,11 +8,14 @@ import {
   EVENTS_FILE,
   isExportableArtifact,
   isMediaFile,
+  listRecordingFiles,
   pcmFileName,
   recordingDir,
   recordingFile,
   removeRecordingDir,
+  removeRecordingFile,
   videoFileName,
+  walkRecordings,
 } from './opfs.ts';
 
 export async function listRecordings(): Promise<Recording[]> {
@@ -28,12 +31,16 @@ export function putRecording(rec: Recording): Promise<void> {
   return idb.set('recordings', rec.id, rec);
 }
 
-/** Merge `patch` into the stored record. Throws when the recording does not exist. */
+/**
+ * Merge `patch` into the stored record, atomically (`idb.update`: one readwrite transaction), so
+ * a rename from the library, the recorder's stop and the pipeline's status changes can interleave
+ * without one overwriting another's fields. Throws when the recording does not exist.
+ */
 export async function updateRecording(id: string, patch: Partial<Recording>): Promise<Recording> {
-  const current = await getRecording(id);
-  if (!current) throw new Error(`recording ${id} not found`);
-  const next = { ...current, ...patch, id };
-  await putRecording(next);
+  const next = await idb.update<Recording>('recordings', id, (current) =>
+    current ? { ...current, ...patch, id } : undefined,
+  );
+  if (!next) throw new Error(`recording ${id} not found`);
   return next;
 }
 
@@ -117,19 +124,45 @@ export async function readEventLog(id: string): Promise<string> {
  * Delete the video and the PCM out of OPFS and mark the record `mediaDeleted`. The event log,
  * the artifacts and the segments cache stay, so the transcript can still be exported and, from
  * the cache, assembled again (a re-run with another "my name"); without the cache a re-run fails.
+ * Idempotent; a missing record is not an error. Returns the bytes freed (the library reports it).
  */
-export async function deleteMedia(id: string): Promise<void> {
-  const dir = await recordingDir(id, false);
-  if (dir) {
-    const names: string[] = [];
-    for await (const name of dir.keys()) if (isMediaFile(name)) names.push(name);
-    for (const name of names) await dir.removeEntry(name);
+export async function deleteMedia(id: string): Promise<number> {
+  let freed = 0;
+  for (const [name, size] of Object.entries(await listRecordingFiles(id))) {
+    if (!isMediaFile(name)) continue;
+    await removeRecordingFile(id, name);
+    freed += size;
   }
   await updateRecording(id, { mediaDeleted: true }).catch(() => undefined);
+  return freed;
 }
 
-/** Delete the media and the record. */
+/** Delete the whole OPFS directory (media, events, artifacts) and the record. Exported files stay. */
 export async function deleteRecording(id: string): Promise<void> {
-  await deleteMedia(id);
+  await removeRecordingDir(id);
   await idb.del('recordings', id);
+}
+
+export interface StorageUsage {
+  /** Bytes under `recordings/` in OPFS: the number the library shows. */
+  total: number;
+  perRecording: Record<string, number>;
+  /** id → (file name → bytes), the walk itself, so a row can tell what it still has on disk. */
+  files: Record<string, Record<string, number>>;
+}
+
+/**
+ * One walk of `recordings/`. Not `navigator.storage.estimate()`: that counts the whole origin,
+ * the cached speech model (hundreds of MB) included, and is only a cross-check.
+ */
+export async function storageUsage(): Promise<StorageUsage> {
+  const files = await walkRecordings();
+  const perRecording: Record<string, number> = {};
+  let total = 0;
+  for (const [id, entries] of Object.entries(files)) {
+    const bytes = Object.values(entries).reduce((a, b) => a + b, 0);
+    perRecording[id] = bytes;
+    total += bytes;
+  }
+  return { total, perRecording, files };
 }
