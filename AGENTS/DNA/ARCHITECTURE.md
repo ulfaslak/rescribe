@@ -61,7 +61,7 @@ Four execution contexts, each with a distinct job:
 
 | Context | File | Lifetime | Does |
 |---|---|---|---|
-| Service worker | `background.ts` | ephemeral, event-driven | toolbar click and keyboard command, badge, `chrome.tabCapture.getMediaStreamId` (must happen inside the click), opens/focuses the one app tab (closes duplicates, reloads one that does not answer, badge `!` when none answers), sends `toggle-recording` to that tab only |
+| Service worker | `background.ts` | ephemeral, event-driven | toolbar click and keyboard command, badge, `chrome.tabCapture.getMediaStreamId` with `consumerTabId` = the app tab (the id is bound to a render process; the app tab is cross-origin isolated and not in the service worker's process), issued last because it expires after 10 s, opens/focuses the one app tab (closes duplicates, reloads one that does not answer, badge `!` when none answers), sends `toggle-recording` to that tab only |
 | App tab | `app/app.ts` | while open; pinned; warns on close when busy | owns the recorder, the audio graph, OPFS writes, transcription workers, export, settings UI, library UI. **Single owner:** a second app tab that finds a sibling answering `query-status` renders only "already open in another tab" and never listens |
 | Content script | `content/meet.ts` | per Meet page | observes the DOM, emits speaker events and roster to the extension via `chrome.runtime.sendMessage`; mirrors every message as a `rescribe:event` CustomEvent on `window` for the e2e harness (Meet's scripts cannot read the detail across worlds) |
 | Storage worker | `workers/storage.ts` | per recording | appends video chunks and PCM blocks to OPFS through one sync access handle per file, flushing after every write; one queue keeps arrival order |
