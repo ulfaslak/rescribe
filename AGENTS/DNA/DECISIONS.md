@@ -27,7 +27,8 @@ Model-based diarization of the display channel is a later layer, not v1. The evi
 
 ## Speech recognition
 
-Engine: NVIDIA Parakeet TDT 0.6B **v3** (multilingual, incl. Danish and English, word timestamps) via `parakeet.js`, encoder on WebGPU (fp16), decoder on WASM (int8). Not Whisper: Parakeet is what FluidVoice runs and the quality the human already trusts.
+Engine: NVIDIA Parakeet TDT 0.6B **v3** (multilingual, incl. Danish and English, word timestamps) via `parakeet.js`. Not Whisper: Parakeet is what FluidVoice runs and the quality the human already trusts.
+Default runtime configuration: `backend: 'wasm'`, encoder int8, decoder int8, multithreaded (the extension is cross-origin isolated). Optional in Settings: `backend: 'webgpu'` with the fp32 external-data encoder. The single-file fp16 encoder is not offered: it does not fit the 32-bit WASM heap (see `spikes/README.md`).
 The engine sits behind a small interface (`src/lib/asr/engine.ts`, planned) so sherpa-onnx or Whisper can be added without touching the pipeline.
 Silence gating (VAD) runs before recognition on every channel. Energy-based first, Silero later.
 The only permitted network traffic is the one-time model download from huggingface.co, cached in the browser. Never a CDN for runtime code: the ONNX WASM binaries ship inside `dist/vendor/ort/`.

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '../fixtures.ts';
 
@@ -8,6 +8,7 @@ test('capture spike: display + mic → MP4 (H.264/AAC) + OPFS', async ({ context
   await target.goto(`chrome-extension://${extensionId}/spikes/capture/target.html`);
   const page = await context.newPage();
   await page.goto(`chrome-extension://${extensionId}/spikes/capture/spike.html`);
+  const downloadPromise = page.waitForEvent('download', { timeout: 60_000 });
   await page.click('#go');
   await page.waitForFunction(() => (window as unknown as { __spike?: unknown }).__spike, null, {
     timeout: 60_000,
@@ -15,13 +16,13 @@ test('capture spike: display + mic → MP4 (H.264/AAC) + OPFS', async ({ context
   const r = await page.evaluate(
     () => (window as unknown as { __spike: Record<string, unknown> }).__spike,
   );
-  const { base64, ...rest } = r as { base64?: string } & Record<string, unknown>;
-  console.log(JSON.stringify(rest, null, 1));
+  console.log(JSON.stringify(r, null, 1));
   expect(r['error'], String(r['stack'] ?? '')).toBeUndefined();
 
   const file = path.resolve('.playwright/out/spike-capture.mp4');
   mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, Buffer.from(base64 ?? '', 'base64'));
+  await (await downloadPromise).saveAs(file);
+  expect(statSync(file).size).toBe(r['size']);
   const probe = JSON.parse(
     execFileSync('ffprobe', [
       '-v',

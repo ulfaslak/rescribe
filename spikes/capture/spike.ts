@@ -89,11 +89,12 @@ async function run(): Promise<Record<string, unknown>> {
   r.size = blob.size;
   r.chunks = chunks.length;
   r.peakRms = peak;
-  r.base64 = await new Promise<string>((resolve) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(String(fr.result).split(',')[1] ?? '');
-    fr.readAsDataURL(blob);
-  });
+  // Hand the file to the test as a real download (byte-exact), not through evaluate().
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'spike-capture.mp4';
+  document.body.append(a);
+  a.click();
   for (const t of [...display.getTracks(), ...mic.getTracks()]) t.stop();
   await ctx.close();
   return r;

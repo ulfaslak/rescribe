@@ -9,7 +9,9 @@ test('parakeet spike: model loads in the extension origin and transcribes the fi
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') console.log(`[page ${m.type()}]`, m.text());
   });
-  await page.goto(`chrome-extension://${extensionId}/spikes/parakeet/spike.html`);
+  await page.goto(
+    `chrome-extension://${extensionId}/spikes/parakeet/spike.html?${process.env['PARAKEET'] ?? ''}`,
+  );
   await page.waitForFunction(() => (window as unknown as { __spike?: unknown }).__spike, null, {
     timeout: 14 * 60_000,
   });

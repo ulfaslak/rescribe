@@ -9,7 +9,7 @@ Record a Google Meet call, a Teams call, a tab, a window or your whole screen fr
 3. Pin the Rescribe button to the toolbar.
 4. Open Rescribe from the toolbar, go to **Settings**, choose the folder recordings should be saved to.
 
-The first transcription downloads the speech model once (about 1.2 GB, from huggingface.co) and caches it in the browser. After that it works offline.
+The first transcription downloads the speech model once (about 650 MB, from huggingface.co) and caches it in the browser. After that it works offline.
 
 ## Use
 

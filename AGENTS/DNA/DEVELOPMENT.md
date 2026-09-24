@@ -31,7 +31,7 @@ Load `dist/` once in Chrome: `chrome://extensions` → Developer mode → Load u
 
 The profile lives in `.playwright/profile/` (gitignored) and is **reused between runs on purpose**: the Parakeet model (about 1.2 GB) is cached in its IndexedDB, so only the first run downloads it. Don't delete the profile to "clean up".
 
-Headless by default (`channel: 'chromium'`, new headless supports extensions). `HEADED=1 npm run e2e` opens a window. WebGPU availability differs between the two; the parakeet spike records which it got.
+Headless by default (`channel: 'chromium'`, new headless supports extensions and, on this Mac, WebGPU with f16). `HEADED=1 npm run e2e` opens a window; `CHROME_CHANNEL=chrome` uses the installed Google Chrome instead of Playwright's Chromium.
 
 Extension pages are opened by URL: `chrome-extension://<id>/app/app.html`, where the id comes from the service worker URL (see `fixtures.ts`).
 

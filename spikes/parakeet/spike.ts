@@ -61,8 +61,10 @@ async function run(): Promise<void> {
     : null;
   show();
 
-  const backend = adapter ? 'webgpu' : 'wasm';
-  const encoderQuant = adapter ? (adapter.features.has('shader-f16') ? 'fp16' : 'fp32') : 'int8';
+  const q = new URLSearchParams(location.search);
+  const backend = (q.get('backend') ?? (adapter ? 'webgpu' : 'wasm')) as 'webgpu' | 'wasm';
+  const encoderQuant = (q.get('enc') ?? (backend === 'webgpu' ? 'fp32' : 'int8')) as
+    'fp16' | 'fp32' | 'int8';
   r.requested = { backend, encoderQuant, decoderQuant: 'int8' };
   const progress: Record<string, string> = {};
   const t0 = performance.now();
