@@ -35,4 +35,4 @@ The Claude browser extension was not connected in the kickoff session, so browse
 
 ### The gtr post-create hook has not run
 
-`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first two worktrees (`docs/brave-picker`, `feat/meet-calibration-v2`) came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed.
+`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first three worktrees (`docs/brave-picker`, `feat/meet-calibration-v2`, `feat/meet-name-selector`) came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed.
