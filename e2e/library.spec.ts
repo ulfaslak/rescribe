@@ -312,6 +312,8 @@ test('rename persists across reload and never renames the folder; a recording ro
   await expect(page.locator('.recording-item[data-status="recording"]')).toHaveCount(0);
   await expect(page.locator('.recording-item')).toHaveCount(3);
   await expectStorageMatchesWalk(page);
+  await page.locator('.recording-item').first().locator('button.delete').click();
+  await page.screenshot({ path: 'screenshots/library.png', fullPage: true });
 });
 
 async function opfsRecordingsBytesOf(page: Page, id: string): Promise<number> {
@@ -531,6 +533,7 @@ test('a failed recording shows its error and offers only Delete', async ({
   await expect(r.locator('.actions button')).toHaveCount(1);
   await expect(r.locator('button.delete')).toBeVisible();
   await expect(storageText(page)).toHaveText('Local storage: 0 B');
+  await page.screenshot({ path: 'screenshots/library-failed.png', fullPage: true });
   await clickTwice(r.locator('button.delete'));
   await expect(r).toHaveCount(0);
   expect(await recording(page, failed.id)).toBeUndefined();

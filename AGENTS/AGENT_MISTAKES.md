@@ -89,3 +89,10 @@ DECISIONS promised a one-time download; `getParakeetModel` fetched the Hub tree 
 
 The client's docstring promised the PCM buffer was transferred at call time; the transfer actually happened when the queued job ran, so a caller reusing the buffer meanwhile would have had the display audio transcribed as the mic channel, silently. Found by the adversarial review; jobs are now posted at call time and `transcriber.test.ts` asserts both buffers are detached before either job finishes.
 
+### 2026-09-24 · #4 · two-step confirm defeated by a double-click `[learned]`
+
+The library's in-page two-step button armed on the first click and ran on the second, so a double-click on **Delete**, the most ordinary accidental gesture on a button, deleted the recording in one go. The confirm was designed against a single stray click and never walked as a gesture. Found on the paper walk of the edge list before the e2e ran. Codified by `ARM_GUARD_MS` in `src/app/library.ts` (a confirm sooner than 350 ms after arming is ignored) and pinned by the `dblclick` case in `e2e/library.spec.ts`.
+
+### 2026-09-24 · #4 · action target captured at render time `[learned]`
+
+Each row's buttons and the bulk "Delete media for exported recordings" closed over the record and the target list as rendered; a recording the pipeline moved to `transcribing` between render and confirm would have had its PCM deleted under the running transcription. The list is a snapshot, the store is the truth, and a destructive action must re-read the store inside the click. Found on the paper walk. Codified by `claim()` in `src/app/library.ts` (every action re-reads the record and refuses a `recording` or `transcribing` one) and the bulk action re-computing its targets, both pinned by the status-flip cases in `e2e/library.spec.ts`.

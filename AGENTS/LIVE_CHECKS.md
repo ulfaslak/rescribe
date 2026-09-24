@@ -42,6 +42,13 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 **Success criteria**: the Rescribe tab returns to idle and the recording is listed `recorded`. Because no click happened, the export may need the folder permission: if the row shows "Not exported" and a **Save now** button, clicking it must export. System audio from a window or screen share lands in `display.pcm` (Brave 152 on macOS 26 should offer it; the tab share always carries tab audio).
 **On failure**: the status stays `recording`: the track's `ended` event did not fire; fix forward in `recorder.ts`.
 
+### Re-export writes into the real folder in Brave
+
+**Trigger**: the library (#4) merged and the extension reloaded at `brave://extensions`, with at least one exported recording in the list.
+**Steps**: in Finder, delete `recording.mp4` from that recording's folder (or the whole folder). In the Rescribe tab, click **Re-export** on its row. Then restart Brave, open Rescribe and click **Re-export** again on the same row.
+**Success criteria**: the first click recreates the file (or the folder at the same path) and the row's status line says `Saved recording.mp4 to <path>/.`; after the restart the click prompts for the folder permission first (the persisted handle is `prompt` again) and, once allowed, writes the file. The e2e exercises the same code against an OPFS directory standing in for the folder; only Brave's File System Access implementation settles the real-disk and permission-prompt halves.
+**On failure**: a row error `Not exported: Rescribe needs permission…` with no prompt means `ensureExportPermission` ran outside the gesture; `Not exported: Export folder: …` names a File System Access error to file with the message.
+
 ### Meet's indicator lead of 0.3 s labels short utterances at handovers correctly
 
 **Trigger**: the first real Meet call transcribed with platform evidence wired in (the PR that feeds `eventsToEvidence` into `attribute()`).
