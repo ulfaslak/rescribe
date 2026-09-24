@@ -1,6 +1,8 @@
 // The data model. Everything in src/lib is pure and context-free: no chrome.*, no DOM.
 // All times in Segment, Word, SpeakerInterval and Turn are seconds from recording start
-// (t = 0 at the first captured sample). Only Recording.startedAt/endedAt are wall-clock epoch ms.
+// (t = 0 at the first captured sample). Only Recording.startedAt/endedAt/transcribedAt are
+// wall-clock epoch ms.
+import type { Backend } from './asr/engine.ts';
 
 export type ChannelId = 'mic' | 'display';
 
@@ -25,14 +27,24 @@ export interface Recording {
   sources: Source[];
   status: RecordingStatus;
   container: Container;
-  /** Relative path of the export directory under the chosen folder, once exported. */
+  /** Relative path of the export directory under the chosen folder, once the video is in it. */
   exportPath?: string;
-  /** Why it failed, or why it is `recorded` without an export path. */
+  /**
+   * Why it failed; or, on a recording that did not fail, why it is not fully exported: a
+   * `recorded` one without an export path, or a `done` one whose transcript could not be written
+   * next to the video (the artifacts wait in OPFS). Cleared by a successful export.
+   */
   error?: string;
   /** Something the human should know that is not a failure (e.g. recovered after an interruption). */
   note?: string;
   /** RMS level of each channel over the whole recording, dBFS. A silent mic sits far below the display. */
   levels?: Partial<Record<ChannelId, number>>;
+  /** What transcribed it, set at `done`. */
+  model?: string;
+  backend?: Backend;
+  transcribedAt?: number;
+  /** The video and PCM were deleted from OPFS; artifacts and the segments cache stay. */
+  mediaDeleted?: boolean;
 }
 
 export interface Word {
@@ -86,6 +98,10 @@ export interface Settings {
   micByDefault: boolean;
   /** parakeet.js model key. */
   model: string;
+  /** Where the speech engine runs (DECISIONS § Speech recognition: WASM by default). */
+  backend: Backend;
+  /** Run the transcription pipeline as soon as a recording stops. Off: the library's re-run. */
+  autoTranscribe: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -94,4 +110,6 @@ export const DEFAULT_SETTINGS: Settings = {
   container: 'mp4',
   micByDefault: true,
   model: 'parakeet-tdt-0.6b-v3',
+  backend: 'wasm',
+  autoTranscribe: true,
 };

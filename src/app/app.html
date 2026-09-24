@@ -81,6 +81,17 @@
               <option value="parakeet-tdt-0.6b-v3">Parakeet TDT 0.6B v3 (multilingual)</option>
             </select>
           </label>
+          <label>
+            <span>Speech engine backend</span>
+            <select name="backend">
+              <option value="wasm">WASM (default, works everywhere)</option>
+              <option value="webgpu">WebGPU (faster, needs a GPU)</option>
+            </select>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="autoTranscribe" />
+            <span>Transcribe as soon as a recording stops</span>
+          </label>
           <p class="hint" id="settings-saved"></p>
         </form>
       </section>

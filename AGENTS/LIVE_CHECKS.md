@@ -6,9 +6,16 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 
 ---
 
+### The first transcript in Brave
+
+**Trigger**: part 2 of #2 merged (this is the pipeline's first run in the real browser; the e2e harness only proves headless Chromium).
+**Steps**: with an export folder chosen and "Transcribe as soon as a recording stops" on (Settings), record a solo Meet call or any tab for about 30 s while talking, click Stop, keep the Rescribe tab open. The pill turns `transcribing`, the badge shows `…`, the status line shows the one-time model download (about 650 MB) and then the regions.
+**Success criteria**: the row reaches `done`; `<folder>/<date> <time> <title>/` holds `recording.mp4`, `transcript.md`, `transcript.json` and `meta.json`; `transcript.md` has your words under the name from Settings; nothing else in the folder. Note the time from Stop to `done` after the download.
+**On failure**: `failed` with "while loading the model" means WASM threads or the cache misbehave in Brave (cross-origin isolation, IndexedDB quota): file it with the row's error text and the app tab's console. "Transcript not exported" with a folder chosen means the permission was lost between Stop and completion: click Save now, then file it.
+
 ### WebGPU transcription runs on the GPU in Brave
 
-**Trigger**: the backend setting exists in the human's Brave (part 2 of #2 merged).
+**Trigger**: fired by part 2 of #2: the backend setting exists in Settings ("Speech engine backend").
 **Steps**: Settings → backend WebGPU; transcribe a recording with the app tab's DevTools console open (the worker's messages show there). Look for `[Parakeet.js] Creating ONNX sessions with execution mode 'webgpu-hybrid'` and for any ORT warning that says it is *removing* the `webgpu` execution provider. Note the transcription time, then repeat with WASM on the same recording.
 **Success criteria**: a transcript, no fallback warning, WebGPU faster than WASM. Headless Chromium has WebGPU (ENVIRONMENT_NOTES) and `e2e/transcribe.spec.ts` covers it with `RESCRIBE_E2E_WEBGPU=1`; Brave gates GPU features differently, so only the real browser settles it.
 **On failure**: keep WASM as the default (it is), file a bug with the console output.
@@ -42,9 +49,12 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 **Success criteria**: the Rescribe tab returns to idle and the recording is listed `recorded`. Because no click happened, the export may need the folder permission: if the row shows "Not exported" and a **Save now** button, clicking it must export. System audio from a window or screen share lands in `display.pcm` (Brave 152 on macOS 26 should offer it; the tab share always carries tab audio).
 **On failure**: the status stays `recording`: the track's `ended` event did not fire; fix forward in `recorder.ts`.
 
-### Meet's indicator lead of 0.3 s labels short utterances at handovers correctly
+### Meet speaker attribution names both people in a real two-person call
 
-**Trigger**: the first real Meet call transcribed with platform evidence wired in (the PR that feeds `eventsToEvidence` into `attribute()`).
-**Steps**: in `transcript.md`, take the handovers from the **end** of the call (the last ten minutes, where any drift between `Date.now()` and the audio clock is largest; see [[DEFERRED]] § "Anchor platform stamps to the audio clock"): five where the new speaker opens with a short utterance ("Yes", "Right", a name) and five where the previous speaker closes with one. Check each against the video. Also note what Meet labels your own tile in your UI language (English: "You"); `eventsToEvidence` drops that label from display evidence via `selfNames`.
-**Success criteria**: the short utterances carry the right name in both directions; the self tile's label is "You" or the wiring passes the right `selfNames`.
-**On failure**: openers credited to the previous speaker mean the indicator lags more than 0.3 s: raise `MEET_LEAD` in `src/lib/evidence.ts`. Closers credited to the next speaker mean it lags less: lower it. The `makeCall` fixture in `src/lib/attribution.test.ts` puts the safe range at 0.2–0.4 s for a 200–400 ms onset lag; measure the real lag from `events.jsonl` against the video before picking a new value. Misattribution concentrated late in a long call is drift, not lag: that is the DEFERRED trigger, not a reason to move `MEET_LEAD`.
+**Trigger**: the first real Meet call with another person recorded after part 2 of #2 merged (platform evidence is wired into `attribute()`).
+**Steps**: record the call from the toolbar button on the Meet tab, both of you talking in turns, at least ten minutes. After `done`, open `transcript.md`.
+1. **Names, five-minute sample**: pick any five minutes and check every turn against the video: your turns carry the name from Settings, theirs carry their Meet display name, never "Speaker" (that label means no platform interval was near the segment) and never "You". `meta.json`'s `participants` lists both of you.
+2. **Handovers from the end of the call** (the last ten minutes, where any drift between `Date.now()` and the audio clock is largest; see [[DEFERRED]] § "Anchor platform stamps to the audio clock"): five where the new speaker opens with a short utterance ("Yes", "Right", a name) and five where the previous speaker closes with one. Check each against the video.
+3. **Self label**: note what Meet labels your own tile in your UI language (English: "You"). `eventsToEvidence` drops that label from display evidence via `selfNames`, default `['You']`; a non-English UI needs the wiring in `src/lib/assemble.ts` to pass the right one (DEFERRED § "Self tile identified structurally").
+**Success criteria**: 1 has no wrong name; 2 has the short utterances under the right name in both directions; 3 is "You", or the wiring is updated.
+**On failure**: "Speaker" on their turns means the adapter saw no meter movement for them: the row's note shows "Meet adapter: …" if it noticed; otherwise run the calibration mode (`src/content/meet.ts`) and file the report. Openers credited to the previous speaker mean the indicator lags more than 0.3 s: raise `MEET_LEAD` in `src/lib/evidence.ts`. Closers credited to the next speaker mean it lags less: lower it. The `makeCall` fixture in `src/lib/attribution.test.ts` puts the safe range at 0.2–0.4 s for a 200–400 ms onset lag; measure the real lag before picking a new value: `transcript.json`'s `intervals` carry the cleaned platform intervals with the lead already subtracted from each start, and `recordings/<id>/events.jsonl` in the extension's OPFS (DevTools → Application → Storage) the raw stamps. Misattribution concentrated late in a long call is drift, not lag: that is the DEFERRED trigger, not a reason to move `MEET_LEAD`.

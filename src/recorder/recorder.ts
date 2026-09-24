@@ -7,7 +7,12 @@
 // worker and written to OPFS immediately (INVARIANTS "on disk within seconds").
 import { pcmSeconds, PCM_SAMPLE_RATE } from '../lib/pcm.ts';
 import type { ChannelId, Container, Recording, Source } from '../lib/types.ts';
-import { ExportError, getExportDirectory, writeExportFile } from '../storage/export.ts';
+import {
+  ExportError,
+  exportVideoName,
+  getExportDirectory,
+  writeExportFile,
+} from '../storage/export.ts';
 import { EVENTS_FILE, pcmFileName, removeRecordingDir, videoFileName } from '../storage/opfs.ts';
 import {
   getChannelFile,
@@ -43,9 +48,7 @@ const RECORDER_STOP_DEADLINE_MS = 5000;
 /** Render-gap padding (ARCHITECTURE § Clock, gap.ts). */
 const GAP = { sampleRate: PCM_SAMPLE_RATE, thresholdMs: 250, windowMs: 1000, maxPadMs: 600_000 };
 
-export function exportVideoName(container: Container): string {
-  return container === 'mp4' ? 'recording.mp4' : 'recording.webm';
-}
+export { exportVideoName };
 
 function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -303,7 +306,23 @@ export class Recorder {
     void this.stop();
   }
 
-  /** Append one JSON line to `events.jsonl` (speaker events; the consumer lands with #3). */
+  /**
+   * Append prose to the recording's note, in memory (so stop keeps it) and in the stored record
+   * (so a crash keeps it): a platform adapter's diagnostic, say. The same text is added once.
+   */
+  addNote(text: string): void {
+    const current = this.recording.note ?? '';
+    if (current.includes(text)) return;
+    const note = [current, text].filter(Boolean).join(' ');
+    this.recording = { ...this.recording, note };
+    void updateRecording(this.recording.id, { note }).catch(() => undefined);
+  }
+
+  /**
+   * Append one JSON line to `events.jsonl`: an adapter message as received (app.ts forwards
+   * speaker, roster and adapter-diagnostic messages while recording) or a recorder event
+   * (clock-gap). The pipeline reads the file back through `parseEventLog` (lib/assemble.ts).
+   */
   appendEvent(event: object): void {
     const bytes = new TextEncoder().encode(JSON.stringify(event) + '\n');
     this.writer.append(
@@ -407,9 +426,10 @@ export class Recorder {
 
 /**
  * Pipeline step 2 for a recording whose files are complete on disk: export the video to the
- * chosen folder and mark `recorded`. An export failure still marks `recorded` (the media is safe
- * in OPFS) with `error` set and `exportPath` unset; the list then offers "Save now", which runs
- * this again from a click (so the folder permission can be re-requested).
+ * chosen folder and mark `recorded` (a `done` recording, re-exported from "Save now", stays
+ * `done`). An export failure still marks `recorded` (the media is safe in OPFS) with `error` set
+ * and `exportPath` unset; the list then offers "Save now", which runs this again from a click (so
+ * the folder permission can be re-requested) and then `exportArtifacts`.
  */
 export async function finalize(
   rec: Recording,
@@ -419,18 +439,15 @@ export async function finalize(
   const video = await getVideoFile(rec.id, rec.container);
   if (!video || video.size === 0)
     return updateRecording(rec.id, { status: 'failed', error: 'No video reached disk.' });
+  const status = rec.status === 'done' ? 'done' : 'recorded';
   onExporting?.(rec);
   try {
     const { dir, path } = await getExportDirectory(rec, pathTemplate);
     await writeExportFile(dir, exportVideoName(rec.container), video.stream());
-    return await updateRecording(rec.id, {
-      status: 'recorded',
-      exportPath: path,
-      error: undefined,
-    });
+    return await updateRecording(rec.id, { status, exportPath: path, error: undefined });
   } catch (err) {
     const msg = err instanceof ExportError ? err.message : String(err);
-    return updateRecording(rec.id, { status: 'recorded', error: `Not exported: ${msg}` });
+    return updateRecording(rec.id, { status, error: `Not exported: ${msg}` });
   }
 }
 
@@ -465,7 +482,9 @@ export async function recoverInterrupted(pathTemplate: string): Promise<Recordin
         : Math.max(rec.startedAt, video.lastModified);
     const updated = await updateRecording(rec.id, {
       endedAt,
-      note: 'Interrupted: the Rescribe tab closed while recording. Recovered from disk.',
+      note: [rec.note, 'Interrupted: the Rescribe tab closed while recording. Recovered from disk.']
+        .filter(Boolean)
+        .join(' '),
     });
     out.push(await finalize(updated, pathTemplate));
   }

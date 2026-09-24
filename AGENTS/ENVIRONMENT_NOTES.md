@@ -36,7 +36,7 @@ Verified 2026-09-24 in headless Chromium with the extension loaded: `crossOrigin
 
 Playwright empties `test-results/` at the start of every run. Anything a test wants to keep for inspection goes under `.playwright/out/`.
 
-`showDirectoryPicker` cannot be driven, so `e2e/record.spec.ts` stores an OPFS directory handle (`export-test/`) under `handles/export` in IndexedDB: it is a real `FileSystemDirectoryHandle`, the export code runs unchanged, and the test reads the exported file back through OPFS. `--auto-select-tab-capture-source-by-title` in headless mode still captures a virtual screen (`screen:-3:0`) with fake audio rather than the target tab; fine for the pipeline.
+`showDirectoryPicker` cannot be driven, so `e2e/record.spec.ts` stores an OPFS directory handle (`export-test/`) under `handles/export` in IndexedDB: it is a real `FileSystemDirectoryHandle`, the export code runs unchanged, and the test reads the exported file back through OPFS. `--auto-select-tab-capture-source-by-title` in headless mode still captures a virtual screen (`screen:-3:0`) with fake audio rather than the target tab; fine for the pipeline. That virtual screen's audio is the **same fake-device stream as the microphone** (the speech WAV), not a tone (seen 2026-09-24 in `e2e/pipeline.spec.ts`): `display.pcm` holds the fixture's speech too, so a harness transcript has an `Ulf` turn and a `Speaker` turn with the same words.
 
 ### A reused Playwright profile runs the old service worker
 

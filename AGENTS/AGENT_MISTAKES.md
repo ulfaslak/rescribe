@@ -89,3 +89,27 @@ DECISIONS promised a one-time download; `getParakeetModel` fetched the Hub tree 
 
 The client's docstring promised the PCM buffer was transferred at call time; the transfer actually happened when the queued job ran, so a caller reusing the buffer meanwhile would have had the display audio transcribed as the mic channel, silently. Found by the adversarial review; jobs are now posted at call time and `transcriber.test.ts` asserts both buffers are detached before either job finishes.
 
+
+### 2026-09-24 · #2 part 2 · absence of input read as success `[learned]`
+
+The first pipeline runner skipped a channel whose PCM file was missing and went on to `done`, so a recording whose OPFS directory had been deleted (or never received audio because the media was wiped mid-transcription) would have ended `done` with an empty transcript, indistinguishable from a silent call. A missing input is not an empty input. Found on the paper walk of the edge list (storage states); codified in ARCHITECTURE § Pipeline step 3 (no channel and no cache: `done` only when the video is still there, `failed` otherwise) and pinned by `e2e/pipeline.spec.ts` "an interrupted transcription whose media is gone fails".
+
+### 2026-09-24 · #20 · prose promised a path no code had `[learned]`
+
+ARCHITECTURE, DECISIONS, INVARIANTS and PRODUCT all said Save now exports the video and the artifacts together, while the row offered Save now only on `recorded` without an export path and `saveNow` called only `finalize`; a `done` recording whose transcript stayed in OPFS had no way out. The prose was written for the design, not read back against the code. Found by the adversarial review. Codified in `app.ts` (`canSaveNow`, `saveNow`: `finalize` then `exportArtifacts`) and pinned by `e2e/pipeline.spec.ts` "no export folder" (Save now on the `done` row).
+
+### 2026-09-24 · #20 · a list rendered from a read that raced the write `[learned]`
+
+`onRecorderChange('done')` started the pipeline and re-read the list in the same tick; the read landed before the pipeline marked the record, and nothing re-rendered until it finished, so the row showed `recorded` and Save now for the whole transcription, and a click wrote `recorded` over `transcribing` from a stale record. Found by the adversarial review. Codified by the `queued` and `done` pipeline phases with the list re-rendered on every phase change, `saveNow` working from the stored record and refusing while `isTranscribing`, and pinned by the `rowState` poll in "no export folder".
+
+### 2026-09-24 · #20 · queue state in memory, status on disk `[learned]`
+
+`transcribeRecording` kept its queue in a `Map` and wrote `transcribing` only when a recording's turn came, so a queued recording read `recorded` on disk and a library action keyed on the stored status would have pulled its media from under it. Found by the adversarial review. Codified in ARCHITECTURE § Pipeline (marked at enqueue) and pinned by "recording while transcribing" (the queued recording reads `transcribing` at once).
+
+### 2026-09-24 · #20 · a snapshot carried across minutes of work `[learned]`
+
+`run()` used the record as read at its start for the title, the export path and the export decision, and `exportArtifacts` created the directory it was given; a folder chosen mid-transcription got a directory with only the transcript, no error, and a rename mid-transcription left the old title in the files. Found by the adversarial review. Codified by the fresh re-read before assembly and by `findExportDirectory` (never creates, needs the video), pinned by "the export folder changes mid-transcription".
+
+### 2026-09-24 · #20 · a re-run erased the failure it was retrying `[learned]`
+
+Marking a `failed` recording `transcribing` cleared its `error`, so the recorder's reason ("Video chunk lost: …") was gone whatever the re-run did, and a re-run without an export path could end `done` with no error at all. Found by the adversarial review. Codified in `pipeline.ts` (the earlier error moves to the note; `done` without an export path always carries a "Not exported: …" reason; no media keeps the earlier text in front) and pinned by "re-running a failed recording".

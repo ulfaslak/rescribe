@@ -42,6 +42,9 @@ async function openApp(context: BrowserContext, extensionId: string): Promise<Pa
   await page.goto(`chrome-extension://${extensionId}/app/app.html`);
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
+  // This spec covers steps 1–2 only: a recording must end at `recorded`, with the pill idle and
+  // the badge clear. The pipeline (steps 3–5, e2e/pipeline.spec.ts) would otherwise start on Stop.
+  await setSettings(page, { autoTranscribe: false });
   return page;
 }
 
