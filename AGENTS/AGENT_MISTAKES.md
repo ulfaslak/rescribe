@@ -23,3 +23,7 @@ The adapter's header stated that Meet's page scripts cannot read a CustomEvent's
 ### 2026-09-24 · #12 · TypeScript syntax that Node's type stripping rejects `[learned]`
 
 A constructor parameter property in `src/lib/activity.ts` compiled under `tsc` and esbuild but made the test file fail to load under `node --test`. Codified in DEVELOPMENT § Commands (`npm test` row).
+
+### 2026-09-24 · #1 · spike result generalised past its measurement `[learned]`
+
+The capture spike recorded "chunks arrive per timeslice, so data on disk within seconds holds" from a 3 s run with two chunks; those were the MP4 header and the final flush. Chrome's fragmented-MP4 muxer only emits at keyframes, about every 5 s by default, so a real recording had 0 bytes of video on disk after 3.5 s. Caught by the recovery e2e (tab killed mid-recording), fixed with a keyframe per timeslice. Codified in INVARIANTS § "on disk within seconds" (mechanism and incident) and ENVIRONMENT_NOTES § "MediaRecorder cadence".

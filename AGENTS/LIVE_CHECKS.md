@@ -12,3 +12,24 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 **Steps**: open `recording.mp4` from the export folder in QuickTime Player and in Finder's preview; scrub to the middle; check the duration shown.
 **Success criteria**: plays with audio, scrubbing works, duration matches the recording. MediaRecorder writes a *fragmented* MP4 (see `spikes/README.md`), which is what this check is about.
 **On failure**: remux on export (a `moov`-first, non-fragmented MP4) becomes a task; file it as a bug with the symptom.
+
+### The toolbar path records a real Meet tab in Brave
+
+**Trigger**: the vertical slice merged and the extension reloaded at `brave://extensions`.
+**Steps**: choose an export folder in the Rescribe tab. Join a Meet call (a solo test call is enough), click the Rescribe toolbar button on the Meet tab. Talk for 10 s, then click Stop in the Rescribe tab.
+**Success criteria**: the badge shows `REC` and the Rescribe tab opens; you still hear the call while recording (tab capture mutes the tab unless Rescribe plays it back) and hear no echo of your own voice; the title in the list is the Meet tab's title; after Stop the list shows `recorded` with the folder path, and `<folder>/<date> <time> <title>/recording.mp4` plays with both your voice and the tab's audio. `Alt+Shift+R` does the same.
+**On failure**: "Couldn't capture that tab (…)" in the Rescribe tab means `getMediaStreamId` failed in Brave: file a bug with the message. "Audio is blocked in this tab" means Brave's autoplay policy stopped the AudioContexts without a gesture (headless Chromium allowed it): the fix is a click in the Rescribe tab before the toolbar click, then a redesign of the start sequence.
+
+### The export folder permission is re-requested on Stop
+
+**Trigger**: the first recording after restarting Brave with a folder already chosen (the handle persists, its permission may not).
+**Steps**: with the Settings hint saying "Chrome will ask for permission again on the next export", record a few seconds and click Stop.
+**Success criteria**: the permission prompt appears from the Stop click; after allowing, the recording exports. Deny it once: the recording is listed as `recorded` with "Not exported: …" and its media is kept in OPFS.
+**On failure**: the prompt does not appear, or appears after the export failed: `ensureExportPermission` in `onStop` is not running inside the gesture; file a bug.
+
+### Chrome's "Stop sharing" bar ends the recording cleanly
+
+**Trigger**: the first picker-path recording in Brave (Record screen… → a window or the entire screen).
+**Steps**: record a window, then click "Stop sharing" on Brave's bar instead of Stop in the Rescribe tab.
+**Success criteria**: the Rescribe tab returns to idle and exports the recording as if Stop had been clicked. System audio from a window or screen share lands in `display.pcm` (Brave 152 on macOS 26 should offer it; the tab share always carries tab audio).
+**On failure**: the status stays `recording`: the track's `ended` event did not fire; fix forward in `recorder.ts`.

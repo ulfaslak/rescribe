@@ -16,7 +16,9 @@ Each spike's question and answer is recorded below when it runs. Once a spike's 
 reads cleanly: h264 + aac, duration 3.05 s for a 3 s capture, 174 kB at 1.5 Mbit/s. Concatenating
 the chunks byte for byte is the file. The OPFS worker's sync access handle wrote exactly the same
 byte count with `flush()` per chunk. Chunks arrive per timeslice (2 chunks for 3 s here), so
-"data on disk within seconds" holds. Still to verify in a real Chrome by the human: QuickTime
+"data on disk within seconds" holds. **Correction (2026-09-24, #1):** those two chunks were the
+header and the final flush; the fMP4 muxer emits only at keyframes, about every 5 s by default.
+The recorder forces a keyframe per timeslice (ENVIRONMENT_NOTES § MediaRecorder cadence). Still to verify in a real Chrome by the human: QuickTime
 plays and seeks the fragmented MP4 (LIVE_CHECKS).
 
 Harness detail: with `--auto-select-tab-capture-source-by-title` the headless run still captured

@@ -13,10 +13,11 @@ The first transcription downloads the speech model once (about 650 MB, from hugg
 
 ## Use
 
-- **Record a call:** open the Meet tab, click the Rescribe button. Click it again, or press Stop in the Rescribe tab, to finish.
-- **Record a screen or window:** open the Rescribe tab and press **Record screen**, then pick what to share in Chrome's dialog.
+- **Record a call:** open the Meet tab, click the Rescribe button (or press `Alt+Shift+R`). Press Stop in the Rescribe tab to finish; clicking the button again only brings that tab forward.
+- **Record a screen or window:** open the Rescribe tab and press **Record screen…**, then pick what to share in Chrome's dialog. Ending the share from Chrome's bar also stops the recording.
+- **Microphone:** on by default (Settings); the checkbox in the Record section decides per recording.
 
-When you stop, the video is saved immediately and the transcript is written as soon as transcription finishes. Keep the Rescribe tab open until then.
+When you stop, the video is saved immediately into a folder named by the template in Settings (`{date} {time} {title}` by default), and the transcript is written as soon as transcription finishes. Keep the Rescribe tab open until then. If the tab closes mid-recording, what reached disk is recovered and saved the next time you open Rescribe.
 
 ## Develop
 
