@@ -359,7 +359,8 @@ test('no export folder: done, artifacts kept in OPFS, the row and the status lin
     await opfsText(page, ['recordings', rec.id, 'transcript.md']),
   );
   await expect(row.locator('button.save-now')).toHaveCount(0);
-  await expect(page.locator('#record-status')).toContainText('Saved to');
+  // Save now lives in the library (#4); its outcome goes to the library's status line.
+  await expect(page.locator('#library-status')).toContainText('Saved recording.mp4, meta.json');
   finish(net);
 });
 

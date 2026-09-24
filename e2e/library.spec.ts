@@ -459,9 +459,11 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
     exportPath: a!.exportPath,
     error: expect.stringMatching(/^Not exported: .*No export folder/),
   });
-  // Back with a folder: the error clears.
+  // Back with a folder: the row now says Save now (something is not in the folder); the error
+  // clears.
   await seedExportFolder(page);
-  await row(page, a!.id).locator('button.re-export').click();
+  await expect(row(page, a!.id).locator('button.re-export')).toHaveCount(0);
+  await row(page, a!.id).locator('button.save-now').click();
   await expect(row(page, a!.id).locator('.hint.error')).toHaveCount(0, { timeout: 15_000 });
   expect((await recording(page, a!.id))!.error).toBeUndefined();
 });

@@ -568,13 +568,15 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
   // Whatever is on disk can be saved, a failed recording's playable video included.
   const exportable = inv.video || inv.artifacts.length > 0;
   if (exportable) {
-    // "Save now" is the same action, named for the row that never got a folder (record.spec.ts).
+    // One action, two names: "Save now" while something is not in the folder (no path yet, or an
+    // export error on a row that did not fail), "Re-export" when everything is there already.
+    const needsSave = !rec.exportPath || (rec.status !== 'failed' && !!rec.error);
     const b = document.createElement('button');
-    b.className = rec.exportPath ? 're-export' : 'save-now';
-    b.textContent = rec.exportPath ? 'Re-export' : 'Save now';
-    b.title = rec.exportPath
-      ? `Write ${[inv.video ? exportVideoName(rec.container) : '', ...inv.artifacts].filter(Boolean).join(', ')} into ${rec.exportPath}/ again`
-      : 'Save the recording into the export folder';
+    b.className = needsSave ? 'save-now' : 're-export';
+    b.textContent = needsSave ? 'Save now' : 'Re-export';
+    b.title = needsSave
+      ? 'Save the video and the transcript files into the export folder'
+      : `Write ${[inv.video ? exportVideoName(rec.container) : '', ...inv.artifacts].filter(Boolean).join(', ')} into ${rec.exportPath}/ again`;
     b.addEventListener(
       'click',
       () => void runAction([rec.id], 'Exporting…', li, () => reExport(rec.id)),
