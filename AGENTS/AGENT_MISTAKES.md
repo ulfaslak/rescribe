@@ -24,13 +24,25 @@ The adapter's header stated that Meet's page scripts cannot read a CustomEvent's
 
 A constructor parameter property in `src/lib/activity.ts` compiled under `tsc` and esbuild but made the test file fail to load under `node --test`. Codified in DEVELOPMENT § Commands (`npm test` row).
 
+### 2026-09-24 · #3 · threshold compare on ms-derived seconds `[learned]`
+
+`cleanIntervals` tested `end - start < minDuration` and dropped a 300 ms interval, because `5.3 - 5` is `0.29999999999999982`. Every stamp in the pipeline arrives as epoch ms and becomes seconds by division, so any threshold on a difference of two such values sits on this edge; the first unit test with a boundary fixture caught it. Codified as the `EPSILON` slack in `src/lib/evidence.ts` with two boundary tests in `evidence.test.ts`. `attribute()`'s `tolerance` and `toTurns()`'s `maxGap` have the same exposure and no slack yet.
+
+### 2026-09-24 · #16 · inferring from a transport guarantee that does not exist `[learned]`
+
+`eventsToEvidence` opened an interval from t=0 for every stop without a matching start, on the comment "the adapter never emits a stop without having sent its start". True of the adapter, false of the transport: `chrome.runtime.sendMessage` is fire-and-forget, so one lost start turned a stop at 110 s into a phantom 0–110 s interval over another speaker. Found by the adversarial review. Codified in the function's doc comment (what a lost or duplicated message does) and the "adapter stream shaped like the transport" tests in `src/lib/evidence.test.ts`; the inference now applies only to the first toggle received for an id.
+
+### 2026-09-24 · #16 · user-facing list built from raw observations `[learned]`
+
+`participants` collected every name string ever seen, including the adapter's id fallback and pre-rename names, so a transcript would have read `Participants: spaces/x/devices/1, Anna`; a unit test even enshrined `['p1', 'Anna']`. The list should come from resolved state (the final name per id) and the test should have asked what the human would read. Found by the adversarial review. Codified by the "never an id string" contract on `PlatformEvidence.participants` and its tests in `evidence.test.ts`.
+
 ### 2026-09-24 · #2 part 1 · float seconds where the unit was frames `[learned]`
 
 The VAD merged two regions when their gap was *under* 500 ms, but computed the gap in float seconds derived from frame indices, so an exact 500 ms gap came out as 0.4999… and merged. Caught by the unit test that pins both sides of the boundary (`vad.test.ts`, "bursts with a gap under the merge gap become one region; over it, two"); fixed by doing pad, merge, drop and split in integer frames and converting to seconds once at the end.
 
-### 2026-09-24 · #2 part 1 · state registered before the fallible call `[not codified]`
+### 2026-09-24 · #2 part 1 · state registered before the fallible call `[learned]`
 
-`Transcriber.run` set the active job and then called `worker.postMessage(..., [buffer])`; a detached or shared buffer makes that throw, which rejected the job but left it registered as active, so the next job's messages would have been filtered out and that job would hang forever. Found on the paper walk of the edge list (storage and buffer states), not by a test: the client is not exercised by any e2e until part 2 wires it. What would codify it: a unit test of `Transcriber` against a fake `Worker`, or the part 2 e2e driving the client instead of the worker.
+`Transcriber.run` set the active job and then called `worker.postMessage(..., [buffer])`; a detached or shared buffer makes that throw, which rejected the job but left it registered as active, so the next job's messages would have been filtered out and that job would hang forever. Found on the paper walk of the edge list (storage and buffer states). Codified after the review by `src/app/transcriber.test.ts` ("a postMessage that throws fails that job only and registers nothing"), which runs the client against a fake worker.
 
 ### 2026-09-24 · #17 · error path keeps poisoned state `[learned]`
 

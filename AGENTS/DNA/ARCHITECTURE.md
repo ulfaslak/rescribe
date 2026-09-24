@@ -21,9 +21,10 @@ rescribe/
                           which needs ORT's WASM and the model and is covered by e2e/transcribe.spec.ts
       types.ts            the data model (below)
       attribution.ts      speaker evidence → labelled segments
+      evidence.ts         adapter speaker/roster messages → cleaned platform SpeakerInterval[] + participants
       transcript.ts       labelled segments → turns → markdown / json
       activity.ts         "value changed recently" detector, the Meet speaking signal
-      (planned) clock.ts        wall-clock ms → recording-relative seconds, the only conversion
+      clock.ts            wall-clock ms ↔ recording-relative seconds, the only conversion
       (planned) pathtemplate.ts export directory name from the Settings template
       vad.ts              energy-based silence gate over 16 kHz PCM (Float32 or Int16) → voiced regions
       asr/engine.ts       the ASR engine interface (load with progress, transcribe PCM, dispose)
@@ -71,7 +72,7 @@ Messages that cross `chrome.runtime` (service worker, app tab, content scripts) 
 
 ## Clock
 
-Recording-relative seconds everywhere in `lib/`. `startedAt` is the epoch ms of the first captured sample. Content scripts stamp with `Date.now()`; the app tab converts on receipt. See [[INVARIANTS]].
+Recording-relative seconds everywhere in `lib/`. `startedAt` is the epoch ms of the first captured sample. Content scripts stamp with `Date.now()`; the app tab keeps the stamps as received (**(planned)** `events.jsonl`; today `app.ts` only logs them) and converts when it builds evidence (`eventsToEvidence` in `lib/evidence.ts`, through `lib/clock.ts`), so evidence can be rebuilt from disk. See [[INVARIANTS]].
 
 ## Storage **(planned)**
 

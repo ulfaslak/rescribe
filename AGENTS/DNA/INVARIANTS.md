@@ -22,7 +22,7 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### Every timestamp in the pipeline is recording-relative seconds, t=0 at the first captured sample
 
-**Mechanism:** `Segment`, `Word` and `SpeakerInterval` carry `start`/`end` in seconds from recording start. Content scripts stamp events with `Date.now()` and the app tab converts using the recording's `startedAt` epoch; the conversion lives in one place (`src/lib/clock.ts`, planned). Attribution tests use fixtures spanning multiple hours.
+**Mechanism:** `Segment`, `Word` and `SpeakerInterval` carry `start`/`end` in seconds from recording start. Content scripts stamp events with `Date.now()` and the app tab converts using the recording's `startedAt` epoch; the conversion lives in one place, `src/lib/clock.ts` (`toRecordingSeconds`, `toEpochMs`), called by `eventsToEvidence` in `src/lib/evidence.ts` when adapter events become evidence. `clock.test.ts` covers multi-hour, sub-millisecond and pre-start stamps; attribution and evidence tests use fixtures spanning multiple hours.
 **Incident:** none. Seeded 2026-09-24.
 
 ### Captured data is on disk within seconds of capture; a crash loses at most the last chunk
