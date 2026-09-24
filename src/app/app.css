@@ -133,3 +133,47 @@ ul {
   padding: 0;
   margin: 0;
 }
+#record .row {
+  margin-top: 12px;
+}
+#record label.check {
+  margin-top: 8px;
+}
+#stop:not(:disabled) {
+  background: var(--rec);
+  border-color: var(--rec);
+  color: #fff;
+}
+.recording-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.recording-item:first-child {
+  border-top: 0;
+}
+.recording-item .title {
+  font-weight: 600;
+}
+.recording-item .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  align-items: center;
+}
+.recording-item .pill.recorded {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.recording-item .pill.failed,
+.error {
+  color: var(--rec);
+}
+.recording-item .path {
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}

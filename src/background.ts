@@ -64,25 +64,34 @@ async function setBadge(state: BadgeState): Promise<void> {
 /**
  * The toolbar button. Idle: start recording the clicked tab (plus mic) through the app tab.
  * Otherwise: bring the app tab forward, where Stop lives. Misclicks must not stop a recording.
+ *
+ * The tab-capture stream id is obtained first, before any other await: the extension has just
+ * been invoked on the tab, which is what `getMediaStreamId` requires. The id is consumed by
+ * getUserMedia in the app tab (recorder/capture.ts). Clicking on the app tab itself only focuses it.
  */
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
+  const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
+  let streamId: string | undefined;
+  let error: string | undefined;
+  if (target?.id !== undefined) {
+    try {
+      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: target.id });
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
   const status = await queryStatus();
-  if (status !== 'idle') {
-    await ensureAppTab(true);
-    return;
-  }
-  // The tab-capture stream id must be obtained inside the user gesture, before any await that
-  // leaves it. Wired in the vertical slice (PRODUCT § Planned 1); for now the button opens the app.
   await ensureAppTab(true);
-  if (tab?.id !== undefined) {
-    await chrome.runtime
-      .sendMessage({
-        type: 'toggle-recording',
-        tabId: tab.id,
-        tabTitle: tab.title,
-      } satisfies Message)
-      .catch(() => undefined);
-  }
+  if (status !== 'idle' || !target?.id) return;
+  await chrome.runtime
+    .sendMessage({
+      type: 'toggle-recording',
+      tabId: target.id,
+      tabTitle: target.title,
+      streamId,
+      error,
+    } satisfies Message)
+    .catch(() => undefined);
 }
 
 chrome.action.onClicked.addListener((tab) => {

@@ -12,8 +12,19 @@ export type Message =
   | { type: 'badge'; state: BadgeState }
   /** Service worker → app tab: is anything going on? Answered with an AppStatus. */
   | { type: 'query-status' }
-  /** Service worker → app tab: the toolbar button or the keyboard command fired. */
-  | { type: 'toggle-recording'; tabId?: number; tabTitle?: string; streamId?: string }
+  /**
+   * Service worker → app tab: the toolbar button or the keyboard command fired on `tabId`.
+   * `streamId` is the tab-capture id to consume with getUserMedia; when it could not be obtained,
+   * `error` says why and the app tab shows it (there is no picker fallback: getDisplayMedia needs
+   * a gesture in the app tab).
+   */
+  | {
+      type: 'toggle-recording';
+      tabId?: number;
+      tabTitle?: string;
+      streamId?: string;
+      error?: string;
+    }
   /**
    * Content script → app tab: a participant started or stopped speaking. `at` is wall-clock ms of
    * the change itself, not of its detection. `id` is the platform's participant id; `name` is

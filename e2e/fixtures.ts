@@ -3,7 +3,8 @@
 import { test as base, chromium, type BrowserContext } from '@playwright/test';
 import path from 'node:path';
 
-export const SPIKE_TARGET_TITLE = 'Rescribe Spike Target';
+/** Title of the page a test opens for getDisplayMedia to auto-select (see the flag below). */
+export const CAPTURE_TARGET_TITLE = 'Rescribe Capture Target';
 
 export const test = base.extend<{ context: BrowserContext; extensionId: string }>({
   // eslint-disable-next-line no-empty-pattern
@@ -20,7 +21,7 @@ export const test = base.extend<{ context: BrowserContext; extensionId: string }
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',
         `--use-file-for-fake-audio-capture=${wav}`,
-        `--auto-select-tab-capture-source-by-title=${SPIKE_TARGET_TITLE}`,
+        `--auto-select-tab-capture-source-by-title=${CAPTURE_TARGET_TITLE}`,
         '--autoplay-policy=no-user-gesture-required',
         '--enable-unsafe-webgpu',
       ],

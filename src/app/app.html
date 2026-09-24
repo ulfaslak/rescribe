@@ -18,10 +18,15 @@
           To record a call, click the Rescribe toolbar button on the call's tab. To record a window
           or your whole screen, use the button below.
         </p>
-        <button id="record-screen" disabled title="Arrives with the vertical slice">
-          Record screen…
-        </button>
-        <button id="stop" disabled>Stop</button>
+        <label class="check">
+          <input type="checkbox" id="mic" />
+          <span>Record my microphone</span>
+        </label>
+        <div class="row">
+          <button id="record-screen">Record screen…</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <p class="hint" id="record-status" aria-live="polite"></p>
       </section>
 
       <section id="recordings">

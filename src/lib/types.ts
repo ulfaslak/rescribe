@@ -27,7 +27,10 @@ export interface Recording {
   container: Container;
   /** Relative path of the export directory under the chosen folder, once exported. */
   exportPath?: string;
+  /** Why it failed, or why it is `recorded` without an export path. */
   error?: string;
+  /** Something the human should know that is not a failure (e.g. recovered after an interruption). */
+  note?: string;
 }
 
 export interface Word {
