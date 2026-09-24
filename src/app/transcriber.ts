@@ -43,7 +43,10 @@ export class Transcriber {
     return result;
   }
 
-  /** Terminates the worker, failing the active and queued jobs. The next call spawns a new one. */
+  /**
+   * Terminates the worker and fails the active job. Jobs still queued run on a fresh worker, as
+   * does the next call, so the model loads again.
+   */
   dispose(): void {
     this.fail(new Error('transcriber disposed'));
   }
@@ -57,7 +60,6 @@ export class Transcriber {
     return new Promise<Segment[]>((resolve, reject) => {
       const worker = this.ensureWorker();
       const id = `job-${++this.seq}`;
-      this.active = { id, resolve, reject, onProgress };
       const request: WorkerRequest = {
         type: 'transcribe',
         jobId: id,
@@ -66,7 +68,10 @@ export class Transcriber {
         model: opts.model,
         backend: opts.backend,
       };
+      // A detached or shared buffer makes postMessage throw; that must fail this job only, not
+      // leave it registered as active so the next job's messages get ignored.
       worker.postMessage(request, [pcm.buffer as ArrayBuffer]);
+      this.active = { id, resolve, reject, onProgress };
     });
   }
 

@@ -12,7 +12,7 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### No audio, video or transcript ever leaves the machine
 
-**Mechanism:** the only permitted network traffic is the model download from `huggingface.co` (parakeet.js hub loader, cached in IndexedDB). The e2e harness records every network request during a recording and transcription run and fails on any host other than `huggingface.co` and its CDN redirect targets (planned: `e2e/privacy.spec.ts`). The manifest declares no `host_permissions`.
+**Mechanism:** the only permitted network traffic is the model download from `huggingface.co` (parakeet.js hub loader, cached in IndexedDB). `e2e/privacy.ts` records every request a Playwright context makes, the transcribe worker's included, and fails on any network host outside its pinned list: `huggingface.co` and `<region>.<cloud>.cdn.hf.co`, the CDN it redirects to (observed `us.aws.cdn.hf.co`). `e2e/transcribe.spec.ts` asserts it over a download, load and transcription; the recording spec must too once it exists. The ORT binaries come from `dist/vendor/ort/`: `ParakeetEngine.load` sets `ort.env.wasm.wasmPaths` before parakeet.js can default to jsDelivr. The manifest declares no `host_permissions`.
 **Incident:** none. Seeded 2026-09-24 as the product's core promise.
 
 ### The mic channel and the display channel are never mixed before transcription

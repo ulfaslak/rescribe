@@ -6,6 +6,13 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 
 ---
 
+### WebGPU transcription runs on the GPU in Brave
+
+**Trigger**: the backend setting exists in the human's Brave (part 2 of #2 merged).
+**Steps**: Settings → backend WebGPU; transcribe a recording with the app tab's DevTools console open (the worker's messages show there). Look for `[Parakeet.js] Creating ONNX sessions with execution mode 'webgpu-hybrid'` and for any ORT warning that says it is *removing* the `webgpu` execution provider. Note the transcription time, then repeat with WASM on the same recording.
+**Success criteria**: a transcript, no fallback warning, WebGPU faster than WASM. Headless Chromium has WebGPU (ENVIRONMENT_NOTES) and `e2e/transcribe.spec.ts` covers it with `RESCRIBE_E2E_WEBGPU=1`; Brave gates GPU features differently, so only the real browser settles it.
+**On failure**: keep WASM as the default (it is), file a bug with the console output.
+
 ### The first real MP4 plays and seeks in QuickTime
 
 **Trigger**: the first recording made with the real extension in the human's Chrome (vertical slice merged).

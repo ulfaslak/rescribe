@@ -39,7 +39,7 @@ function readWav16kMono(path: string): Int16Array {
   throw new Error('no data chunk');
 }
 
-type Progress = Omit<ProgressMessage, 'type' | 'jobId'>;
+type Progress = Omit<ProgressMessage, 'type' | 'jobId'> & { at: number };
 
 interface JobReport {
   segments: Segment[];
@@ -79,7 +79,7 @@ function runJob(page: Page, job: JobSpec): Promise<JobReport> {
         if (m.jobId !== jobId) return;
         if (m.type === 'progress') {
           const { type: _t, jobId: _j, ...rest } = m;
-          progress.push(rest);
+          progress.push({ ...rest, at: Math.round(performance.now() - t0) });
         } else if (m.type === 'result') done({ segments: m.segments });
         else done({ segments: [], error: m.message });
       };
@@ -138,9 +138,12 @@ async function transcribeFixtureThroughWorker(
 
   // Job 1: Int16 input, as the PCM files in OPFS hold it. Downloads and loads the model.
   const first = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
+  const firstTranscribeMs =
+    first.ms - (first.progress.find((p) => p.phase === 'transcribe')?.at ?? 0);
   console.log(
-    `[transcribe ${backend}] job 1: ${first.ms} ms for ${seconds.toFixed(2)} s of audio ` +
-      `(RTF ${(first.ms / 1000 / seconds).toFixed(3)}), segments: ${JSON.stringify(first.segments)}`,
+    `[transcribe ${backend}] job 1: ${first.ms} ms in total, ${firstTranscribeMs} ms transcribing ` +
+      `${seconds.toFixed(2)} s of audio (RTF ${(firstTranscribeMs / 1000 / seconds).toFixed(3)}), ` +
+      `segments: ${JSON.stringify(first.segments)}`,
   );
   expect(first.error, first.error).toBeUndefined();
   const hits = wordHitRate(first.segments, 'e2e/fixtures/speech.txt');
@@ -163,7 +166,9 @@ async function transcribeFixtureThroughWorker(
 
   // Job 2: same worker, Float32 input. The model is reused: no download or load phase, faster.
   const second = await runJob(page, { samples, kind: 'float32', model: MODEL, backend });
-  console.log(`[transcribe ${backend}] job 2: ${second.ms} ms (model reused)`);
+  console.log(
+    `[transcribe ${backend}] job 2: ${second.ms} ms (model reused, RTF ${(second.ms / 1000 / seconds).toFixed(3)})`,
+  );
   expect(second.error, second.error).toBeUndefined();
   expect(wordHitRate(second.segments, 'e2e/fixtures/speech.txt')).toBeGreaterThan(0.8);
   expect([...phases(second)]).toEqual(['transcribe']);
@@ -182,6 +187,22 @@ async function transcribeFixtureThroughWorker(
     loaded: 0,
     total: 0,
   });
+
+  // Job 4: no samples at all. Same answer, no crash.
+  const empty = await runJob(page, { samples: [], kind: 'int16', model: MODEL, backend });
+  expect(empty.error, empty.error).toBeUndefined();
+  expect(empty.segments).toEqual([]);
+
+  // Job 5: a model that does not exist. The job fails with a message, the worker survives, and
+  // because the engine was swapped out for the bad one, job 6 loads the real model again.
+  const bogus = await runJob(page, { samples, kind: 'int16', model: 'no-such-model', backend });
+  console.log(`[transcribe ${backend}] bogus model → ${bogus.error}`);
+  expect(bogus.error).toMatch(/no-such-model|Failed to download|404/);
+  expect(bogus.segments).toEqual([]);
+  const again = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
+  expect(again.error, again.error).toBeUndefined();
+  expect(wordHitRate(again.segments, 'e2e/fixtures/speech.txt')).toBeGreaterThan(0.8);
+  expect([...phases(again)].sort()).toEqual(['download', 'load', 'transcribe']);
 }
 
 test.describe('transcribe worker', () => {
@@ -215,6 +236,10 @@ test.describe('transcribe worker', () => {
     page.on('console', (m) => {
       if (m.type() === 'error' || m.type() === 'warning')
         console.log(`[page ${m.type()}]`, m.text());
+    });
+    page.on('console', (m) => {
+      if (/execution provider|Creating ONNX sessions|WebGPU/i.test(m.text()))
+        console.log(`[page]`, m.text());
     });
     await page.goto(`chrome-extension://${extensionId}/app/app.html`);
     await transcribeFixtureThroughWorker(page, 'webgpu', net);

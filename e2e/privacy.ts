@@ -5,15 +5,15 @@
 import type { BrowserContext, Request } from '@playwright/test';
 
 /**
- * The only hosts the model download may touch: huggingface.co itself (API listing and
- * `/resolve/` redirects) and the CDN hosts it redirects to. Observed 2026-09-24 in the transcribe
- * e2e run; extend the list only after observing a new host in a run and checking it belongs to
- * Hugging Face.
+ * The only hosts the model download may touch: huggingface.co itself (the repo listing and the
+ * `/resolve/` URLs, which redirect) and the CDN host it redirects to. Observed 2026-09-24 in the
+ * transcribe e2e run: `huggingface.co`, then `us.aws.cdn.hf.co` (Hugging Face's Xet CDN,
+ * `<region>.<cloud>.cdn.hf.co`). Extend the list only after observing a new host in a run and
+ * checking it belongs to Hugging Face.
  */
 export const ALLOWED_HOSTS: RegExp[] = [
   /^huggingface\.co$/,
-  /^cdn-lfs[a-z0-9-]*\.hf\.co$/,
-  /^cas-bridge[a-z0-9-]*\.hf\.co$/,
+  /^[a-z0-9-]+\.[a-z0-9-]+\.cdn\.hf\.co$/,
 ];
 
 const NETWORK_SCHEMES = new Set(['http:', 'https:', 'ws:', 'wss:']);
