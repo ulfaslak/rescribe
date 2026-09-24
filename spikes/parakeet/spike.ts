@@ -61,8 +61,10 @@ async function run(): Promise<void> {
     : null;
   show();
 
+  // Default is the product's default configuration (DECISIONS § Speech recognition). The WebGPU
+  // fp32 variant takes over a minute to load from cache, so it is opt-in: ?backend=webgpu&enc=fp32
   const q = new URLSearchParams(location.search);
-  const backend = (q.get('backend') ?? (adapter ? 'webgpu' : 'wasm')) as 'webgpu' | 'wasm';
+  const backend = (q.get('backend') ?? 'wasm') as 'webgpu' | 'wasm';
   const encoderQuant = (q.get('enc') ?? (backend === 'webgpu' ? 'fp32' : 'int8')) as
     'fp16' | 'fp32' | 'int8';
   r.requested = { backend, encoderQuant, decoderQuant: 'int8' };

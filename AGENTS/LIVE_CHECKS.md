@@ -6,15 +6,16 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 
 ---
 
-### Calibrate the Meet adapter
+### Validate the Meet speaking signal, solo, then with a second person
 
-**Trigger**: the human is in a Google Meet call with at least one other participant, with an agent session open.
+**Trigger**: the human is in a Google Meet call (alone is fine for the first pass) with an agent session open. Calibration v2 shipped 2026-09-24; the first solo run (v1) is what identified the meter element.
 **Steps**:
-1. On the Meet tab, open DevTools → Console, run `postMessage({ rescribe: 'calibrate', seconds: 60 }, '*')`.
-2. Over the next 60 seconds, have at least two different people speak, with pauses.
-3. Copy the console summary (it lists the participant tiles found, the names guessed, and every attribute/class that toggled per tile with its toggle count and timing) and paste it to the agent.
-**Success criteria**: the agent can name one selector per tile that toggles exactly when that participant speaks, writes it into `SPEAKING_SELECTORS` in `src/content/meet.ts`, and after a reload the Rescribe tab's console shows `speaker` events matching who talked.
-**On failure**: the adapter stays in calibration-only mode (emits roster, no speaking events) and the transcript falls back to channel identity ("Me" / "Speaker").
+1. Reload the extension at `brave://extensions` after a fresh `npm run build` on `main`, then reload the Meet tab. The console must show `[rescribe] Meet adapter loaded`.
+2. In the Meet tab's DevTools console run `postMessage({ rescribe: 'calibrate', seconds: 60 }, '*')`. Allow the microphone if asked (the report uses your own mic level as ground truth).
+3. Talk for about 10 seconds, stay silent for about 10, repeat. With a second person, alternate.
+4. Copy the printed `calibration report` object and paste it to the agent.
+**Success criteria**: for your own tile, `speakingVsMic.speaking.meanMic` is several times `speakingVsMic.silent.meanMic`, and `speaking.pct` is roughly the share of time you talked. `nameGuess` is `You` or your name, not a menu label. With a second person, `speaker` events in the Rescribe tab's console name the right person when they talk. `media` lists the page's audio elements with their track ids, which is data for a possible per-participant audio signal later.
+**On failure**: if `meterFound` is false, Meet changed the meter's `jsname`: pick the toggling element from `meterStates`/`nameCandidates` and update `METER_SELECTOR`. If the mic correlation is flat, the meter is not an audio meter after all: revert to roster-only and file a bug with the report attached.
 
 ### The first real MP4 plays and seeks in QuickTime
 

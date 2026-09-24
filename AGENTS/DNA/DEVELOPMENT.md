@@ -16,7 +16,7 @@ Load `dist/` once in the human's browser (Brave): `brave://extensions` → Devel
 | Command | What |
 |---|---|
 | `npm run check` | `tsc --noEmit`, strict. Must be clean. |
-| `npm test` | Node's test runner over `src/**/*.test.ts`. Runs TypeScript directly (Node 25 type stripping), which is why source imports use the `.ts` extension. |
+| `npm test` | Node's test runner over `src/**/*.test.ts`. Runs TypeScript directly (Node 25 type stripping), which is why source imports use the `.ts` extension, and why `src/lib/` uses no TypeScript-only *runtime* syntax: no parameter properties, no `enum`, no `namespace`, no `import x = require()`. A file that uses them fails to load in `npm test` while `tsc` and esbuild stay green. |
 | `npm run e2e` | Builds, then Playwright drives the real extension in Chromium. See below. |
 | `npm run format` / `format:check` | Prettier. A PostToolUse hook runs `--check` on files you edit. |
 
@@ -60,4 +60,4 @@ Then the human reloads the extension at `brave://extensions`. Say so in the clos
 
 ## Worktrees
 
-`git gtr new <branch>` creates `../rescribe-worktrees/<branch>/` and runs `npm install` (`.gtrconfig`). Each worktree has its own `dist/`; Chrome loads the primary clone's `dist/`, so a worktree's build is only for its own e2e runs. Never load a worktree's `dist/` into the human's Chrome.
+`git gtr new <branch>` creates `../rescribe-worktrees/<branch>/` and should run `npm install` (`.gtrconfig`; see [[ENVIRONMENT_NOTES]] if it didn't). After merging, remove the worktree **before** deleting the branch: `gh pr merge --delete-branch` cannot delete a local branch that a worktree still holds, so the order is `git gtr rm <branch>`, then `git branch -d <branch>`. Each worktree has its own `dist/`; Chrome loads the primary clone's `dist/`, so a worktree's build is only for its own e2e runs. Never load a worktree's `dist/` into the human's Chrome.
