@@ -526,3 +526,42 @@ test('a lost video chunk fails the recording at once and releases everything', a
   expect(next!.id).not.toBe(rec!.id);
   expect(next!.status).toBe('recorded');
 });
+
+test('a toolbar start left in the background brings the app tab forward when it fails', async ({
+  context,
+  extensionId,
+}) => {
+  // The toolbar path itself needs a real click (LIVE_CHECKS). What can be exercised here: the app
+  // tab opened in the background, as background.ts does for a Meet tab, and a `toggle-recording`
+  // it cannot honour (no stream id), which must bring it forward so the note is seen.
+  await openTarget(context);
+  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  const appUrl = `chrome-extension://${extensionId}/app/app.html`;
+  const pagePromise = context.waitForEvent('page', { predicate: (p) => p.url() === appUrl });
+  const appTabId = await worker.evaluate(
+    async (url) => (await chrome.tabs.create({ url, pinned: true, active: false })).id!,
+    appUrl,
+  );
+  const app = await pagePromise;
+  await expect(app.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  const active = () => worker.evaluate(async (id) => (await chrome.tabs.get(id)).active, appTabId);
+  expect(await active()).toBe(false);
+  await expect(app.locator('#status')).toHaveText('idle');
+
+  // The service worker's message when getMediaStreamId failed: no stream id, the reason instead.
+  await worker.evaluate(
+    (id) =>
+      chrome.tabs.sendMessage(id, {
+        type: 'toggle-recording',
+        tabId: 1,
+        tabTitle: 'Some tab',
+        error: 'Extension has not been invoked for the current page',
+      }),
+    appTabId,
+  );
+  await expect(app.locator('#record-status')).toContainText('Extension has not been invoked');
+  await expect.poll(active, { timeout: 5000 }).toBe(true);
+  await expect(app.locator('#status')).toHaveText('idle');
+  expect(await recordings(app)).toHaveLength(0);
+  expect(await app.evaluate(() => chrome.action.getBadgeText({}))).toBe('');
+});
