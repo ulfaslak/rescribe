@@ -10,8 +10,8 @@
     "check": "tsc --noEmit",
     "test": "node --test \"src/**/*.test.ts\"",
     "e2e": "npm run build && playwright test",
-    "format": "prettier --write \"src/**/*.{ts,html,css,json}\" \"e2e/**/*.ts\" \"scripts/**/*.mjs\"",
-    "format:check": "prettier --check \"src/**/*.{ts,html,css,json}\" \"e2e/**/*.ts\" \"scripts/**/*.mjs\""
+    "format": "prettier --write \"src/**/*.{ts,html,css,json}\" \"e2e/**/*.ts\" \"scripts/**/*.mjs\" \".claude/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,html,css,json}\" \"e2e/**/*.ts\" \"scripts/**/*.mjs\" \".claude/**/*.mjs\""
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

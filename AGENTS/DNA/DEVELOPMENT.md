@@ -50,6 +50,16 @@ Negative control: for every fix, make the check fail once (revert the fix or res
 
 Test the logic that decides things: attribution, turn merging, VAD boundaries, clock conversion, path templates. Those are pure functions and their bugs are silent (a wrong speaker label looks like a right one). Don't test the DOM glue or Chrome APIs through mocks; test them through the real browser in e2e, or not at all. A test that can only pass by mocking the thing under test proves nothing.
 
+## Cleanse
+
+`/cleanse` (`.claude/skills/cleanse/`) reviews the DNA against itself and the code, sweeps the ledgers in `AGENTS/`, prunes redundant tests and closes straggler issues. Shallow reads the DNA and skims the code; deep reads every source file, checks each invariant against the test that pins it, the manifest and the storage layout against the prose, and the mistake log for patterns. Its mechanical half is a script:
+
+```
+node .claude/skills/cleanse/scan.mjs --verbose
+```
+
+Broken `[[links]]` and `§` section references, paths the docs name that are not on disk, and ARCHITECTURE's file structure against the tree exit 1. Orphan source files, quoted test titles that match no test, and ledger entries missing a field or a tag are printed to judge. Run it on its own after renaming a file, a heading or a test that the docs name.
+
 ## Release
 
 There is no deploy. After a merge, from the primary clone:

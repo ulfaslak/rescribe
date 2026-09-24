@@ -8,7 +8,7 @@ Parts marked **(planned)** describe the target shape agreed at kickoff and not y
 rescribe/
   CLAUDE.md, README.md
   AGENTS/                 persistent agent context (DNA + ledgers)
-  .claude/                agents, hooks, settings for Claude Code
+  .claude/                agents, hooks, skills (cleanse/: SKILL.md and scan.mjs), settings for Claude Code
   scripts/build.mjs       esbuild: src/ → dist/, copies static assets and ORT wasm
   src/
     manifest.json         MV3 manifest
