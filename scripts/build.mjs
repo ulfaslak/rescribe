@@ -27,16 +27,6 @@ for (const f of readdirSync('src/app').filter((f) => /\.(html|css|svg|png)$/.tes
 }
 if (existsSync('src/icons')) cpSync('src/icons', join(OUT, 'icons'), { recursive: true });
 
-// Spike pages (throwaway experiments, see spikes/README.md). Built so Playwright can open them.
-for (const dir of readdirSync('spikes', { withFileTypes: true }).filter((d) => d.isDirectory())) {
-  const src = join('spikes', dir.name);
-  const dst = join(OUT, 'spikes', dir.name);
-  mkdirSync(dst, { recursive: true });
-  for (const f of readdirSync(src).filter((f) => /\.(html|css|wav)$/.test(f))) {
-    copyFileSync(join(src, f), join(dst, f));
-  }
-}
-
 // onnxruntime-web loads its .wasm (and the .mjs glue for threaded builds) at runtime from
 // ort.env.wasm.wasmPaths. We point that at chrome-extension://<id>/vendor/ort/.
 const ortDist = 'node_modules/onnxruntime-web/dist';
@@ -69,18 +59,6 @@ const esm = await esbuild.context({
     'src/app/app.ts',
     ...globSync('src/workers/*.ts').filter((f) => !f.endsWith('.test.ts')),
     ...globSync('src/**/*.worklet.ts'),
-    ...readdirSync('spikes', { withFileTypes: true })
-      .filter((d) => d.isDirectory() && existsSync(join('spikes', d.name, 'spike.ts')))
-      .map((d) => ({
-        in: join('spikes', d.name, 'spike.ts'),
-        out: join('spikes', d.name, 'spike'),
-      })),
-    ...readdirSync('spikes', { withFileTypes: true })
-      .filter((d) => d.isDirectory() && existsSync(join('spikes', d.name, 'worker.ts')))
-      .map((d) => ({
-        in: join('spikes', d.name, 'worker.ts'),
-        out: join('spikes', d.name, 'worker'),
-      })),
   ],
 });
 

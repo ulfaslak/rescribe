@@ -11,6 +11,15 @@
       <span id="status" class="pill">idle</span>
     </header>
 
+    <section id="duplicate" hidden>
+      <h2>Rescribe is already open in another tab</h2>
+      <p class="hint">
+        Recording and the library live in that tab; this one does nothing so the two cannot
+        disagree.
+      </p>
+      <button id="focus-app">Go to the Rescribe tab</button>
+    </section>
+
     <main>
       <section id="record">
         <h2>Record</h2>
@@ -18,10 +27,15 @@
           To record a call, click the Rescribe toolbar button on the call's tab. To record a window
           or your whole screen, use the button below.
         </p>
-        <button id="record-screen" disabled title="Arrives with the vertical slice">
-          Record screen…
-        </button>
-        <button id="stop" disabled>Stop</button>
+        <label class="check">
+          <input type="checkbox" id="mic" />
+          <span>Record my microphone</span>
+        </label>
+        <div class="row">
+          <button id="record-screen">Record screen…</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <p class="hint" id="record-status" aria-live="polite"></p>
       </section>
 
       <section id="recordings">

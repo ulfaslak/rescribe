@@ -21,10 +21,10 @@ Every recording produces, in the folder chosen in Settings, under a per-recordin
 
 - Repository scaffold, build, test harness (2026-09-24). No user-facing feature yet.
 - Meet speaker adapter (2026-09-24): on meet.google.com the extension knows who is speaking when and who is present, validated in a two-person call. Nothing consumes the events yet; that lands with transcription (#2) and #3.
+- Vertical slice (2026-09-24): the toolbar button records the current tab plus the microphone, "Record screen…" in the Rescribe tab records a tab, window or screen through Chrome's picker; both stream video and the two audio channels to OPFS as they happen, and Stop (or the share ending) exports `recording.mp4` (or `.webm`) into `<template>/` in the chosen folder and lists the recording as `recorded` with each channel's level; a recording interrupted by the tab closing is recovered from disk on the next open, and one that could not be saved to the folder offers **Save now**. One Rescribe tab owns everything; a second one only offers to take you to the first. Verified with fake devices in headless Chromium; the toolbar path in the human's Brave is a pending live check.
 
 ### Planned, in order
 
-1. **Vertical slice.** Record the current tab plus mic from the toolbar button, and screen/window plus mic from the app tab; stream to OPFS; export `recording.mp4` to the chosen folder. Settings: folder, path template, my name, container, mic on/off.
 2. **Transcription.** Per-channel Parakeet transcription after stop, with progress, producing `transcript.md` and `transcript.json` with channel-identity attribution (Me vs Speaker).
 3. **Meet adapter.** Content script on meet.google.com emitting speaker intervals and the roster; calibrated in a live call with the human.
 4. **Recording library.** List of recordings with status, re-run transcription, re-export, delete media.

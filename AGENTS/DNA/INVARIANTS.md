@@ -17,18 +17,18 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### The mic channel and the display channel are never mixed before transcription
 
-**Mechanism:** each channel has its own AudioWorklet tap writing its own PCM file in OPFS; the mixer node's only consumer is the MediaRecorder's audio track. (Planned: a unit test on the audio graph builder asserting the tap nodes have exactly one input each.)
+**Mechanism:** two AudioContexts (`src/recorder/graph.ts`). The taps live in the 16 kHz tap context, each fed by a `MediaStreamAudioSourceNode` of its own channel's track and writing its own PCM file; the mixer lives in the mix context and feeds only the MediaRecorder's audio track (and, for tab capture, the display channel to the speakers). Web Audio refuses to connect nodes across contexts, so no path from the mixer to a tap can be built. `src/recorder/graph.test.ts` pins the topology on `planGraph`: every tap has exactly one input, its own channel's source in the tap context; no edge crosses contexts; the mixer has no outputs; the mic never reaches the speakers.
 **Incident:** none. Seeded 2026-09-24. Mixing would destroy the free, exact me-versus-them attribution the whole speaker design rests on.
 
 ### Every timestamp in the pipeline is recording-relative seconds, t=0 at the first captured sample
 
-**Mechanism:** `Segment`, `Word` and `SpeakerInterval` carry `start`/`end` in seconds from recording start. Content scripts stamp events with `Date.now()` and the app tab converts using the recording's `startedAt` epoch; the conversion lives in one place, `src/lib/clock.ts` (`toRecordingSeconds`, `toEpochMs`), called by `eventsToEvidence` in `src/lib/evidence.ts` when adapter events become evidence. `clock.test.ts` covers multi-hour, sub-millisecond and pre-start stamps; attribution and evidence tests use fixtures spanning multiple hours.
+**Mechanism:** `Segment`, `Word` and `SpeakerInterval` carry `start`/`end` in seconds from recording start. The PCM files hold one sample per 1/16000 s of elapsed monotonic time: the taps zero-fill absent input and the recorder pads render gaps (`src/recorder/gap.ts`, ARCHITECTURE § Clock); a false gap detection would move every later sample, which is why `e2e/record.spec.ts` asserts an empty `events.jsonl` on a healthy run. Content scripts stamp events with `Date.now()` and the app tab converts using the recording's `startedAt` epoch; the conversion lives in one place, `src/lib/clock.ts` (`toRecordingSeconds`, `toEpochMs`), called by `eventsToEvidence` in `src/lib/evidence.ts` when adapter events become evidence. `clock.test.ts` covers multi-hour, sub-millisecond and pre-start stamps; attribution and evidence tests use fixtures spanning multiple hours.
 **Incident:** none. Seeded 2026-09-24.
 
 ### Captured data is on disk within seconds of capture; a crash loses at most the last chunk
 
-**Mechanism:** MediaRecorder emits chunks on a timeslice and the AudioWorklet taps emit PCM blocks; both are appended to OPFS by the storage worker with a sync access handle and flushed per write. Nothing is accumulated in memory across the recording. (Planned e2e: kill the app tab mid-recording, reopen, assert the OPFS file length.)
-**Incident:** none. Seeded 2026-09-24. Calls are long and unrepeatable.
+**Mechanism:** MediaRecorder runs with a 1 s timeslice **and** `videoKeyFrameIntervalDuration: 1000`, because Chrome's fragmented-MP4 muxer emits a fragment only at a keyframe (default interval about 5 s); the AudioWorklet taps post 200 ms Int16 blocks. Every chunk and block is transferred to the storage worker, which appends it through a sync access handle and calls `flush()` after each write. What is in memory at any moment: one video chunk being turned into an ArrayBuffer and one block per channel; nothing else grows with the recording (`src/recorder/recorder.ts`). `e2e/record.spec.ts` "app tab closed mid-recording" kills the tab 3.5 s in, reopens it, and asserts the recovered recording has a playable video and PCM matching the elapsed time.
+**Incident:** 2026-09-24, self-test of #1: with the default keyframe interval the OPFS video file was still 0 bytes 3.5 s into a recording while both PCM files were growing; the first media fragment arrived at 10 s. The capture spike's "chunks arrive per timeslice" had been read off a 3 s run that ended before the first fragment.
 
 ### A platform adapter that stops matching the page must say so, not go quiet
 

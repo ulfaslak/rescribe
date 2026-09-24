@@ -29,7 +29,7 @@ Load `dist/` once in the human's browser (Brave): `brave://extensions` → Devel
 - `--auto-select-tab-capture-source-by-title=<title>`: `getDisplayMedia` picks the tab with that title without a picker.
 - `--autoplay-policy=no-user-gesture-required`: a target tab can play a tone so tab-audio capture is measurable.
 
-The profile lives in `.playwright/profile/` (gitignored) and is **reused between runs on purpose**: the Parakeet model (about 650 MB for the default int8 WASM variant; another 2.4 GB if the WebGPU variant ran) is cached in its IndexedDB, so only the first run downloads it. Don't delete the profile to "clean up".
+The profile lives in `.playwright/profile/` (gitignored) and is **reused between runs on purpose**: the Parakeet model (about 650 MB for the default int8 WASM variant; another 2.4 GB if the WebGPU variant ran) is cached in its IndexedDB, so only the first run downloads it. Don't delete the profile to "clean up". The fixture does delete the profile's `Service Worker/` directory before each launch, because Chromium would otherwise run the previous build's `background.js` (see [[ENVIRONMENT_NOTES]]). `PW_PROFILE=<dir>` uses another profile.
 
 Headless by default (`channel: 'chromium'`, new headless supports extensions and, on this Mac, WebGPU with f16). `HEADED=1 npm run e2e` opens a window; `CHROME_CHANNEL=chrome` uses the installed Google Chrome instead of Playwright's Chromium; `RESCRIBE_E2E_WEBGPU=1` also runs the WebGPU transcription variant (2.4 GB download, skipped by default).
 

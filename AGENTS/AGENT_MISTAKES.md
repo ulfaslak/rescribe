@@ -24,6 +24,10 @@ The adapter's header stated that Meet's page scripts cannot read a CustomEvent's
 
 A constructor parameter property in `src/lib/activity.ts` compiled under `tsc` and esbuild but made the test file fail to load under `node --test`. Codified in DEVELOPMENT § Commands (`npm test` row).
 
+### 2026-09-24 · #1 · spike result generalised past its measurement `[learned]`
+
+The capture spike recorded "chunks arrive per timeslice, so data on disk within seconds holds" from a 3 s run with two chunks; those were the MP4 header and the final flush. Chrome's fragmented-MP4 muxer only emits at keyframes, about every 5 s by default, so a real recording had 0 bytes of video on disk after 3.5 s. Caught by the recovery e2e (tab killed mid-recording), fixed with a keyframe per timeslice. Codified in INVARIANTS § "on disk within seconds" (mechanism and incident) and ENVIRONMENT_NOTES § "MediaRecorder cadence".
+
 ### 2026-09-24 · #3 · threshold compare on ms-derived seconds `[learned]`
 
 `cleanIntervals` tested `end - start < minDuration` and dropped a 300 ms interval, because `5.3 - 5` is `0.29999999999999982`. Every stamp in the pipeline arrives as epoch ms and becomes seconds by division, so any threshold on a difference of two such values sits on this edge; the first unit test with a boundary fixture caught it. Codified as the `EPSILON` slack in `src/lib/evidence.ts` with two boundary tests in `evidence.test.ts`. `attribute()`'s `tolerance` and `toTurns()`'s `maxGap` have the same exposure and no slack yet.
@@ -35,6 +39,31 @@ A constructor parameter property in `src/lib/activity.ts` compiled under `tsc` a
 ### 2026-09-24 · #16 · user-facing list built from raw observations `[learned]`
 
 `participants` collected every name string ever seen, including the adapter's id fallback and pre-rename names, so a transcript would have read `Participants: spaces/x/devices/1, Anna`; a unit test even enshrined `['p1', 'Anna']`. The list should come from resolved state (the final name per id) and the test should have asked what the human would read. Found by the adversarial review. Codified by the "never an id string" contract on `PlatformEvidence.participants` and its tests in `evidence.test.ts`.
+
+
+### 2026-09-24 · #18 · a second copy of the owner `[learned]`
+
+Any app tab set the badge and answered `query-status` on load, so a second Rescribe tab desynced the badge and, answering first, could start a concurrent recording from a toolbar click. The design said "one app tab" and nothing enforced it. Found by the adversarial review. Codified in ARCHITECTURE § Runtime topology (single owner: a tab that finds a sibling never listens; the service worker closes duplicates and messages the owner by tab id) and pinned by `e2e/record.spec.ts` "a second app tab is inert".
+
+### 2026-09-24 · #18 · readiness assumed for an existing tab `[learned]`
+
+`ensureAppTab` waited for the app to answer only when it had just created the tab; an existing tab that was discarded, reloading or crashed was focused and messaged into `.catch(() => undefined)`, and the toolbar click did nothing while the stream id expired. Found by the adversarial review. Codified in `background.ts` (`waitForAppReady` on every path, reload of a silent tab, badge `!` when nothing answers) and ARCHITECTURE § Runtime topology.
+
+### 2026-09-24 · #18 · the recovery path could not do the one thing it was for `[learned]`
+
+Recovery after a browser restart and the "Stop sharing" path both ran `finalize` outside a user gesture, and the persisted folder handle is `prompt` after a restart, so the recovered recording ended as `recorded` + "Not exported" with no way to export it, while README and ARCHITECTURE claimed otherwise. Found by the adversarial review. Codified as the **Save now** row button (ARCHITECTURE § Storage, README § Use) and pinned by the e2e "Save now exports it later".
+
+### 2026-09-24 · #18 · a promise chain that stops after one rejection `[learned]`
+
+Video chunks were queued as `pending = pending.then(async …)`; one rejected `arrayBuffer()` skipped every later `.then`, silently dropping all further video while the PCM files kept growing, and the failure branch of stop skipped closing the contexts and the writer. Found by the adversarial review. Codified in `recorder.ts` (each chunk catches into `fail()`; stop's release step runs whatever the drain did) and pinned by the e2e "a lost video chunk fails the recording at once".
+
+### 2026-09-24 · #18 · a worker whose failure settles nothing `[learned]`
+
+`StorageWriter` reported `worker.onerror` only through a callback that, during start, pointed at a recorder that did not exist yet, so `await writer.open()` hung with the share live; a crash mid-recording hung `close()` at "Finishing…" behind a `beforeunload` prompt. Found by the adversarial review. Codified in `writer.ts` (`fail` rejects any pending open/close) and `recorder.ts` (deadlines on open, close, flush and MediaRecorder stop), pinned by the e2e "storage worker fails to load".
+
+### 2026-09-24 · #18 · writing the record after arming the stop paths `[learned]`
+
+`wire()` attached the `ended` and `stop` listeners and `rec.start()` ran before `putRecording` resolved, so a stop in that window updated a record that did not exist yet, then the insert re-wrote `status: 'recording'` over the outcome. Found by the adversarial review. Codified by ordering in `Recorder.start` (the record is persisted before any listener can fire) with the comment that says why.
 
 ### 2026-09-24 · #2 part 1 · float seconds where the unit was frames `[learned]`
 

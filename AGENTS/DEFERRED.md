@@ -6,17 +6,17 @@ Remove an entry in the PR that resolves it.
 
 ---
 
-### Delete `spikes/capture` once the recorder exists
+### WebM exports carry no duration header
 
-**What**: `spikes/capture` is a throwaway page built into `dist/spikes/` and driven by `e2e/spikes/capture.spec.ts`. Not product code.
-**Why deferred**: its answer (recorded in `spikes/README.md` and the DNA) is the only executable proof of the capture assumptions until the real recorder and storage worker exist.
-**Trigger**: the vertical slice PR (recorder + OPFS + export). Delete the spike directory and its e2e spec in that PR. Whichever spike PR merges last also removes `spikes/README.md`, the spike glue in `scripts/build.mjs` (it throws on a missing `spikes/`) and the `spikes/**` globs in `package.json`.
+**What**: a MediaRecorder WebM is a live stream: the header has no `Duration` element, so `ffprobe` reports none and players show an unknown length until they parse the whole file. The MP4 path is unaffected (fragmented MP4 with `mfra`; see the QuickTime live check).
+**Why deferred**: WebM is the non-default container; remuxing on export means shipping a muxer.
+**Trigger**: the human uses WebM and a player refuses to seek, or a downstream tool needs the duration.
 
-### Extension icons
+### `meta.json` is not written on stop
 
-**What**: `src/manifest.json` declares no icons, so the toolbar shows Chrome's default puzzle piece. The badge (recording state) works regardless.
-**Why deferred**: cosmetic.
-**Trigger**: the vertical slice PR, when the badge design is decided anyway.
+**What**: PRODUCT lists `meta.json` (when, what was captured, roster, model) among the assets; the vertical slice writes only the video on stop.
+**Why deferred**: half of its content (roster, model and version) exists only once #2 and #3 land; one write at transcription completion beats two.
+**Trigger**: the transcription PR (#2) writes it alongside `transcript.md`.
 
 ### Self tile identified structurally by the adapter
 
