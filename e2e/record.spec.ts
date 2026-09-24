@@ -23,6 +23,17 @@ async function openTarget(context: BrowserContext): Promise<Page> {
 
 async function openApp(context: BrowserContext, extensionId: string): Promise<Page> {
   const page = await context.newPage();
+  // Keep every display stream reachable from the test, to end its track mid-recording.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __displayStreams: MediaStream[] };
+    w.__displayStreams = [];
+    const orig = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getDisplayMedia = async (c?: DisplayMediaStreamOptions) => {
+      const s = await orig(c);
+      w.__displayStreams.push(s);
+      return s;
+    };
+  });
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') console.log(`[page ${m.type()}]`, m.text());
   });
@@ -292,4 +303,72 @@ test('app tab closed mid-recording: data is on disk, recovered and exported on n
   console.log('ffprobe', JSON.stringify(probe));
   expect(probe.codecs).toEqual(expect.arrayContaining(['h264']));
   expect(probe.duration).toBeGreaterThan(1);
+});
+
+test('display track ends mid-recording (Stop sharing, tab closed): same as Stop', async ({
+  context,
+  extensionId,
+}) => {
+  await openTarget(context);
+  const page = await openApp(context, extensionId);
+  await clearRecordings(page);
+  await seedExportFolder(page);
+  await setSettings(page, { container: 'mp4', pathTemplate: '{date} {time} {title}' });
+  await page.reload();
+  await expect(page.locator('#status')).toHaveText('idle');
+
+  await page.click('#record-screen');
+  await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+  await page.waitForTimeout(2500);
+  // Chrome fires `ended` on the track when the source goes away; stop() alone does not.
+  await page.evaluate(() => {
+    const w = window as unknown as { __displayStreams: MediaStream[] };
+    for (const t of w.__displayStreams[0]!.getVideoTracks()) {
+      t.stop();
+      t.dispatchEvent(new Event('ended'));
+    }
+  });
+  await expect(page.locator('#status')).toHaveText('idle', { timeout: 30_000 });
+  const [rec] = await recordings(page);
+  console.log(JSON.stringify(rec));
+  expect(rec!.status).toBe('recorded');
+  expect(rec!.exportPath).toBeDefined();
+  expect(rec!.error).toBeUndefined();
+  const probe = ffprobe(await saveExport(page, rec!, 'ended.mp4'));
+  expect(probe.codecs).toEqual(expect.arrayContaining(['h264', 'aac']));
+  expect(probe.duration).toBeGreaterThan(1);
+});
+
+test('no export folder chosen: recorded, not exported, media kept for a later re-export', async ({
+  context,
+  extensionId,
+}) => {
+  await openTarget(context);
+  const page = await openApp(context, extensionId);
+  await clearRecordings(page);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open('rescribe');
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const tx = req.result.transaction('handles', 'readwrite');
+          tx.objectStore('handles').delete('export');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        };
+      }),
+  );
+  await setSettings(page, { container: 'mp4' });
+  await page.reload();
+  await expect(page.locator('#folder-name')).toHaveText('No folder chosen');
+
+  await record(page, 2);
+  const [rec] = await recordings(page);
+  console.log(JSON.stringify(rec));
+  expect(rec!.status).toBe('recorded');
+  expect(rec!.exportPath).toBeUndefined();
+  expect(rec!.error).toMatch(/No export folder/);
+  expect(await opfsSize(page, ['recordings', rec!.id, 'video.mp4'])).toBeGreaterThan(10_000);
+  await expect(page.locator('#record-status')).toContainText('No export folder');
 });

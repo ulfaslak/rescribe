@@ -8,7 +8,7 @@
 import { pcmSeconds } from '../lib/pcm.ts';
 import type { ChannelId, Container, Recording, Source } from '../lib/types.ts';
 import { ExportError, getExportDirectory, writeExportFile } from '../storage/export.ts';
-import { EVENTS_FILE, pcmFileName, videoFileName } from '../storage/opfs.ts';
+import { EVENTS_FILE, pcmFileName, removeRecordingDir, videoFileName } from '../storage/opfs.ts';
 import {
   getChannelFile,
   getVideoFile,
@@ -176,7 +176,10 @@ export class Recorder {
     } catch (err) {
       for (const s of streams) stopAll(s);
       await Promise.allSettled([mixCtx?.close(), tapCtx?.close()]);
-      if (writer) await writer.close().catch(() => undefined);
+      if (writer) {
+        await writer.close().catch(() => undefined);
+        await removeRecordingDir(id).catch(() => undefined);
+      }
       throw err;
     }
   }
@@ -197,8 +200,11 @@ export class Recorder {
     };
     this.rec.onerror = (e) =>
       this.fail(new Error(`MediaRecorder: ${String((e as ErrorEvent).error ?? e)}`));
-    // Chrome's "Stop sharing" bar, the shared tab or window closed: same as Stop.
+    // Chrome's "Stop sharing" bar, the shared tab or window closed: same as Stop. The track's
+    // `ended` is the normal signal; the MediaRecorder stopping on its own (a track stopped without
+    // `ended`, an internal error) is the belt and braces. Both are idempotent through stop().
     videoTrack.addEventListener('ended', () => void this.stop());
+    this.rec.addEventListener('stop', () => void this.stop());
   }
 
   /** A write failed or the recorder errored: stop, and finish as `failed`. */

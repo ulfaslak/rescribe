@@ -312,7 +312,10 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>('#stop').addEventListener('click', () => void onStop());
   await describeFolder();
   await renderList();
-  const recovered = await recoverInterrupted(settings.pathTemplate);
+  // A second app tab must not "recover" a recording the first one is still making.
+  const elsewhere = await send({ type: 'query-status' });
+  const recovered =
+    elsewhere === 'recording' ? [] : await recoverInterrupted(settings.pathTemplate);
   if (recovered.length > 0) {
     note(`Recovered ${recovered.length} interrupted recording${recovered.length > 1 ? 's' : ''}.`);
     await renderList();
