@@ -1,0 +1,1 @@
+This is a Rescribe test recording. The quick brown fox jumps over the lazy dog. Speaker attribution should work across two channels.

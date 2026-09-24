@@ -1,0 +1,5 @@
+[gtr]
+  ai = claude
+
+[gtr.hook]
+  postCreate = npm install

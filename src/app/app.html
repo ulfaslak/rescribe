@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rescribe</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Rescribe</h1>
+      <span id="status" class="pill">idle</span>
+    </header>
+
+    <main>
+      <section id="record">
+        <h2>Record</h2>
+        <p class="hint">
+          To record a call, click the Rescribe toolbar button on the call's tab. To record a window
+          or your whole screen, use the button below.
+        </p>
+        <button id="record-screen" disabled title="Arrives with the vertical slice">
+          Record screen…
+        </button>
+        <button id="stop" disabled>Stop</button>
+      </section>
+
+      <section id="recordings">
+        <h2>Recordings</h2>
+        <p class="hint" id="recordings-empty">No recordings yet.</p>
+        <ul id="recordings-list"></ul>
+      </section>
+
+      <section id="settings">
+        <h2>Settings</h2>
+        <form id="settings-form">
+          <label>
+            <span>Save recordings to</span>
+            <span class="row">
+              <output id="folder-name">No folder chosen</output>
+              <button type="button" id="choose-folder">Choose folder…</button>
+            </span>
+            <small id="folder-hint" class="hint"></small>
+          </label>
+          <label>
+            <span>Folder name template</span>
+            <input name="pathTemplate" placeholder="{date} {time} {title}" />
+            <small class="hint">Tokens: {date} {time} {title}. One folder per recording.</small>
+          </label>
+          <label>
+            <span>My name in transcripts</span>
+            <input name="myName" placeholder="Me" />
+          </label>
+          <label>
+            <span>Video container</span>
+            <select name="container">
+              <option value="mp4">MP4 (H.264 + AAC)</option>
+              <option value="webm">WebM (VP9 + Opus)</option>
+            </select>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="micByDefault" />
+            <span>Record my microphone by default</span>
+          </label>
+          <label>
+            <span>Speech model</span>
+            <select name="model">
+              <option value="parakeet-tdt-0.6b-v3">Parakeet TDT 0.6B v3 (multilingual)</option>
+            </select>
+          </label>
+          <p class="hint" id="settings-saved"></p>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

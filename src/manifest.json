@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Rescribe",
+  "version": "0.1.0",
+  "description": "Record calls and screens locally. Video plus speaker-attributed transcript. No API calls.",
+  "action": {
+    "default_title": "Rescribe: record this tab"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["storage", "tabs", "tabCapture", "unlimitedStorage"],
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content/meet.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": { "default": "Alt+Shift+R" },
+      "description": "Start or stop recording"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "cross_origin_embedder_policy": { "value": "require-corp" },
+  "cross_origin_opener_policy": { "value": "same-origin" }
+}

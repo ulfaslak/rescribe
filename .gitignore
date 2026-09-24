@@ -1,0 +1,9 @@
+node_modules
+dist
+.playwright
+.DS_Store
+*.log
+screenshots/*
+!screenshots/.gitkeep
+test-results
+playwright-report

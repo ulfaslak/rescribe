@@ -1,0 +1,36 @@
+# Invariants
+
+What must stay true at runtime, and the failure that taught it.
+
+**Admission test: could you write a test that fails when this stops being true?** If yes, it belongs here. A choice among alternatives goes in [[DECISIONS]]. Where code lives goes in [[ARCHITECTURE]]. Anything a user can observe goes in [[PRODUCT]].
+
+**One entry per invariant.** The `###` heading states the rule, phrased so it can be violated. Under it: the mechanism that enforces it, and the incident that made it necessary. Entries seeded at kickoff have no incident yet and say so; add the incident when one happens. Past ~600 characters, re-read: an entry that long is usually several invariants fused.
+
+An entry that no longer matches the code is a bug in one of them. Find out which before you trust it.
+
+---
+
+### No audio, video or transcript ever leaves the machine
+
+**Mechanism:** the only permitted network traffic is the model download from `huggingface.co` (parakeet.js hub loader, cached in IndexedDB). The e2e harness records every network request during a recording and transcription run and fails on any host other than `huggingface.co` and its CDN redirect targets (planned: `e2e/privacy.spec.ts`). The manifest declares no `host_permissions`.
+**Incident:** none. Seeded 2026-09-24 as the product's core promise.
+
+### The mic channel and the display channel are never mixed before transcription
+
+**Mechanism:** each channel has its own AudioWorklet tap writing its own PCM file in OPFS; the mixer node's only consumer is the MediaRecorder's audio track. (Planned: a unit test on the audio graph builder asserting the tap nodes have exactly one input each.)
+**Incident:** none. Seeded 2026-09-24. Mixing would destroy the free, exact me-versus-them attribution the whole speaker design rests on.
+
+### Every timestamp in the pipeline is recording-relative seconds, t=0 at the first captured sample
+
+**Mechanism:** `Segment`, `Word` and `SpeakerInterval` carry `start`/`end` in seconds from recording start. Content scripts stamp events with `Date.now()` and the app tab converts using the recording's `startedAt` epoch; the conversion lives in one place (`src/lib/clock.ts`, planned). Attribution tests use fixtures spanning multiple hours.
+**Incident:** none. Seeded 2026-09-24.
+
+### Captured data is on disk within seconds of capture; a crash loses at most the last chunk
+
+**Mechanism:** MediaRecorder emits chunks on a timeslice and the AudioWorklet taps emit PCM blocks; both are appended to OPFS by the storage worker with a sync access handle and flushed per write. Nothing is accumulated in memory across the recording. (Planned e2e: kill the app tab mid-recording, reopen, assert the OPFS file length.)
+**Incident:** none. Seeded 2026-09-24. Calls are long and unrepeatable.
+
+### A platform adapter that stops matching the page must say so, not go quiet
+
+**Mechanism:** an adapter emits a `roster` event when it finds participant tiles and a `no-signal` diagnostic when it finds tiles but no speaking signal for N seconds while the display channel has speech. The app tab surfaces this on the recording. (Planned.)
+**Incident:** none. Seeded 2026-09-24 because Meet's markup is obfuscated and will change.

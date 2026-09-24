@@ -1,0 +1,27 @@
+{
+  "name": "rescribe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-only call and screen recorder for Chrome: video plus speaker-attributed transcript, no API calls.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "e2e": "npm run build && playwright test",
+    "format": "prettier --write \"src/**/*.{ts,html,css,json}\" \"e2e/**/*.ts\" \"spikes/**/*.{ts,html}\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,html,css,json}\" \"e2e/**/*.ts\" \"spikes/**/*.{ts,html}\" \"scripts/**/*.mjs\""
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/chrome": "^0.3.0",
+    "esbuild": "^0.28.2",
+    "prettier": "^3.6.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.24.1",
+    "parakeet.js": "^1.4.4"
+  }
+}

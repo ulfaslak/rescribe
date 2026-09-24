@@ -1,0 +1,135 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1b1b1b;
+  --muted: #6b6b6b;
+  --bg: #fafafa;
+  --card: #ffffff;
+  --line: #e2e2e2;
+  --accent: #1a73e8;
+  --rec: #d93025;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 15px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececec;
+    --muted: #a0a0a0;
+    --bg: #161616;
+    --card: #1f1f1f;
+    --line: #333;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--line);
+}
+h1 {
+  font-size: 18px;
+  margin: 0;
+}
+h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 24px;
+}
+section {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0;
+}
+.pill {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.pill.recording {
+  color: #fff;
+  background: var(--rec);
+  border-color: var(--rec);
+}
+.pill.processing {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+form {
+  display: grid;
+  gap: 14px;
+}
+label {
+  display: grid;
+  gap: 4px;
+}
+label > span:first-child {
+  font-size: 13px;
+  color: var(--muted);
+}
+label.check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+label.check > span {
+  color: var(--fg);
+  font-size: 15px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+input,
+select {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+}
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}

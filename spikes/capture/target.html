@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Rescribe Spike Target</title>
+  </head>
+  <body style="margin: 0; background: #123">
+    <canvas id="c" width="640" height="360"></canvas>
+    <script>
+      // Something moving for the video track, and a tone for the tab-audio track.
+      const ctx = document.getElementById('c').getContext('2d');
+      let t = 0;
+      setInterval(() => {
+        t += 1;
+        ctx.fillStyle = `hsl(${(t * 7) % 360} 70% 50%)`;
+        ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = '#fff';
+        ctx.font = '48px sans-serif';
+        ctx.fillText(`frame ${t}`, 40, 200);
+      }, 50);
+      const ac = new AudioContext();
+      const osc = ac.createOscillator();
+      osc.frequency.value = 440;
+      const gain = ac.createGain();
+      gain.gain.value = 0.2;
+      osc.connect(gain).connect(ac.destination);
+      osc.start();
+      document.body.addEventListener('click', () => ac.resume());
+      ac.resume();
+    </script>
+  </body>
+</html>
