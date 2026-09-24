@@ -12,9 +12,9 @@ import {
   stopAll,
 } from '../recorder/capture.ts';
 import type { Captured } from '../recorder/capture.ts';
-import { exportVideoName, finalize, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
+import { exportVideoName, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
-import { listRecordings } from '../storage/store.ts';
+import { describeSources, formatDuration, renderList } from './library.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -75,21 +75,6 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // --- Recording ----------------------------------------------------------------------------
-function describeSources(rec: Recording): string {
-  const display = rec.sources.find((s) => s.channel === 'display');
-  const mic = rec.sources.some((s) => s.channel === 'mic');
-  return `${display?.kind ?? 'display'}${mic ? ' + mic' : ', no mic'}`;
-}
-
-function formatDuration(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  const mm = String(m % 60).padStart(h ? 2 : 1, '0');
-  const ss = String(s % 60).padStart(2, '0');
-  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
-}
-
 function tick(): void {
   const rec = recorder?.recording;
   if (!rec || rec.status !== 'recording') return;
@@ -198,94 +183,6 @@ async function onStop(): Promise<void> {
   // Inside the click: the folder permission prompt needs a user gesture.
   await ensureExportPermission().catch(() => undefined);
   await r.stop();
-}
-
-// --- Library (plain list; #4 grows it) ---------------------------------------------------------
-/** "Save now": export a `recorded` recording that has no export path yet, from a click, so the
- * folder permission can be re-requested (after a browser restart, or when the share ended from
- * Chrome's bar and finalize ran outside a gesture). */
-async function saveNow(rec: Recording, button: HTMLButtonElement): Promise<void> {
-  button.disabled = true;
-  button.textContent = 'Saving…';
-  try {
-    await ensureExportPermission().catch(() => undefined);
-    const settings = await loadSettings();
-    const done = await finalize(rec, settings.pathTemplate);
-    note(
-      done.exportPath ? `Saved to ${done.exportPath}/` : `Still not saved: ${done.error ?? '?'}`,
-      !done.exportPath,
-    );
-  } finally {
-    await renderList();
-  }
-}
-
-function formatLevels(levels: Recording['levels']): string | undefined {
-  if (!levels) return undefined;
-  const parts = (['mic', 'display'] as const)
-    .filter((ch) => levels[ch] !== undefined)
-    .map((ch) => `${ch} ${levels[ch]} dBFS`);
-  return parts.length ? parts.join(' · ') : undefined;
-}
-
-function item(rec: Recording): HTMLLIElement {
-  const li = document.createElement('li');
-  li.className = 'recording-item';
-  li.dataset['id'] = rec.id;
-  li.dataset['status'] = rec.status;
-  const title = document.createElement('div');
-  title.className = 'title';
-  title.textContent = rec.title;
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  const when = document.createElement('span');
-  when.textContent = new Date(rec.startedAt).toLocaleString();
-  const dur = document.createElement('span');
-  dur.textContent = formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt);
-  const src = document.createElement('span');
-  src.textContent = describeSources(rec);
-  const pill = document.createElement('span');
-  pill.className = `pill ${rec.status}`;
-  pill.textContent = rec.status;
-  meta.append(when, dur, src, pill);
-  const levels = formatLevels(rec.levels);
-  if (levels) {
-    const lv = document.createElement('span');
-    lv.className = 'levels';
-    lv.textContent = levels;
-    meta.append(lv);
-  }
-  li.append(title, meta);
-  if (rec.exportPath) {
-    const path = document.createElement('div');
-    path.className = 'path';
-    path.textContent = `${rec.exportPath}/`;
-    li.append(path);
-  }
-  for (const [text, cls] of [
-    [rec.error, 'hint error'],
-    [rec.note, 'hint'],
-  ] as const) {
-    if (!text) continue;
-    const p = document.createElement('div');
-    p.className = cls;
-    p.textContent = text;
-    li.append(p);
-  }
-  if (rec.status === 'recorded' && !rec.exportPath) {
-    const save = document.createElement('button');
-    save.className = 'save-now';
-    save.textContent = 'Save now';
-    save.addEventListener('click', () => void saveNow(rec, save));
-    li.append(save);
-  }
-  return li;
-}
-
-async function renderList(): Promise<void> {
-  const recs = await listRecordings();
-  $<HTMLUListElement>('#recordings-list').replaceChildren(...recs.map(item));
-  $<HTMLElement>('#recordings-empty').hidden = recs.length > 0;
 }
 
 // --- Settings -----------------------------------------------------------------------------

@@ -33,6 +33,9 @@ export interface Recording {
   note?: string;
   /** RMS level of each channel over the whole recording, dBFS. A silent mic sits far below the display. */
   levels?: Partial<Record<ChannelId, number>>;
+  /** The raw media (video, PCM) was deleted from OPFS by the human; the record, the events log,
+   * any artifacts and the exported files remain. Set by `deleteMedia` in storage/store.ts. */
+  mediaDeleted?: boolean;
 }
 
 export interface Word {

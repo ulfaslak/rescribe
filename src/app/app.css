@@ -7,6 +7,7 @@
   --line: #e2e2e2;
   --accent: #1a73e8;
   --rec: #d93025;
+  --ok: #188038;
   font-family:
     system-ui,
     -apple-system,
@@ -21,6 +22,7 @@
     --bg: #161616;
     --card: #1f1f1f;
     --line: #333;
+    --ok: #5bb974;
   }
 }
 * {
@@ -153,8 +155,30 @@ ul {
 .recording-item:first-child {
   border-top: 0;
 }
+.recording-item .title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .recording-item .title {
   font-weight: 600;
+}
+.recording-item button.rename {
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.recording-item button.rename:hover {
+  color: var(--fg);
+}
+.recording-item .title-edit {
+  display: grid;
+  gap: 4px;
+}
+.recording-item .title-input {
+  font-weight: 600;
+  width: 100%;
 }
 .recording-item .meta {
   display: flex;
@@ -168,9 +192,47 @@ ul {
   color: var(--accent);
   border-color: var(--accent);
 }
+.recording-item .pill.transcribing {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.recording-item .pill.done {
+  color: var(--ok);
+  border-color: var(--ok);
+}
 .recording-item .pill.failed,
 .error {
   color: var(--rec);
+}
+.recording-item .progress {
+  font-size: 13px;
+  color: var(--accent);
+}
+.recording-item .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+button.armed {
+  color: #fff;
+  background: var(--rec);
+  border-color: var(--rec);
+}
+.storage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.storage button {
+  font-size: 13px;
+  padding: 4px 10px;
 }
 .recording-item .path {
   font-size: 13px;
