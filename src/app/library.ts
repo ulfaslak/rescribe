@@ -181,16 +181,22 @@ async function runAction(
   for (const b of scope.querySelectorAll('button')) b.disabled = true;
   for (const id of ids) inflight.set(id, label);
   void renderList();
+  let out: Outcome;
+  let failure: unknown;
   try {
-    const out = await fn();
-    if (typeof out === 'string') libraryNote(out);
-    else if (out) libraryNote(out.text, out.isError);
+    out = await fn();
   } catch (err) {
-    libraryNote(err instanceof Error ? err.message : String(err), true);
-  } finally {
-    for (const id of ids) inflight.delete(id);
-    await renderList();
+    failure = err;
   }
+  for (const id of ids) inflight.delete(id);
+  // The list is settled before the outcome is reported: a note that appears while a render is
+  // still pending invites the next click onto a row about to be replaced (an armed button that a
+  // re-render swaps for a fresh one leaves the confirming click arming again).
+  await renderList();
+  if (failure !== undefined)
+    libraryNote(failure instanceof Error ? failure.message : String(failure), true);
+  else if (typeof out === 'string') libraryNote(out);
+  else if (out) libraryNote(out.text, out.isError);
 }
 
 /**
@@ -624,10 +630,19 @@ export function renderList(): Promise<void> {
     return rendering;
   }
   rendering = (async () => {
-    do {
-      dirty = false;
-      await render();
-    } while (dirty);
+    try {
+      do {
+        dirty = false;
+        await render();
+      } while (dirty);
+    } catch (err) {
+      // Never reject: every caller fires and forgets, and a list that stopped refreshing with
+      // no word is worse than a stale row with one.
+      libraryNote(
+        `The list could not be refreshed: ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      );
+    }
   })().finally(() => {
     rendering = undefined;
   });

@@ -92,16 +92,26 @@ type IterableDirectory = FileSystemDirectoryHandle & {
   entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
 };
 
-/** name → byte size of the files directly in `dir`. A file that vanishes mid-walk is skipped. */
+const isNotFound = (err: unknown): boolean => (err as DOMException).name === 'NotFoundError';
+
+/**
+ * name → byte size of the files directly in `dir`. The walk runs while other code deletes
+ * (the library's own delete, the pipeline replacing an artifact): a file that vanishes mid-walk
+ * is skipped, and a directory removed under the iterator ends the walk with what it has.
+ */
 async function fileSizes(dir: FileSystemDirectoryHandle): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
-  for await (const [name, handle] of (dir as IterableDirectory).entries()) {
-    if (handle.kind !== 'file') continue;
-    try {
-      out[name] = (await (handle as FileSystemFileHandle).getFile()).size;
-    } catch (err) {
-      if ((err as DOMException).name !== 'NotFoundError') throw err;
+  try {
+    for await (const [name, handle] of (dir as IterableDirectory).entries()) {
+      if (handle.kind !== 'file') continue;
+      try {
+        out[name] = (await (handle as FileSystemFileHandle).getFile()).size;
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
     }
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
   }
   return out;
 }
@@ -112,14 +122,26 @@ export async function listRecordingFiles(id: string): Promise<Record<string, num
   return dir ? fileSizes(dir) : {};
 }
 
-/** Every directory under `recordings/`: id → (name → byte size). One walk; the storage figure. */
+/**
+ * Every directory under `recordings/`: id → (name → byte size). One walk; the storage figure. A
+ * recording directory removed while the walk is on it is left out (its handle throws
+ * NotFoundError), not reported as an error: the walk is a snapshot, deletion is the truth.
+ */
 export async function walkRecordings(): Promise<Record<string, Record<string, number>>> {
   const out: Record<string, Record<string, number>> = {};
   const root = await recordingsRoot(false);
   if (!root) return out;
-  for await (const [id, handle] of (root as IterableDirectory).entries()) {
-    if (handle.kind !== 'directory') continue;
-    out[id] = await fileSizes(handle as FileSystemDirectoryHandle);
+  try {
+    for await (const [id, handle] of (root as IterableDirectory).entries()) {
+      if (handle.kind !== 'directory') continue;
+      try {
+        out[id] = await fileSizes(handle as FileSystemDirectoryHandle);
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
+    }
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
   }
   return out;
 }

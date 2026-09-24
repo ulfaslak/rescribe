@@ -709,3 +709,36 @@ test('a row with an action in progress shows it and offers nothing, whatever re-
   await expect(ra.locator('button.re-export')).toBeVisible();
   await expect(ra.locator('button.delete')).toBeVisible();
 });
+
+test('a deletion that lands while the storage walk is on that directory still removes the row', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a, b] = await seed(page, 2);
+  // Every directory listing yields slowly, so the render an action starts is still walking
+  // `recordings/` when the action removes B's directory from under it.
+  await page.addInitScript(() => {
+    const orig = FileSystemDirectoryHandle.prototype.entries as (
+      this: FileSystemDirectoryHandle,
+    ) => AsyncIterableIterator<[string, FileSystemHandle]>;
+    (FileSystemDirectoryHandle.prototype as unknown as { entries: unknown }).entries =
+      async function* (this: FileSystemDirectoryHandle) {
+        for await (const entry of orig.call(this)) {
+          await new Promise((r) => setTimeout(r, 60));
+          yield entry;
+        }
+      };
+  });
+  await page.reload();
+  await ready(page);
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await clickTwice(row(page, b!.id).locator('button.delete'));
+  await expect(page.locator('#library-status')).toContainText('Deleted "', { timeout: 15_000 });
+  await expect(row(page, b!.id)).toHaveCount(0);
+  await expect(row(page, a!.id)).toHaveCount(1);
+  expect(await recording(page, b!.id)).toBeUndefined();
+  expect(errors).toEqual([]);
+  await expectStorageMatchesWalk(page);
+});
