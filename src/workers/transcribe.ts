@@ -1,14 +1,16 @@
 // Transcribe worker: one channel per job. VAD → per voiced region, the ASR engine → Segment[].
 // Spawned by src/app/transcriber.ts as `new Worker(chrome.runtime.getURL('workers/transcribe.js'),
 // { type: 'module' })`. Jobs are serialised; the model stays loaded across jobs and reloads only
-// when a job asks for another model or backend.
+// when a job asks for another model or backend, or after a transcribe failure (the engine may be
+// dead then, and so may this worker's WASM runtime: the client terminates it on that error).
 //
 // Memory: the request's PCM buffer is transferred, never copied, and may be Int16 (what the PCM
 // files in OPFS hold). Regions are converted to Float32 one at a time, each at most `maxRegionS`
 // (30 s = 1.9 MB), so the peak beyond the input itself is one region plus the engine's own working
 // set. A 3-hour channel costs 345 MB as Int16 or 690 MB as Float32; pass Int16.
-import type { ChannelId, Segment, Word } from '../lib/types.ts';
-import { detectVoice, int16ToFloat32, type Pcm, type Region } from '../lib/vad.ts';
+import type { ChannelId, Segment } from '../lib/types.ts';
+import { detectVoice } from '../lib/vad.ts';
+import { SAMPLE_RATE, sliceRegion, toSegment } from '../lib/asr/regions.ts';
 import {
   sameEngineOptions,
   type AsrEngine,
@@ -29,6 +31,8 @@ export interface TranscribeRequest {
   pcm: Float32Array | Int16Array;
   model: string;
   backend: Backend;
+  /** Recording-relative seconds of `pcm[0]`; every segment and word time adds it. Default 0. */
+  offsetS?: number;
 }
 
 export interface ProgressMessage {
@@ -48,11 +52,15 @@ export interface ResultMessage {
   jobId: string;
   /** Recording-relative seconds, one segment per voiced region that produced words. */
   segments: Segment[];
+  /** The backend the engine ran on. A load refuses to degrade, so it is the one requested. */
+  backend: Backend;
 }
 
 export interface ErrorMessage {
   type: 'error';
   jobId: string;
+  /** 'load': this job failed to get a model, the worker is fine. 'transcribe': assume it is not. */
+  stage: 'load' | 'transcribe';
   message: string;
 }
 
@@ -61,7 +69,6 @@ export type WorkerResponse = ProgressMessage | ResultMessage | ErrorMessage;
 
 // --- Worker body ----------------------------------------------------------------------------
 
-const SAMPLE_RATE = 16000;
 // chrome.runtime.getURL is not available in a worker; the bundle lives at
 // chrome-extension://<id>/workers/transcribe.js, so resolve from there.
 const WASM_PATHS = new URL('/vendor/ort/', self.location.href).href;
@@ -85,13 +92,17 @@ function createEngine(options: EngineOptions): AsrEngine {
   return new ParakeetEngine(options, { wasmPaths: WASM_PATHS });
 }
 
+function dropEngine(): void {
+  engine?.dispose();
+  engine = undefined;
+}
+
 async function ensureEngine(
   options: EngineOptions,
   onProgress: (p: Progress) => void,
 ): Promise<AsrEngine> {
   if (engine && sameEngineOptions(engine.options, options)) return engine;
-  engine?.dispose();
-  engine = undefined;
+  dropEngine();
   const next = createEngine(options);
   try {
     await next.load(onProgress);
@@ -105,12 +116,20 @@ async function ensureEngine(
 
 async function runJob(request: TranscribeRequest): Promise<void> {
   const { jobId, channel, pcm } = request;
+  const offsetS = request.offsetS ?? 0;
   const progress = (p: Omit<ProgressMessage, 'type' | 'jobId'>) =>
     post({ type: 'progress', jobId, ...p });
+
+  let asr: AsrEngine;
   try {
-    const asr = await ensureEngine({ model: request.model, backend: request.backend }, progress);
+    asr = await ensureEngine({ model: request.model, backend: request.backend }, progress);
+  } catch (err) {
+    post({ type: 'error', jobId, stage: 'load', message: describe(err) });
+    return;
+  }
+
+  try {
     const regions = detectVoice(pcm, SAMPLE_RATE);
-    const duration = pcm.length / SAMPLE_RATE;
     const segments: Segment[] = [];
     for (let i = 0; i < regions.length; i++) {
       const region = regions[i]!;
@@ -122,7 +141,7 @@ async function runJob(request: TranscribeRequest): Promise<void> {
         regionCount: regions.length,
       });
       const { words } = await asr.transcribe(sliceRegion(pcm, region), SAMPLE_RATE);
-      const segment = toSegment(channel, region, words, duration);
+      const segment = toSegment(channel, region, words, offsetS);
       if (segment) segments.push(segment);
     }
     progress({
@@ -131,53 +150,15 @@ async function runJob(request: TranscribeRequest): Promise<void> {
       total: regions.length,
       regionCount: regions.length,
     });
-    post({ type: 'result', jobId, segments });
+    post({ type: 'result', jobId, segments, backend: asr.options.backend });
   } catch (err) {
-    post({ type: 'error', jobId, message: err instanceof Error ? err.message : String(err) });
+    // A region that blew the WASM heap or lost the GPU device leaves the engine unusable, and
+    // an aborted Emscripten runtime throws on every later call. Never hand this engine out again.
+    dropEngine();
+    post({ type: 'error', jobId, stage: 'transcribe', message: describe(err) });
   }
 }
 
-/** The region's samples as Float32. A Float32 input is viewed, not copied; Int16 is converted. */
-function sliceRegion(pcm: Pcm, region: Region): Float32Array {
-  const a = Math.max(0, Math.floor(region.start * SAMPLE_RATE));
-  const b = Math.min(pcm.length, Math.ceil(region.end * SAMPLE_RATE));
-  return pcm instanceof Int16Array ? int16ToFloat32(pcm.subarray(a, b)) : pcm.subarray(a, b);
-}
-
-/**
- * One Segment per region: words offset by the region start and clamped to the audio, text = the
- * words joined with spaces. A region the engine heard nothing in yields no segment.
- */
-function toSegment(
-  channel: ChannelId,
-  region: Region,
-  words: Word[],
-  duration: number,
-): Segment | undefined {
-  const placed: Word[] = [];
-  for (const w of words) {
-    const text = w.text.trim();
-    if (!text) continue;
-    const start = clamp(roundMs(region.start + w.start), 0, duration);
-    const end = clamp(roundMs(region.start + w.end), start, duration);
-    placed.push({ text, start, end });
-  }
-  const first = placed[0];
-  const last = placed[placed.length - 1];
-  if (!first || !last) return undefined;
-  return {
-    channel,
-    start: first.start,
-    end: last.end,
-    text: placed.map((w) => w.text).join(' '),
-    words: placed,
-  };
-}
-
-function clamp(x: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, x));
-}
-
-function roundMs(seconds: number): number {
-  return Math.round(seconds * 1000) / 1000;
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

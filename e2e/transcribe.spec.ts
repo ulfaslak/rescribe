@@ -1,7 +1,7 @@
 // The transcribe worker inside the extension origin: real parakeet.js + ORT WASM, the fixture PCM
 // pushed through the worker protocol from the app page. Proves the WASM URL the worker derives
-// from self.location, VAD → regions → segments, model reuse across jobs, and the privacy
-// invariant (e2e/privacy.ts).
+// from self.location, VAD → regions → segments, model reuse across jobs, the failure paths, and
+// the privacy invariant (e2e/privacy.ts), including that a cached model loads with zero requests.
 //
 // The first run in a fresh profile downloads the int8 model (about 650 MB); later runs load it
 // from the profile's IndexedDB. The WebGPU variant needs the 2.4 GB fp32 encoder and is skipped
@@ -9,12 +9,13 @@
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures.ts';
-import { watchNetwork } from './privacy.ts';
+import { watchNetwork, type NetworkWatch } from './privacy.ts';
 import type { Segment } from '../src/lib/types.ts';
 import type { ProgressMessage, WorkerRequest, WorkerResponse } from '../src/workers/transcribe.ts';
 
 const MODEL = 'parakeet-tdt-0.6b-v3';
 const SAMPLE_RATE = 16000;
+const FIXTURE_TEXT = 'e2e/fixtures/speech.txt';
 
 /** Minimal RIFF reader for the 16 kHz 16-bit mono fixture. */
 function readWav16kMono(path: string): Int16Array {
@@ -45,7 +46,9 @@ interface JobReport {
   segments: Segment[];
   progress: Progress[];
   ms: number;
+  backend?: string;
   error?: string;
+  stage?: string;
 }
 
 interface JobSpec {
@@ -53,6 +56,9 @@ interface JobSpec {
   kind: 'int16' | 'float32';
   model: string;
   backend: 'wasm' | 'webgpu';
+  offsetS?: number;
+  /** Plant a non-finite sample inside the audio: parakeet.js rejects it at transcribe time. */
+  poison?: boolean;
 }
 
 /** Runs one job on the page's worker: spawned on first use, kept on `window` so jobs share it. */
@@ -69,6 +75,7 @@ function runJob(page: Page, job: JobSpec): Promise<JobReport> {
       job.kind === 'int16'
         ? Int16Array.from(job.samples)
         : Float32Array.from(job.samples, (s) => s / 32768);
+    if (job.poison && pcm instanceof Float32Array) pcm[Math.floor(pcm.length / 2)] = Infinity;
     const progress: Progress[] = [];
     const t0 = performance.now();
     return new Promise<JobReport>((resolve) => {
@@ -80,8 +87,8 @@ function runJob(page: Page, job: JobSpec): Promise<JobReport> {
         if (m.type === 'progress') {
           const { type: _t, jobId: _j, ...rest } = m;
           progress.push({ ...rest, at: Math.round(performance.now() - t0) });
-        } else if (m.type === 'result') done({ segments: m.segments });
-        else done({ segments: [], error: m.message });
+        } else if (m.type === 'result') done({ segments: m.segments, backend: m.backend });
+        else done({ segments: [], error: m.message, stage: m.stage });
       };
       worker.onerror = (e) => done({ segments: [], error: `worker error: ${e.message}` });
       const request: WorkerRequest = {
@@ -91,30 +98,41 @@ function runJob(page: Page, job: JobSpec): Promise<JobReport> {
         pcm,
         model: job.model,
         backend: job.backend,
+        offsetS: job.offsetS,
       };
       worker.postMessage(request, [pcm.buffer]);
     });
   }, job);
 }
 
-function wordHitRate(segments: Segment[], expectedPath: string): number {
+/** Kills the page's worker so the next job spawns a fresh one. */
+function terminateWorker(page: Page): Promise<void> {
+  return page.evaluate(() => {
+    const w = window as unknown as { __transcribeWorker?: Worker };
+    w.__transcribeWorker?.terminate();
+    delete w.__transcribeWorker;
+  });
+}
+
+function wordHitRate(segments: Segment[]): number {
   const got = segments
     .map((s) => s.text)
     .join(' ')
     .toLowerCase();
   const words =
-    readFileSync(expectedPath, 'utf8')
+    readFileSync(FIXTURE_TEXT, 'utf8')
       .toLowerCase()
       .match(/[a-z']+/g) ?? [];
   return words.filter((w) => got.includes(w)).length / words.length;
 }
 
-function assertWellFormed(segments: Segment[], seconds: number): void {
+function assertWellFormed(segments: Segment[], from: number, to: number): void {
+  let prevEnd = from;
   for (const s of segments) {
     expect(s.channel).toBe('mic');
-    expect(s.start).toBeGreaterThanOrEqual(0);
+    expect(s.start).toBeGreaterThanOrEqual(prevEnd);
     expect(s.end).toBeGreaterThan(s.start);
-    expect(s.end).toBeLessThanOrEqual(seconds);
+    expect(s.end).toBeLessThanOrEqual(to);
     expect(s.text.length).toBeGreaterThan(0);
     expect(s.words?.length ?? 0).toBeGreaterThan(0);
     let prev = s.start;
@@ -124,54 +142,57 @@ function assertWellFormed(segments: Segment[], seconds: number): void {
       expect(w.end).toBeLessThanOrEqual(s.end);
       prev = w.start;
     }
+    prevEnd = s.end;
   }
 }
+
+const phases = (r: JobReport) => [...new Set(r.progress.map((p) => p.phase))].sort();
 
 async function transcribeFixtureThroughWorker(
   page: Page,
   backend: 'wasm' | 'webgpu',
-  net: ReturnType<typeof watchNetwork>,
+  net: NetworkWatch,
 ): Promise<void> {
   const fixture = readWav16kMono('e2e/fixtures/speech.wav');
   const seconds = fixture.length / SAMPLE_RATE;
   const samples = Array.from(fixture);
+  const log = (msg: string) => console.log(`[transcribe ${backend}] ${msg}`);
 
-  // Job 1: Int16 input, as the PCM files in OPFS hold it. Downloads and loads the model.
+  // Job 1: Int16 input, as the PCM files in OPFS hold it. Downloads (first run) and loads.
   const first = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
   const firstTranscribeMs =
     first.ms - (first.progress.find((p) => p.phase === 'transcribe')?.at ?? 0);
-  console.log(
-    `[transcribe ${backend}] job 1: ${first.ms} ms in total, ${firstTranscribeMs} ms transcribing ` +
-      `${seconds.toFixed(2)} s of audio (RTF ${(firstTranscribeMs / 1000 / seconds).toFixed(3)}), ` +
+  log(
+    `job 1: ${first.ms} ms in total, ${firstTranscribeMs} ms transcribing ${seconds.toFixed(2)} s ` +
+      `of audio (RTF ${(firstTranscribeMs / 1000 / seconds).toFixed(3)}), ` +
       `segments: ${JSON.stringify(first.segments)}`,
   );
   expect(first.error, first.error).toBeUndefined();
-  const hits = wordHitRate(first.segments, 'e2e/fixtures/speech.txt');
-  console.log(`[transcribe ${backend}] word hit rate ${hits.toFixed(2)}`);
+  expect(first.backend).toBe(backend);
+  const hits = wordHitRate(first.segments);
+  log(`word hit rate ${hits.toFixed(2)}`);
   expect(hits).toBeGreaterThan(0.8);
-  assertWellFormed(first.segments, seconds);
+  assertWellFormed(first.segments, 0, seconds);
 
   // Every phase reported at least once; bytes reported iff bytes were actually downloaded.
-  const phases = (r: JobReport) => new Set(r.progress.map((p) => p.phase));
-  expect([...phases(first)].sort()).toEqual(['download', 'load', 'transcribe']);
+  expect(phases(first)).toEqual(['download', 'load', 'transcribe']);
   const downloaded = net.requests.some(
     (r) => r.host === 'huggingface.co' && /\/resolve\//.test(r.url),
   );
   const bytes = first.progress.filter((p) => p.phase === 'download' && p.loaded > 0);
-  console.log(`[transcribe ${backend}] model ${downloaded ? 'downloaded' : 'cached'}`);
+  log(`model ${downloaded ? 'downloaded' : 'cached'}`);
   if (downloaded) expect(bytes.length).toBeGreaterThan(0);
+  else expect(bytes).toEqual([]);
   const transcribe = first.progress.filter((p) => p.phase === 'transcribe');
   expect(transcribe.at(-1)).toMatchObject({ loaded: transcribe.at(-1)!.total });
   expect(transcribe.at(-1)!.total).toBeGreaterThan(0);
 
   // Job 2: same worker, Float32 input. The model is reused: no download or load phase, faster.
   const second = await runJob(page, { samples, kind: 'float32', model: MODEL, backend });
-  console.log(
-    `[transcribe ${backend}] job 2: ${second.ms} ms (model reused, RTF ${(second.ms / 1000 / seconds).toFixed(3)})`,
-  );
+  log(`job 2: ${second.ms} ms (model reused, RTF ${(second.ms / 1000 / seconds).toFixed(3)})`);
   expect(second.error, second.error).toBeUndefined();
-  expect(wordHitRate(second.segments, 'e2e/fixtures/speech.txt')).toBeGreaterThan(0.8);
-  expect([...phases(second)]).toEqual(['transcribe']);
+  expect(wordHitRate(second.segments)).toBeGreaterThan(0.8);
+  expect(phases(second)).toEqual(['transcribe']);
   expect(second.ms).toBeLessThan(first.ms);
 
   // Job 3: silence only. VAD finds nothing, the engine is never asked, the result is empty.
@@ -193,16 +214,88 @@ async function transcribeFixtureThroughWorker(
   expect(empty.error, empty.error).toBeUndefined();
   expect(empty.segments).toEqual([]);
 
-  // Job 5: a model that does not exist. The job fails with a message, the worker survives, and
-  // because the engine was swapped out for the bad one, job 6 loads the real model again.
+  // Job 5: two regions. speech + 3 s silence + speech → two segments in order with a gap, region
+  // progress counting to 2, every word inside its segment.
+  const gap = 3;
+  const two = [...samples, ...new Array<number>(gap * SAMPLE_RATE).fill(0), ...samples];
+  const multi = await runJob(page, { samples: two, kind: 'int16', model: MODEL, backend });
+  log(`job 5 (two regions): ${JSON.stringify(multi.segments.map((s) => [s.start, s.end]))}`);
+  expect(multi.error, multi.error).toBeUndefined();
+  expect(multi.segments.length).toBe(2);
+  assertWellFormed(multi.segments, 0, 2 * seconds + gap);
+  expect(wordHitRate([multi.segments[0]!])).toBeGreaterThan(0.8);
+  expect(wordHitRate([multi.segments[1]!])).toBeGreaterThan(0.8);
+  expect(multi.segments[1]!.start - multi.segments[0]!.end).toBeGreaterThan(gap - 1);
+  expect(multi.segments[1]!.start).toBeGreaterThan(seconds + gap - 0.5);
+  expect(multi.progress.filter((p) => p.regionIndex === 1)).toHaveLength(1);
+  expect(multi.progress.at(-1)).toMatchObject({ phase: 'transcribe', loaded: 2, total: 2 });
+
+  // Job 6: a channel whose sample 0 sits 100 s into the recording.
+  const offset = await runJob(page, {
+    samples,
+    kind: 'int16',
+    model: MODEL,
+    backend,
+    offsetS: 100,
+  });
+  expect(offset.error, offset.error).toBeUndefined();
+  expect(offset.segments.length).toBe(1);
+  assertWellFormed(offset.segments, 100, 100 + seconds);
+  expect(offset.segments[0]!.start).toBeCloseTo(first.segments[0]!.start + 100, 3);
+  expect(offset.segments[0]!.words![0]!.start).toBeCloseTo(
+    first.segments[0]!.words![0]!.start + 100,
+    3,
+  );
+
+  // Job 7: a non-finite sample inside the speech. parakeet.js rejects it at transcribe time,
+  // the worker reports a transcribe-stage error and drops its engine, so job 8 loads the model
+  // again, from the cache, with no network request at all.
+  const poisoned = await runJob(page, {
+    samples,
+    kind: 'float32',
+    model: MODEL,
+    backend,
+    poison: true,
+  });
+  log(`job 7 (poisoned) → ${poisoned.stage}: ${poisoned.error}`);
+  expect(poisoned.stage).toBe('transcribe');
+  expect(poisoned.error).toMatch(/finite/);
+  const requestsBeforeReload = net.networkRequests().length;
+  const reloaded = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
+  expect(reloaded.error, reloaded.error).toBeUndefined();
+  expect(phases(reloaded)).toEqual(['download', 'load', 'transcribe']);
+  expect(wordHitRate(reloaded.segments)).toBeGreaterThan(0.8);
+  expect(net.networkRequests().slice(requestsBeforeReload)).toEqual([]);
+
+  // Job 9: a model that does not exist. huggingface.co answers 401 for an unknown repo. The job
+  // fails at the load stage with that message, the worker survives, and because the engine was
+  // swapped out for the bad one, job 10 loads the real model again.
   const bogus = await runJob(page, { samples, kind: 'int16', model: 'no-such-model', backend });
-  console.log(`[transcribe ${backend}] bogus model → ${bogus.error}`);
-  expect(bogus.error).toMatch(/no-such-model|Failed to download|404/);
+  log(`job 9 (bogus model) → ${bogus.stage}: ${bogus.error}`);
+  expect(bogus.stage).toBe('load');
+  expect(bogus.error).toMatch(/^Failed to download encoder-model\S* 401/);
   expect(bogus.segments).toEqual([]);
   const again = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
   expect(again.error, again.error).toBeUndefined();
-  expect(wordHitRate(again.segments, 'e2e/fixtures/speech.txt')).toBeGreaterThan(0.8);
-  expect([...phases(again)].sort()).toEqual(['download', 'load', 'transcribe']);
+  expect(wordHitRate(again.segments)).toBeGreaterThan(0.8);
+  expect(phases(again)).toEqual(['download', 'load', 'transcribe']);
+
+  // Job 11: a fresh worker with the model cached makes zero network requests. This is what
+  // DECISIONS means by a one-time download.
+  await terminateWorker(page);
+  const requestsBeforeSpawn = net.networkRequests().length;
+  const fresh = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
+  log(`job 11 (fresh worker, cached model): ${fresh.ms} ms`);
+  expect(fresh.error, fresh.error).toBeUndefined();
+  expect(wordHitRate(fresh.segments)).toBeGreaterThan(0.8);
+  expect(phases(fresh)).toEqual(['download', 'load', 'transcribe']);
+  expect(net.networkRequests().slice(requestsBeforeSpawn)).toEqual([]);
+}
+
+function logPageProblems(page: Page): void {
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') console.log(`[page ${m.type()}]`, m.text());
+  });
 }
 
 test.describe('transcribe worker', () => {
@@ -212,10 +305,7 @@ test.describe('transcribe worker', () => {
   }) => {
     const net = watchNetwork(context);
     const page = await context.newPage();
-    page.on('console', (m) => {
-      if (m.type() === 'error' || m.type() === 'warning')
-        console.log(`[page ${m.type()}]`, m.text());
-    });
+    logPageProblems(page);
     await page.goto(`chrome-extension://${extensionId}/app/app.html`);
     expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
 
@@ -233,10 +323,7 @@ test.describe('transcribe worker', () => {
     );
     const net = watchNetwork(context);
     const page = await context.newPage();
-    page.on('console', (m) => {
-      if (m.type() === 'error' || m.type() === 'warning')
-        console.log(`[page ${m.type()}]`, m.text());
-    });
+    logPageProblems(page);
     page.on('console', (m) => {
       if (/execution provider|Creating ONNX sessions|WebGPU/i.test(m.text()))
         console.log(`[page]`, m.text());

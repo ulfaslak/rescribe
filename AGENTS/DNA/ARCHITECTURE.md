@@ -14,7 +14,8 @@ rescribe/
     manifest.json         MV3 manifest
     background.ts         service worker: toolbar button, badge, keyboard command, tab capture ids
     app/                  the app tab: app.html, app.css, app.ts (+ panels as they grow)
-      transcriber.ts      client of the transcribe worker: spawns it on first use, one job at a time
+      transcriber.ts      client of the transcribe worker: spawns it on first use, posts jobs as they
+                          come (the worker serialises), restarts it after a transcribe failure
     content/meet.ts       Meet platform adapter (content script, IIFE bundle)
     lib/                  pure, context-free logic; unit-testable in Node, except asr/parakeet.ts,
                           which needs ORT's WASM and the model and is covered by e2e/transcribe.spec.ts
@@ -27,6 +28,7 @@ rescribe/
       vad.ts              energy-based silence gate over 16 kHz PCM (Float32 or Int16) → voiced regions
       asr/engine.ts       the ASR engine interface (load with progress, transcribe PCM, dispose)
       asr/parakeet.ts     the parakeet.js implementation of it; ORT on WASM or WebGPU
+      asr/regions.ts      region slicing and words → Segment (the worker's pure half)
     (planned) recorder/   capture graph, MediaRecorder, AudioWorklet taps (app-tab only);
                           `*.worklet.ts` files are AudioWorklet processors, each its own bundle
     (planned) storage/    OPFS store client, IndexedDB metadata, folder export (app-tab only)
@@ -52,7 +54,7 @@ Four execution contexts, each with a distinct job:
 | App tab | `app/app.ts` | while open; pinned; warns on close when busy | owns the recorder, the audio graph, OPFS writes, transcription workers, export, settings UI, library UI |
 | Content script | `content/meet.ts` | per Meet page | observes the DOM, emits speaker events and roster to the extension via `chrome.runtime.sendMessage`; mirrors every message as a `rescribe:event` CustomEvent on `window` for the e2e harness (Meet's scripts cannot read the detail across worlds) |
 | Storage worker **(planned)** | `workers/storage.ts` | per recording | appends video chunks and PCM blocks to OPFS through a sync access handle, flushing per write |
-| Transcribe worker | `workers/transcribe.ts` | spawned on the first job, lives as long as the app tab | VAD, then parakeet.js on WASM (default) or WebGPU; one channel per job, jobs serialised, the model kept loaded across jobs and reloaded only when a job names another model or backend |
+| Transcribe worker | `workers/transcribe.ts` | spawned on the first job, lives as long as the app tab or until a transcribe failure | VAD, then parakeet.js on WASM (default) or WebGPU; one channel per job, jobs serialised, the model kept loaded across jobs and reloaded when a job names another model or backend or after a failure |
 
 Messages that cross `chrome.runtime` (service worker, app tab, content scripts) are typed in `src/lib/messages.ts`; the union there is the single roster of those message types. A worker's `postMessage` protocol is typed in the worker's own file and imported by its one client, so adding a worker touches no shared file.
 

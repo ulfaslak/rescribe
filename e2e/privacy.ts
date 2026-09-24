@@ -1,15 +1,15 @@
 // The privacy assertion behind INVARIANTS § "No audio, video or transcript ever leaves the
-// machine": record every request a BrowserContext makes and fail on any network host outside the
-// pinned set. Local schemes (chrome-extension:, blob:, data:) never leave the machine and are not
-// counted. Use from any spec that records or transcribes.
-import type { BrowserContext, Request } from '@playwright/test';
+// machine": record every HTTP(S) request a BrowserContext makes (pages and their workers) and
+// every WebSocket a page opens, and fail on any network host outside the pinned set. Local schemes
+// (chrome-extension:, blob:, data:) never leave the machine and are not counted. Use from any spec
+// that records or transcribes.
+import type { BrowserContext, Page, Request } from '@playwright/test';
 
 /**
- * The only hosts the model download may touch: huggingface.co itself (the repo listing and the
- * `/resolve/` URLs, which redirect) and the CDN host it redirects to. Observed 2026-09-24 in the
- * transcribe e2e run: `huggingface.co`, then `us.aws.cdn.hf.co` (Hugging Face's Xet CDN,
- * `<region>.<cloud>.cdn.hf.co`). Extend the list only after observing a new host in a run and
- * checking it belongs to Hugging Face.
+ * The only hosts the model download may touch: huggingface.co itself (the `/resolve/` URLs, which
+ * redirect) and the CDN host they redirect to. Observed 2026-09-24 in the transcribe e2e run:
+ * `huggingface.co`, then `us.aws.cdn.hf.co` (Hugging Face's Xet CDN, `<region>.<cloud>.cdn.hf.co`).
+ * Extend the list only after observing a new host in a run and checking it belongs to Hugging Face.
  */
 export const ALLOWED_HOSTS: RegExp[] = [
   /^huggingface\.co$/,
@@ -25,8 +25,10 @@ export interface SeenRequest {
 }
 
 export interface NetworkWatch {
-  /** Every request seen so far, in order. */
+  /** Every request and WebSocket seen so far, in order, local schemes included. */
   requests: SeenRequest[];
+  /** The subset that actually goes over the network (http, https, ws, wss). */
+  networkRequests(): SeenRequest[];
   /** Distinct `scheme//host` pairs seen so far. */
   origins(): string[];
   /** Network requests whose host is not in ALLOWED_HOSTS. */
@@ -38,17 +40,23 @@ export interface NetworkWatch {
 
 export function watchNetwork(context: BrowserContext): NetworkWatch {
   const requests: SeenRequest[] = [];
-  const onRequest = (r: Request) => {
-    const u = new URL(r.url());
-    requests.push({ url: r.url(), scheme: u.protocol, host: u.host });
+  const record = (url: string) => {
+    const u = new URL(url);
+    requests.push({ url, scheme: u.protocol, host: u.host });
   };
+  const onRequest = (r: Request) => record(r.url());
+  // context.on('request') never fires for WebSockets; those come per page.
+  const onPage = (page: Page) => page.on('websocket', (ws) => record(ws.url()));
   context.on('request', onRequest);
+  context.on('page', onPage);
+  context.pages().forEach(onPage);
+
+  const networkRequests = () => requests.filter((r) => NETWORK_SCHEMES.has(r.scheme));
   const offending = () =>
-    requests.filter(
-      (r) => NETWORK_SCHEMES.has(r.scheme) && !ALLOWED_HOSTS.some((re) => re.test(r.host)),
-    );
+    networkRequests().filter((r) => !ALLOWED_HOSTS.some((re) => re.test(r.host)));
   return {
     requests,
+    networkRequests,
     origins: () => [...new Set(requests.map((r) => `${r.scheme}//${r.host}`))],
     offending,
     assertOnlyAllowed: () => {
@@ -59,6 +67,9 @@ export function watchNetwork(context: BrowserContext): NetworkWatch {
         );
       }
     },
-    stop: () => context.off('request', onRequest),
+    stop: () => {
+      context.off('request', onRequest);
+      context.off('page', onPage);
+    },
   };
 }
