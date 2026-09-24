@@ -17,7 +17,7 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 
 **Trigger**: the first recording made with the real extension in the human's Chrome (vertical slice merged).
 **Steps**: open `recording.mp4` from the export folder in QuickTime Player and in Finder's preview; scrub to the middle; check the duration shown.
-**Success criteria**: plays with audio, scrubbing works, duration matches the recording. MediaRecorder writes a *fragmented* MP4 (see `spikes/README.md`), which is what this check is about.
+**Success criteria**: plays with audio, scrubbing works, duration matches the recording. MediaRecorder writes a *fragmented* MP4 (`moof`+`mdat` per keyframe, `mfra` at the end; see [[ENVIRONMENT_NOTES]] § "MediaRecorder cadence"), which is what this check is about.
 **On failure**: remux on export (a `moov`-first, non-fragmented MP4) becomes a task; file it as a bug with the symptom.
 
 ### The toolbar path records a real Meet tab in Brave
