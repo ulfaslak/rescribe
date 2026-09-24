@@ -6,6 +6,8 @@ import { int16ToFloat32 } from '../lib/pcm.ts';
 import type { ChannelId, Container, Recording } from '../lib/types.ts';
 import {
   EVENTS_FILE,
+  isExportableArtifact,
+  isMediaFile,
   pcmFileName,
   recordingDir,
   recordingFile,
@@ -66,10 +68,6 @@ export const pcmToFloat32 = int16ToFloat32;
 
 // --- Transcript artifacts (pipeline steps 4–5; ARCHITECTURE § Storage) ----------------------
 
-/** The files the pipeline writes into `recordings/<id>/` and exports next to the video. */
-export const ARTIFACT_NAMES = ['transcript.md', 'transcript.json', 'meta.json'] as const;
-export type ArtifactName = (typeof ARTIFACT_NAMES)[number];
-
 /**
  * One channel's recogniser output, kept so a re-run skips a channel already transcribed with the
  * same model, backend and Rescribe version (a re-run after a failure on the other channel, or
@@ -100,11 +98,14 @@ export async function readArtifact(id: string, name: string): Promise<string | u
   return file ? file.text() : undefined;
 }
 
-/** The exportable artifacts present in OPFS, in ARTIFACT_NAMES order. */
-export async function listArtifacts(id: string): Promise<ArtifactName[]> {
-  const out: ArtifactName[] = [];
-  for (const name of ARTIFACT_NAMES) if (await recordingFile(id, name)) out.push(name);
-  return out;
+/** The exportable artifacts present in OPFS (`isExportableArtifact`), sorted by name. */
+export async function listArtifacts(id: string): Promise<string[]> {
+  const dir = await recordingDir(id, false);
+  if (!dir) return [];
+  const out: string[] = [];
+  for await (const [name, handle] of dir.entries())
+    if (handle.kind === 'file' && isExportableArtifact(name)) out.push(name);
+  return out.sort();
 }
 
 /** The recording's event log (events.jsonl) as text; empty when absent. */
@@ -112,9 +113,19 @@ export async function readEventLog(id: string): Promise<string> {
   return (await readArtifact(id, EVENTS_FILE)) ?? '';
 }
 
-/** Delete the recording's OPFS directory (video, PCM, events). The record stays. */
-export function deleteMedia(id: string): Promise<void> {
-  return removeRecordingDir(id);
+/**
+ * Delete the video and the PCM out of OPFS and mark the record `mediaDeleted`. The event log,
+ * the artifacts and the segments cache stay, so the transcript can still be exported and, from
+ * the cache, assembled again (a re-run with another "my name"); without the cache a re-run fails.
+ */
+export async function deleteMedia(id: string): Promise<void> {
+  const dir = await recordingDir(id, false);
+  if (dir) {
+    const names: string[] = [];
+    for await (const name of dir.keys()) if (isMediaFile(name)) names.push(name);
+    for (const name of names) await dir.removeEntry(name);
+  }
+  await updateRecording(id, { mediaDeleted: true }).catch(() => undefined);
 }
 
 /** Delete the media and the record. */

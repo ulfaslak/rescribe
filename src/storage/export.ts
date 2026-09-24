@@ -3,12 +3,17 @@
 // src/lib/pathtemplate.ts, with " (2)", " (3)"… on collision. App-tab only.
 import { idb } from '../lib/idb.ts';
 import { candidateName, renderPathTemplate } from '../lib/pathtemplate.ts';
-import type { Recording } from '../lib/types.ts';
+import type { Container, Recording } from '../lib/types.ts';
 import { listArtifacts, readArtifact } from './store.ts';
 
 export const EXPORT_HANDLE_KEY = 'export';
 
-export type ExportFailure = 'no-folder' | 'permission' | 'io';
+/** `missing`: the recording's directory or its video is not under the current export folder. */
+export type ExportFailure = 'no-folder' | 'permission' | 'io' | 'missing';
+
+export function exportVideoName(container: Container): string {
+  return container === 'mp4' ? 'recording.mp4' : 'recording.webm';
+}
 
 export class ExportError extends Error {
   readonly reason: ExportFailure;
@@ -130,20 +135,46 @@ export async function writeExportFile(
 }
 
 /**
- * Export the transcript artifacts present in OPFS (`listArtifacts`) into the recording's
- * directory: `rec.exportPath` when set, otherwise a fresh `<template>/`. Returns the path and the
- * names written. Throws ExportError like getExportDirectory and writeExportFile. The pipeline
- * calls it once the video is exported; "Save now" calls it after `finalize` for everything else.
+ * The recording's directory as it is: `exportPath` resolved under the current export folder,
+ * creating nothing, with the exported video in it. Throws ExportError `missing` when either is
+ * not there (the export folder was changed, the directory moved or deleted, the video never
+ * exported), so the caller redoes the video and the artifacts together with `finalize`.
  */
-export async function exportArtifacts(
-  rec: Recording,
-  pathTemplate: string,
-): Promise<{ path: string; names: string[] }> {
+export async function findExportDirectory(rec: Recording): Promise<FileSystemDirectoryHandle> {
+  if (!rec.exportPath)
+    throw new ExportError('missing', 'the video has not been saved to the export folder yet');
+  const root = await getExportRoot();
+  if (!root) throw new ExportError('no-folder', 'No export folder chosen in Settings.');
+  if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted')
+    throw new ExportError('permission', 'Rescribe needs permission to write to the export folder.');
+  try {
+    let dir = root;
+    for (const seg of rec.exportPath.split('/')) dir = await dir.getDirectoryHandle(seg);
+    await dir.getFileHandle(exportVideoName(rec.container));
+    return dir;
+  } catch (err) {
+    const name = (err as DOMException).name;
+    if (name === 'NotFoundError' || name === 'TypeMismatchError')
+      throw new ExportError(
+        'missing',
+        "the recording's folder was not found under the current export folder",
+      );
+    throw wrap(err);
+  }
+}
+
+/**
+ * Export the transcript artifacts present in OPFS (`listArtifacts`) into the recording's
+ * directory, next to the exported video (`findExportDirectory`: never a directory without it).
+ * Returns the names written. Throws ExportError. The pipeline calls it once the video is
+ * exported; "Save now" calls it after `finalize`.
+ */
+export async function exportArtifacts(rec: Recording): Promise<{ path: string; names: string[] }> {
+  const dir = await findExportDirectory(rec);
   const names = await listArtifacts(rec.id);
-  const { dir, path } = await getExportDirectory(rec, pathTemplate);
   for (const name of names) {
     const text = await readArtifact(rec.id, name);
     if (text !== undefined) await writeExportFile(dir, name, text);
   }
-  return { path, names };
+  return { path: rec.exportPath!, names };
 }

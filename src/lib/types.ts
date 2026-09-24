@@ -43,6 +43,8 @@ export interface Recording {
   model?: string;
   backend?: Backend;
   transcribedAt?: number;
+  /** The video and PCM were deleted from OPFS; artifacts and the segments cache stay. */
+  mediaDeleted?: boolean;
 }
 
 export interface Word {

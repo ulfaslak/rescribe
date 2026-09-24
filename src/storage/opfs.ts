@@ -14,6 +14,25 @@ export function pcmFileName(channel: ChannelId): string {
   return `${channel}.pcm`;
 }
 
+/** The video or a PCM channel: what "Delete media" removes. */
+export function isMediaFile(name: string): boolean {
+  return /^video\.(mp4|webm)$/.test(name) || name.endsWith('.pcm');
+}
+
+/**
+ * A file in `recordings/<id>/` that belongs next to the video in the export folder: not media,
+ * not the event log, not the per-channel segments cache (`segments.<channel>.json`), not a
+ * browser swap file (`*.crswap`, left by an interrupted `createWritable`).
+ */
+export function isExportableArtifact(name: string): boolean {
+  return (
+    !isMediaFile(name) &&
+    name !== EVENTS_FILE &&
+    !/^segments\.[a-z]+\.json$/.test(name) &&
+    !name.endsWith('.crswap')
+  );
+}
+
 export async function recordingsRoot(
   create: boolean,
 ): Promise<FileSystemDirectoryHandle | undefined> {

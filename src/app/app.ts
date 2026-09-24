@@ -13,13 +13,21 @@ import {
 } from '../recorder/capture.ts';
 import type { Captured } from '../recorder/capture.ts';
 import { exportVideoName, finalize, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
-import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
-import { listRecordings } from '../storage/store.ts';
+import {
+  ensureExportPermission,
+  exportArtifacts,
+  ExportError,
+  getExportRoot,
+  setExportRoot,
+} from '../storage/export.ts';
+import { getRecording, getVideoFile, listRecordings, updateRecording } from '../storage/store.ts';
 import {
   isPipelineBusy,
+  isTranscribing,
   onPipelineProgress,
   recoverInterruptedTranscriptions,
   transcribeRecording,
+  type PipelinePhase,
 } from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
@@ -32,6 +40,9 @@ let status: AppStatus = 'idle';
 let recorder: Recorder | undefined;
 /** The tab a toolbar recording captures; adapter events from other tabs are not its events. */
 let recordedTabId: number | undefined;
+/** Tabs whose speaker or roster events reached the current recording (the picker path). */
+const contributingTabs = new Set<number>();
+const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 let starting = false;
 let ticker: number | undefined;
 
@@ -80,23 +91,32 @@ function onMessage(
       return false;
     case 'speaker':
     case 'roster':
-    case 'adapter-diagnostic':
+    case 'adapter-diagnostic': {
       // Into events.jsonl, stamps as received, while a recording runs; the pipeline reads the
-      // file back (lib/assemble.ts). Outside a recording there is nothing to attach them to. A
-      // toolbar recording captures one tab, so a Meet call idling in another tab is not its
-      // evidence; a picker recording (a window, the screen) cannot tell and takes every tab's.
-      if (recorder && status === 'recording') {
-        const from = sender.tab?.id;
-        if (recordedTabId !== undefined && from !== undefined && from !== recordedTabId) {
-          console.info('[rescribe] adapter message from another tab', msg);
-          return false;
-        }
-        recorder.appendEvent(msg);
-        if (msg.type === 'adapter-diagnostic') recorder.addNote(`Meet adapter: ${msg.message}`);
-      } else {
-        console.info('[rescribe] adapter message outside a recording', msg);
+      // file back (lib/assemble.ts). Only content scripts send these, so a message without a
+      // sender tab is not an adapter's. A toolbar recording captures one tab, so a Meet call
+      // idling in another tab is not its evidence. A picker recording (a window, the screen)
+      // cannot tell which tab it shows and takes every tab's speaker and roster events, but a
+      // diagnostic only from a tab that has already contributed events to this recording: a
+      // Meet tab left open elsewhere reports "no tiles" after 60 s, and that is not this
+      // recording's problem.
+      const from = sender.tab?.id;
+      const accepted =
+        recorder !== undefined &&
+        status === 'recording' &&
+        from !== undefined &&
+        (recordedTabId !== undefined
+          ? from === recordedTabId
+          : msg.type !== 'adapter-diagnostic' || contributingTabs.has(from));
+      if (!accepted || !recorder || from === undefined) {
+        console.info('[rescribe] adapter message not for this recording', msg);
+        return false;
       }
+      contributingTabs.add(from);
+      recorder.appendEvent(msg);
+      if (msg.type === 'adapter-diagnostic') recorder.addNote(`Meet adapter: ${msg.message}`);
       return false;
+    }
     default:
       return false;
   }
@@ -171,6 +191,7 @@ async function startRecording(display: Captured, title: string, tabId?: number):
   }
   starting = true;
   recordedTabId = tabId;
+  contributingTabs.clear();
   try {
     const settings = await loadSettings();
     const wantMic = $<HTMLInputElement>('#mic').checked;
@@ -218,6 +239,7 @@ function onRecorderChange(
     case 'done':
       recorder = undefined;
       recordedTabId = undefined;
+      contributingTabs.clear();
       setStatus('idle');
       if (rec.status === 'failed') note(`Recording failed: ${rec.error ?? 'unknown error'}`, true);
       else if (rec.error) note(`Recorded, but ${rec.error}`, true);
@@ -261,20 +283,69 @@ async function onStop(): Promise<void> {
 }
 
 // --- Library (plain list; #4 grows it) ---------------------------------------------------------
-/** "Save now": export a `recorded` recording that has no export path yet, from a click, so the
- * folder permission can be re-requested (after a browser restart, or when the share ended from
- * Chrome's bar and finalize ran outside a gesture). */
+/** What "Save now" is offered on: not (fully) exported, and not owned by the pipeline. */
+function canSaveNow(rec: Recording): boolean {
+  if (isTranscribing(rec.id)) return false;
+  return (rec.status === 'recorded' && !rec.exportPath) || (rec.status === 'done' && !!rec.error);
+}
+
+/**
+ * "Save now", from a click so the folder permission can be re-requested (after a browser
+ * restart, or when the share ended from Chrome's bar and finalize ran outside a gesture): the
+ * video through `finalize` unless it is already in the folder, then every artifact present in
+ * OPFS through `exportArtifacts`. `error` is cleared only when both are in the folder. Works from
+ * the stored record, never the rendered one, and refuses while the pipeline owns the recording.
+ */
 async function saveNow(rec: Recording, button: HTMLButtonElement): Promise<void> {
   button.disabled = true;
   button.textContent = 'Saving…';
   try {
     await ensureExportPermission().catch(() => undefined);
     const settings = await loadSettings();
-    const done = await finalize(rec, settings.pathTemplate);
-    note(
-      done.exportPath ? `Saved to ${done.exportPath}/` : `Still not saved: ${done.error ?? '?'}`,
-      !done.exportPath,
-    );
+    let current = await getRecording(rec.id);
+    if (!current) return;
+    if (current.status === 'transcribing' || isTranscribing(current.id)) {
+      note('Wait for the transcription to finish, then save.', true);
+      return;
+    }
+    const artifactsFailed = async (err: unknown): Promise<void> => {
+      current = await updateRecording(current!.id, {
+        error: `Transcript not exported: ${describe(err)}`,
+      });
+      note(`Saved the video, but ${current.error}`, true);
+    };
+    // 1. Artifacts next to a video that is already in the folder; `missing` means redo both.
+    let needVideo = !current.exportPath;
+    if (!needVideo) {
+      try {
+        await exportArtifacts(current);
+      } catch (err) {
+        if (err instanceof ExportError && err.reason === 'missing') needVideo = true;
+        else return artifactsFailed(err);
+      }
+    }
+    // 2. The video first, then the artifacts, when the folder does not have the video.
+    if (needVideo) {
+      if (!(await getVideoFile(current.id, current.container))) {
+        current = await updateRecording(current.id, {
+          error: "Not exported: the video is no longer in Rescribe's storage.",
+        });
+        note(current.error!, true);
+        return;
+      }
+      current = await finalize(current, settings.pathTemplate);
+      if (current.error || !current.exportPath) {
+        note(`Still not saved: ${current.error ?? '?'}`, true);
+        return;
+      }
+      try {
+        await exportArtifacts(current);
+      } catch (err) {
+        return artifactsFailed(err);
+      }
+    }
+    current = await updateRecording(current.id, { error: undefined });
+    note(`Saved to ${current.exportPath ?? '?'}/`);
   } finally {
     await renderList();
   }
@@ -332,7 +403,7 @@ function item(rec: Recording): HTMLLIElement {
     p.textContent = text;
     li.append(p);
   }
-  if (rec.status === 'recorded' && !rec.exportPath) {
+  if (canSaveNow(rec)) {
     const save = document.createElement('button');
     save.className = 'save-now';
     save.textContent = 'Save now';
@@ -435,11 +506,25 @@ async function main(): Promise<void> {
   }
   chrome.runtime.onMessage.addListener(onMessage);
   setStatus('idle');
-  // The Record section's status line follows the pipeline while nothing is being recorded; the
-  // library follows it per row.
-  onPipelineProgress((_id, p) => {
+  // The Record section's status line follows the pipeline while nothing is being recorded. The
+  // list shows the stored record, so it is rendered again whenever the pipeline moves a
+  // recording (queued: marked `transcribing`; done) and at every phase in between.
+  const lastPhase = new Map<string, PipelinePhase>();
+  onPipelineProgress((id, p) => {
     if (status === 'idle') note(p.message);
+    if (lastPhase.get(id) !== p.phase) {
+      lastPhase.set(id, p.phase);
+      void renderList();
+    }
+    if (p.phase === 'done') lastPhase.delete(id);
   });
+  // For DevTools and the e2e harness: run the pipeline on a recording by id.
+  (window as unknown as { rescribe: unknown }).rescribe = {
+    transcribeRecording: async (id: string) => {
+      await runPipeline(id);
+      return getRecording(id);
+    },
+  };
   const settings = await loadSettings();
   bindSettings(settings);
   $<HTMLButtonElement>('#choose-folder').addEventListener('click', () => void chooseFolder());

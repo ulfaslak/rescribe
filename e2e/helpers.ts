@@ -9,6 +9,8 @@ import type { Recording } from '../src/lib/types.ts';
 
 /** The export "folder": a directory in OPFS, a real FileSystemDirectoryHandle. */
 export const EXPORT_DIR = 'export-test';
+/** A second one, for "the human chose another folder". */
+export const OTHER_EXPORT_DIR = 'export-other';
 const FIXTURE_TEXT = 'e2e/fixtures/speech.txt';
 
 export async function openTarget(context: BrowserContext): Promise<Page> {
@@ -33,7 +35,7 @@ export async function openApp(context: BrowserContext, extensionId: string): Pro
   return page;
 }
 
-function idbHandles(page: Page, op: 'put' | 'delete'): Promise<void> {
+function idbHandles(page: Page, op: 'put' | 'delete', dirName = EXPORT_DIR): Promise<void> {
   return page.evaluate(
     async ({ op, dirName }) => {
       const root = await navigator.storage.getDirectory();
@@ -51,11 +53,12 @@ function idbHandles(page: Page, op: 'put' | 'delete'): Promise<void> {
         };
       });
     },
-    { op, dirName: EXPORT_DIR },
+    { op, dirName },
   );
 }
 
-export const seedExportFolder = (page: Page): Promise<void> => idbHandles(page, 'put');
+export const seedExportFolder = (page: Page, dirName = EXPORT_DIR): Promise<void> =>
+  idbHandles(page, 'put', dirName);
 export const clearExportFolder = (page: Page): Promise<void> => idbHandles(page, 'delete');
 
 export async function setSettings(page: Page, patch: Record<string, unknown>): Promise<void> {
@@ -73,22 +76,92 @@ export async function getSettings(page: Page): Promise<Record<string, unknown>> 
 }
 
 export async function clearRecordings(page: Page): Promise<void> {
-  await page.evaluate(async (dirName) => {
-    await new Promise<void>((resolve, reject) => {
-      const req = indexedDB.open('rescribe');
-      req.onerror = () => reject(req.error);
-      req.onsuccess = () => {
-        const tx = req.result.transaction('recordings', 'readwrite');
-        tx.objectStore('recordings').clear();
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      };
-    });
-    const root = await navigator.storage.getDirectory();
-    for (const name of ['recordings', dirName]) {
-      await root.removeEntry(name, { recursive: true }).catch(() => undefined);
-    }
-  }, EXPORT_DIR);
+  await page.evaluate(
+    async (dirNames) => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open('rescribe');
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const tx = req.result.transaction('recordings', 'readwrite');
+          tx.objectStore('recordings').clear();
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        };
+      });
+      const root = await navigator.storage.getDirectory();
+      for (const name of ['recordings', ...dirNames]) {
+        await root.removeEntry(name, { recursive: true }).catch(() => undefined);
+      }
+    },
+    [EXPORT_DIR, OTHER_EXPORT_DIR],
+  );
+}
+
+/** Merge `patch` into the stored record, as the app's updateRecording does (no app code runs). */
+export async function patchRecording(
+  page: Page,
+  id: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await page.evaluate(
+    ({ id, patch }) =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open('rescribe');
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const tx = req.result.transaction('recordings', 'readwrite');
+          const store = tx.objectStore('recordings');
+          const get = store.get(id);
+          get.onsuccess = () => {
+            const next = { ...(get.result as Record<string, unknown>), ...patch };
+            for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+            store.put(next, id);
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        };
+      }),
+    { id, patch },
+  );
+}
+
+/** Remove OPFS entries (files or directories) under `dir`; missing ones are ignored. */
+export async function removeOpfs(page: Page, dir: string[], names: string[]): Promise<void> {
+  await page.evaluate(
+    async ({ dir, names }) => {
+      let d = await navigator.storage.getDirectory();
+      for (const s of dir) d = await d.getDirectoryHandle(s);
+      for (const n of names) await d.removeEntry(n, { recursive: true }).catch(() => undefined);
+    },
+    { dir, names },
+  );
+}
+
+/** The app's pipeline on one recording, through the DevTools hook; resolves with the record. */
+export async function rerun(page: Page, id: string): Promise<Recording> {
+  return page.evaluate(
+    (id) =>
+      (
+        window as unknown as {
+          rescribe: { transcribeRecording: (id: string) => Promise<Recording> };
+        }
+      ).rescribe.transcribeRecording(id),
+    id,
+  );
+}
+
+/** What the row shows: its status attribute and whether it offers Save now. */
+export function rowState(
+  page: Page,
+  id: string,
+): Promise<{ status: string | null; save: boolean }> {
+  return page.evaluate((id) => {
+    const li = document.querySelector(`.recording-item[data-id="${id}"]`);
+    return {
+      status: li?.getAttribute('data-status') ?? null,
+      save: !!li?.querySelector('button.save-now'),
+    };
+  }, id);
 }
 
 export async function recordings(page: Page): Promise<Recording[]> {

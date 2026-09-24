@@ -5,12 +5,15 @@
 //
 // Recordings run one at a time and channels one after another: the worker restarts after a
 // transcribe failure and rejects every job queued behind it, so nothing else may sit in its queue
-// while a channel runs. Each channel's segments are kept as `segments.<channel>.json`, so a re-run
-// after a failure on the other channel, or with another "my name", does not transcribe it again.
+// while a channel runs. The record says `transcribing` from the moment it is queued, so what the
+// library reads is what is happening (a queued recording lost to a reload is found at
+// `transcribing` on startup and run again once). Each channel's segments are kept as
+// `segments.<channel>.json`, so a re-run after a failure on the other channel, with another
+// "my name", or after the media was deleted, does not transcribe it again.
 import { assembleTranscript, parseEventLog } from '../lib/assemble.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { ChannelId, Recording, Segment } from '../lib/types.ts';
-import { exportArtifacts } from '../storage/export.ts';
+import { exportArtifacts, ExportError } from '../storage/export.ts';
 import {
   getRecording,
   getVideoFile,
@@ -24,7 +27,9 @@ import {
 } from '../storage/store.ts';
 import { Transcriber, type TranscribeProgress } from './transcriber.ts';
 
-export type PipelinePhase = 'download' | 'load' | 'transcribe' | 'attribute' | 'export';
+/** `queued`: the record was just marked `transcribing`; `done`: its final status is written. */
+export type PipelinePhase =
+  'queued' | 'download' | 'load' | 'transcribe' | 'attribute' | 'export' | 'done';
 
 export interface PipelineProgress {
   phase: PipelinePhase;
@@ -68,16 +73,15 @@ export function isTranscribing(id: string): boolean {
  * Stages 3–5 for one recording. Resolves with the record at `done` or `failed`; rejects only
  * when the recording does not exist, is still recording, or its record cannot be written.
  * Idempotent per id: a second call while one is queued or running returns that promise.
- * Recordings run one at a time, in call order.
+ * Recordings run one at a time, in call order; the record is marked `transcribing` at once.
  */
 export function transcribeRecording(id: string): Promise<Recording> {
   const existing = running.get(id);
   if (existing) return existing;
-  const p: Promise<Recording> = chain
-    .then(() => run(id))
-    .finally(() => {
-      if (running.get(id) === p) running.delete(id);
-    });
+  const previous = chain;
+  const p: Promise<Recording> = enqueue(id, previous).finally(() => {
+    if (running.get(id) === p) running.delete(id);
+  });
   chain = p.catch(() => undefined);
   running.set(id, p);
   return p;
@@ -85,7 +89,8 @@ export function transcribeRecording(id: string): Promise<Recording> {
 
 /**
  * On app start: a recording left at `transcribing` was interrupted (the tab reloaded or closed
- * mid-transcription). It goes back to `recorded` with a note; the caller runs it again.
+ * while it was queued or running). It goes back to `recorded` with a note; the caller runs it
+ * again.
  */
 export async function recoverInterruptedTranscriptions(): Promise<Recording[]> {
   const out: Recording[] = [];
@@ -178,19 +183,43 @@ async function cachedSegments(
   return undefined;
 }
 
-async function run(id: string): Promise<Recording> {
-  let rec = await getRecording(id);
+/** Mark the record, then wait for the turn. */
+async function enqueue(id: string, previous: Promise<unknown>): Promise<Recording> {
+  const rec = await getRecording(id);
   if (!rec) throw new Error(`recording ${id} not found`);
   if (rec.status === 'recording') throw new Error('the recording has not stopped');
+  // A failed run's message is stale now, but the reason must survive: it moves to the note. A
+  // `recorded` record's error says why the video is not exported and stays until an export
+  // succeeds.
+  const earlier = rec.status === 'failed' ? rec.error : undefined;
+  await updateRecording(id, {
+    status: 'transcribing',
+    ...(earlier !== undefined
+      ? { error: undefined, note: appendNote(rec.note, `Earlier failure: ${earlier}`) }
+      : {}),
+  });
+  emit(id, { phase: 'queued', message: 'Waiting to transcribe…' });
+  await previous;
+  return run(id, earlier);
+}
+
+function finish(rec: Recording): Recording {
+  emit(rec.id, {
+    phase: 'done',
+    message:
+      rec.status === 'failed'
+        ? `Transcription failed: ${rec.error ?? 'unknown error'}`
+        : 'Transcribed.',
+  });
+  return rec;
+}
+
+async function run(id: string, earlier: string | undefined): Promise<Recording> {
   const settings = await loadSettings();
   const rescribeVersion = chrome.runtime.getManifest().version;
   const key = { model: settings.model, backend: settings.backend, rescribeVersion };
-  // A failed run's message is stale now. A `recorded` record's error says why the video is not
-  // exported and stays until an export succeeds.
-  rec = await updateRecording(id, {
-    status: 'transcribing',
-    ...(rec.status === 'failed' ? { error: undefined } : {}),
-  });
+  const fail = async (error: string): Promise<Recording> =>
+    finish(await updateRecording(id, { status: 'failed', error }));
 
   // 3. Transcribe, one channel at a time.
   const segments: Segment[] = [];
@@ -222,10 +251,7 @@ async function run(id: string): Promise<Recording> {
             : last === 'download'
               ? 'downloading the model'
               : 'starting the transcriber';
-      return updateRecording(id, {
-        status: 'failed',
-        error: `Transcription failed on the ${channel} channel while ${stage}: ${message(err)}`,
-      });
+      return fail(`Transcription failed on the ${channel} channel while ${stage}: ${message(err)}`);
     }
     try {
       await writeArtifact(
@@ -234,21 +260,25 @@ async function run(id: string): Promise<Recording> {
         JSON.stringify({ ...key, segments: out } satisfies CachedSegments),
       );
     } catch (err) {
-      return updateRecording(id, {
-        status: 'failed',
-        error: `Could not save the ${channel} transcription: ${message(err)}`,
-      });
+      return fail(`Could not save the ${channel} transcription: ${message(err)}`);
     }
     segments.push(...out);
   }
 
+  // The record as it is now, not as it was when queued: the title, the export path and the
+  // notes may have moved while the channels ran.
+  const rec = await getRecording(id);
+  if (!rec) throw new Error(`recording ${id} was deleted while transcribing`);
+
   // No channel and no cache: a video-only recording has nothing to transcribe and is done with
-  // an empty transcript; a recording whose media was deleted must not be.
+  // an empty transcript; a recording whose media was deleted must not be. The earlier failure's
+  // reason stays in front.
   if (!found && !(await getVideoFile(id, rec.container)))
-    return updateRecording(id, {
-      status: 'failed',
-      error: "Nothing to transcribe: the recording's media is no longer in Rescribe's storage.",
-    });
+    return fail(
+      [earlier, "Nothing to transcribe: the recording's media is no longer in Rescribe's storage."]
+        .filter(Boolean)
+        .join(' '),
+    );
 
   // 4–5. Attribute and render from what is on disk: the segments and the event log.
   emit(id, { phase: 'attribute', message: 'Attributing speakers…' });
@@ -267,29 +297,37 @@ async function run(id: string): Promise<Recording> {
     await writeArtifact(id, 'transcript.json', JSON.stringify(assembled.json, null, 2));
     await writeArtifact(id, 'meta.json', JSON.stringify(assembled.meta, null, 2));
   } catch (err) {
-    return updateRecording(id, {
-      status: 'failed',
-      error: `Could not write the transcript: ${message(err)}`,
-    });
+    return fail(`Could not write the transcript: ${message(err)}`);
   }
 
-  // Export next to the video, so only where the video already went. Without an export path the
-  // artifacts wait in OPFS and "Save now" exports everything at once; `error` keeps saying why.
-  let error = rec.error;
+  // Export next to the video, so only where the video already went (its directory must still
+  // be under the current export folder, with the video in it). Otherwise the artifacts wait in
+  // OPFS and `error` says so; "Save now" exports the video and the artifacts together. A `done`
+  // recording without an export path always says why.
+  let error: string | undefined;
   if (rec.exportPath) {
     emit(id, { phase: 'export', message: 'Saving transcript…' });
     try {
-      await exportArtifacts(rec, settings.pathTemplate);
+      await exportArtifacts(rec);
       error = undefined;
     } catch (err) {
-      error = `Transcript not exported: ${message(err)}`;
+      error =
+        err instanceof ExportError && err.reason === 'missing'
+          ? `Not exported: ${err.message}`
+          : `Transcript not exported: ${message(err)}`;
     }
+  } else {
+    error = rec.error?.startsWith('Not exported')
+      ? rec.error
+      : 'Not exported: the video is not in the export folder; use Save now.';
   }
-  return updateRecording(id, {
-    status: 'done',
-    model: settings.model,
-    backend: settings.backend,
-    transcribedAt,
-    error,
-  });
+  return finish(
+    await updateRecording(id, {
+      status: 'done',
+      model: settings.model,
+      backend: settings.backend,
+      transcribedAt,
+      error,
+    }),
+  );
 }
