@@ -19,9 +19,11 @@
 //
 // Caveat on the "webgpu" row: the spike passed parakeet.js's `'webgpu'` alias, which leaves ORT's
 // execution providers empty in `fromUrls`, and ORT then tries its backends by priority with WASM
-// before WebGPU. That row most likely measured fp32 on WASM. This file passes `'webgpu-hybrid'`
-// (encoder on WebGPU with WASM fallback, decoder on WASM), which is what parakeet.js means by
-// WebGPU. The real WebGPU speed is unmeasured; see LIVE_CHECKS.
+// before WebGPU. That row measured fp32 on WASM. This file passes `'webgpu-hybrid'` (encoder on
+// WebGPU with WASM fallback, decoder on WASM), which is what parakeet.js means by WebGPU. Measured
+// through the transcribe worker in headless Chromium (`RESCRIBE_E2E_WEBGPU=1`, 2026-09-24): the
+// first call 0.99 s (shader warm-up included), the second 0.18 s for the 7.7 s fixture, ~44× real
+// time, against ~0.9 s on WASM. Brave is unverified; see LIVE_CHECKS.
 import * as ort from 'onnxruntime-web';
 import { getParakeetModel, ParakeetModel } from 'parakeet.js';
 import type { AsrEngine, EngineOptions, Progress, Transcription } from './engine.ts';

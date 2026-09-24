@@ -16,7 +16,8 @@ rescribe/
     app/                  the app tab: app.html, app.css, app.ts (+ panels as they grow)
       transcriber.ts      client of the transcribe worker: spawns it on first use, one job at a time
     content/meet.ts       Meet platform adapter (content script, IIFE bundle)
-    lib/                  pure, context-free logic; everything here is unit-testable in Node
+    lib/                  pure, context-free logic; unit-testable in Node, except asr/parakeet.ts,
+                          which needs ORT's WASM and the model and is covered by e2e/transcribe.spec.ts
       types.ts            the data model (below)
       attribution.ts      speaker evidence → labelled segments
       transcript.ts       labelled segments → turns → markdown / json
