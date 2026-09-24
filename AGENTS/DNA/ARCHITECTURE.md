@@ -19,11 +19,12 @@ rescribe/
       types.ts            the data model (below)
       attribution.ts      speaker evidence → labelled segments
       transcript.ts       labelled segments → turns → markdown / json
+      activity.ts         "value changed recently" detector, the Meet speaking signal
       (planned) clock.ts, vad.ts, pathtemplate.ts, asr/engine.ts, asr/parakeet.ts
     (planned) recorder/   capture graph, MediaRecorder, AudioWorklet taps (app-tab only)
     (planned) storage/    OPFS store, storage worker, IndexedDB metadata, folder export
     (planned) workers/    transcribe worker (parakeet.js + ORT), storage worker
-  e2e/                    Playwright: fixtures.ts (extension + fake media), *.spec.ts, fixtures/ (wav)
+  e2e/                    Playwright: fixtures.ts (extension + fake media), *.spec.ts, fixtures/ (wav, fake-meet.html)
   spikes/                 throwaway experiments, see spikes/README.md
   dist/                   build output, gitignored, what Chrome loads
 ```
@@ -38,7 +39,7 @@ Four execution contexts, each with a distinct job:
 |---|---|---|---|
 | Service worker | `background.ts` | ephemeral, event-driven | toolbar click and keyboard command, badge, `chrome.tabCapture.getMediaStreamId` (must happen inside the click), opens/focuses the app tab, forwards nothing else |
 | App tab | `app/app.ts` | while open; pinned; warns on close when busy | owns the recorder, the audio graph, OPFS writes, transcription workers, export, settings UI, library UI |
-| Content script | `content/meet.ts` | per Meet page | observes the DOM, emits speaker events and roster to the extension via `chrome.runtime.sendMessage` |
+| Content script | `content/meet.ts` | per Meet page | observes the DOM, emits speaker events and roster to the extension via `chrome.runtime.sendMessage`; mirrors every message as a `rescribe:event` CustomEvent on `window` for the e2e harness (Meet's scripts cannot read the detail across worlds) |
 | Workers **(planned)** | `workers/*.ts` | per job | storage worker (OPFS sync access handle), transcribe worker (parakeet.js on WebGPU/WASM) |
 
 Messages between contexts are typed in `src/lib/messages.ts`; the union there is the single roster of message types.

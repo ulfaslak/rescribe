@@ -60,4 +60,4 @@ Then the human reloads the extension at `brave://extensions`. Say so in the clos
 
 ## Worktrees
 
-`git gtr new <branch>` creates `../rescribe-worktrees/<branch>/` and runs `npm install` (`.gtrconfig`). Each worktree has its own `dist/`; Chrome loads the primary clone's `dist/`, so a worktree's build is only for its own e2e runs. Never load a worktree's `dist/` into the human's Chrome.
+`git gtr new <branch>` creates `../rescribe-worktrees/<branch>/` and should run `npm install` (`.gtrconfig`; see [[ENVIRONMENT_NOTES]] if it didn't). After merging, remove the worktree **before** deleting the branch: `gh pr merge --delete-branch` cannot delete a local branch that a worktree still holds, so the order is `git gtr rm <branch>`, then `git branch -d <branch>`. Each worktree has its own `dist/`; Chrome loads the primary clone's `dist/`, so a worktree's build is only for its own e2e runs. Never load a worktree's `dist/` into the human's Chrome.

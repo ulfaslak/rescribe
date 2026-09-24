@@ -22,6 +22,7 @@ Video and audio are encoded by `MediaRecorder`. No WebCodecs, no ffmpeg in the b
 The microphone and the display audio are separate **channels**, kept apart all the way to the transcript. Each channel is transcribed on its own.
 Speaker attribution is layered **evidence** resolved by one pure function (`src/lib/attribution.ts`). Every layer emits `SpeakerInterval`s in recording-relative seconds. Layers, in priority order: platform events (Meet/Teams DOM) > diarization model (later) > channel identity (mic = the human, display = "Speaker") > nothing.
 Platform adapters are content scripts, one per platform, isolated in `src/content/`. They ship with a calibration mode because platform markup is obfuscated and changes.
+On Meet, "speaking" is derived from the tile's audio meter *changing* (class list flipped within 700 ms, `src/lib/activity.ts`), never from what a particular class means. Meet's level classes are opaque and renamed at will; motion is not.
 Scraping Meet's live captions is not the default (it leans on Google's cloud speech recognition). It may become an opt-in adapter.
 Model-based diarization of the display channel is a later layer, not v1. The evidence interface exists from day one so adding it is a new emitter, not a redesign.
 
