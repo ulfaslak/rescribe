@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Fake Meet</title>
+  </head>
+  <body>
+    <!-- Two participant tiles shaped like Meet's: a tile element with data-participant-id, an audio
+         meter with jsname="QgSmzd" whose classes flip while "speaking", a name, and a menu item that
+         must not be mistaken for the name. -->
+    <div data-participant-id="spaces/x/devices/1">
+      <div jsname="QgSmzd" class="meter l0"></div>
+      <div role="menu"><div role="menuitem">Reframe</div></div>
+      <span>Anna</span>
+    </div>
+    <div data-participant-id="spaces/x/devices/2">
+      <div jsname="QgSmzd" class="meter l0"></div>
+      <div role="menu"><div role="menuitem">Reframe</div></div>
+      <span>Bo</span>
+    </div>
+    <script>
+      // Anna "speaks" from 0.5 s to 2.0 s, Bo from 3.0 s to 4.5 s. Speaking = the meter class wobbles.
+      const meters = document.querySelectorAll('[jsname="QgSmzd"]');
+      function wobble(meter, from, to) {
+        let i = 0;
+        const start = setTimeout(() => {
+          const iv = setInterval(() => {
+            meter.className = `meter l${1 + (i++ % 3)}`;
+          }, 100);
+          setTimeout(() => {
+            clearInterval(iv);
+            meter.className = 'meter l0';
+          }, to - from);
+        }, from);
+      }
+      wobble(meters[0], 500, 2000);
+      wobble(meters[1], 3000, 4500);
+    </script>
+  </body>
+</html>
