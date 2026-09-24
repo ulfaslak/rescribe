@@ -89,3 +89,7 @@ DECISIONS promised a one-time download; `getParakeetModel` fetched the Hub tree 
 
 The client's docstring promised the PCM buffer was transferred at call time; the transfer actually happened when the queued job ran, so a caller reusing the buffer meanwhile would have had the display audio transcribed as the mic channel, silently. Found by the adversarial review; jobs are now posted at call time and `transcriber.test.ts` asserts both buffers are detached before either job finishes.
 
+
+### 2026-09-24 · #2 part 2 · absence of input read as success `[learned]`
+
+The first pipeline runner skipped a channel whose PCM file was missing and went on to `done`, so a recording whose OPFS directory had been deleted (or never received audio because the media was wiped mid-transcription) would have ended `done` with an empty transcript, indistinguishable from a silent call. A missing input is not an empty input. Found on the paper walk of the edge list (storage states); codified in ARCHITECTURE § Pipeline step 3 (no channel and no cache: `done` only when the video is still there, `failed` otherwise) and pinned by `e2e/pipeline.spec.ts` "an interrupted transcription whose media is gone fails".
