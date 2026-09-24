@@ -91,6 +91,11 @@ export interface EvidenceOptions {
   selfNames?: string[];
   /** Label under which the human appears in `participants`. Omitted: the self tile is left out. */
   selfLabel?: string;
+  /**
+   * Label for a participant whose display name the adapter never resolved (it sends the id as
+   * the name then). Default "Speaker", the display-channel fallback. Ids never become labels.
+   */
+  unresolvedLabel?: string;
   /** Interval cleaning. Defaults: minDuration 0.3, mergeGap 0.3, lead MEET_LEAD. */
   clean?: CleanOptions;
 }
@@ -99,8 +104,8 @@ export interface PlatformEvidence {
   /** Display-channel platform intervals, cleaned, clipped to the recording, sorted by start. */
   intervals: SpeakerInterval[];
   /**
-   * Display names in first-seen order across roster and speaker messages, deduplicated, with
-   * the self tile replaced by `selfLabel` or omitted.
+   * Resolved display names, one per participant id plus roster names, in first-seen order,
+   * deduplicated, with the self tile replaced by `selfLabel` or omitted. Never an id string.
    */
   participants: string[];
 }
@@ -117,6 +122,12 @@ export const MEET_LEAD = 0.3;
  * speaker label is the display name. A participant still speaking at `endedAtMs` is closed
  * there; intervals are clipped to [0, duration], so a speaker already on at t=0 is on from 0,
  * whether their start event was received or only their stop.
+ *
+ * The transport is fire-and-forget, so a message can be lost or arrive twice. A duplicated
+ * start or stop is harmless (togglesToIntervals ignores a start while open and a stop while
+ * closed). A lost stop stretches that turn to the participant's next stop. A lost start loses
+ * that turn, except when the stop is the first toggle received for the id: that reads as
+ * "already speaking when listening began" and opens from t=0.
  */
 export function eventsToEvidence(
   events: AdapterEvent[],
@@ -125,27 +136,25 @@ export function eventsToEvidence(
   opts: EvidenceOptions = {},
 ): PlatformEvidence {
   const selfNames = new Set(opts.selfNames ?? ['You']);
+  const unresolvedLabel = opts.unresolvedLabel ?? 'Speaker';
   const duration = toRecordingSeconds(endedAtMs, startedAtMs);
 
-  const seen = new Set<string>();
-  const rawNames: string[] = [];
-  const note = (name: string): void => {
-    if (seen.has(name)) return;
-    seen.add(name);
-    rawNames.push(name);
-  };
-
-  /** Participant id → display name. The adapter falls back to the id when it cannot read a name. */
+  /** Participant id → the last display name seen for it that is not the id itself. */
   const nameOf = new Map<string, string>();
+  const ids = new Set<string>();
+  /** Participant ids and roster names in the order they were first seen. */
+  const order: Array<{ id: string } | { name: string }> = [];
   const toggles: Array<{ t: number; speaker: string; speaking: boolean }> = [];
   for (const ev of events) {
     if (ev.type === 'roster') {
-      for (const n of ev.names) note(n);
+      for (const n of ev.names) order.push({ name: n });
       continue;
     }
-    note(ev.name);
-    if (selfNames.has(ev.name)) continue;
-    if (ev.name !== ev.id || !nameOf.has(ev.id)) nameOf.set(ev.id, ev.name);
+    if (!ids.has(ev.id)) {
+      ids.add(ev.id);
+      order.push({ id: ev.id });
+    }
+    if (ev.name !== ev.id) nameOf.set(ev.id, ev.name);
     toggles.push({
       t: toRecordingSeconds(ev.at, startedAtMs),
       speaker: ev.id,
@@ -153,24 +162,23 @@ export function eventsToEvidence(
     });
   }
 
-  // The adapter never emits a stop without having sent its start, so a stop with no open start
-  // means the start predates what the app tab received: that participant was already speaking
-  // when listening began. Open them from -Infinity; the clip below makes that t=0.
-  const orphaned = new Set<string>();
-  const open = new Set<string>();
+  // A stop that is the first toggle received for its id: speaking since before listening began.
+  // Open it at -Infinity; the clip below makes that t=0. Any later unmatched stop is a lost
+  // start and is ignored, so one lost message cannot rewrite the beginning of the recording.
+  const first = new Set<string>();
   for (const tg of [...toggles].sort((a, b) => a.t - b.t)) {
-    if (tg.speaking) open.add(tg.speaker);
-    else if (open.has(tg.speaker)) open.delete(tg.speaker);
-    else orphaned.add(tg.speaker);
-  }
-  for (const speaker of orphaned) {
-    toggles.push({ t: Number.NEGATIVE_INFINITY, speaker, speaking: true });
+    if (first.has(tg.speaker)) continue;
+    first.add(tg.speaker);
+    if (!tg.speaking) {
+      toggles.push({ t: Number.NEGATIVE_INFINITY, speaker: tg.speaker, speaking: true });
+    }
   }
 
   const raw = togglesToIntervals('display', toggles, duration)
+    .filter((iv) => !selfNames.has(nameOf.get(iv.speaker) ?? ''))
     .map((iv) => ({
       ...iv,
-      speaker: nameOf.get(iv.speaker) ?? iv.speaker,
+      speaker: nameOf.get(iv.speaker) ?? unresolvedLabel,
       start: Math.max(0, iv.start),
       end: Math.min(duration, iv.end),
     }))
@@ -181,10 +189,17 @@ export function eventsToEvidence(
     lead: opts.clean?.lead ?? MEET_LEAD,
   }).map((iv) => (iv.start < 0 ? { ...iv, start: 0 } : iv));
 
+  // A selfLabel equal to a remote participant's name collapses to one entry here, and that
+  // participant's display intervals become indistinguishable from the mic channel's label.
   const participants: string[] = [];
-  for (const n of rawNames) {
-    const label = selfNames.has(n) ? opts.selfLabel : n;
+  const add = (label: string | undefined): void => {
     if (label !== undefined && !participants.includes(label)) participants.push(label);
+  };
+  for (const entry of order) {
+    const name =
+      'id' in entry ? nameOf.get(entry.id) : ids.has(entry.name) ? undefined : entry.name;
+    if (name === undefined) continue;
+    add(selfNames.has(name) ? opts.selfLabel : name);
   }
 
   return { intervals, participants };

@@ -67,7 +67,7 @@ Messages that cross `chrome.runtime` (service worker, app tab, content scripts) 
 
 ## Clock
 
-Recording-relative seconds everywhere in `lib/`. `startedAt` is the epoch ms of the first captured sample. Content scripts stamp with `Date.now()`; the app tab keeps the stamps as received (`events.jsonl`) and converts when it builds evidence (`eventsToEvidence` in `lib/evidence.ts`, through `lib/clock.ts`), so evidence can be rebuilt from disk. See [[INVARIANTS]].
+Recording-relative seconds everywhere in `lib/`. `startedAt` is the epoch ms of the first captured sample. Content scripts stamp with `Date.now()`; the app tab keeps the stamps as received (**(planned)** `events.jsonl`; today `app.ts` only logs them) and converts when it builds evidence (`eventsToEvidence` in `lib/evidence.ts`, through `lib/clock.ts`), so evidence can be rebuilt from disk. See [[INVARIANTS]].
 
 ## Storage **(planned)**
 

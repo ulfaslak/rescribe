@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanIntervals, eventsToEvidence, MEET_LEAD } from './evidence.ts';
+import { attribute } from './attribution.ts';
 import type { AdapterEvent } from './evidence.ts';
 import type { SpeakerInterval } from './types.ts';
 
@@ -255,6 +256,113 @@ test('a stop without a received start means speaking since before listening bega
   assert.deepEqual(spans(before.intervals), [['Anna', 2, 4]]);
 });
 
+// The transport (chrome.runtime.sendMessage, fire-and-forget) can reorder, duplicate or lose a
+// message, and the adapter stamps a stop at the last meter change, before the poll that sends it.
+
+test('arrival order differing from stamp order: a stop stamped before a later-arriving start', () => {
+  const { intervals } = eventsToEvidence(
+    [
+      sp(1000, 'p1', 'Anna', true),
+      sp(2300, 'p2', 'Bo', true), // arrives first (MutationObserver)
+      sp(2000, 'p1', 'Anna', false), // stamped at the last meter change, sent by the next poll
+      sp(5000, 'p2', 'Bo', false),
+    ],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(spans(intervals), [
+    ['Anna', 1, 2],
+    ['Bo', 2.3, 5],
+  ]);
+});
+
+test('a duplicated start or stop changes nothing', () => {
+  const { intervals } = eventsToEvidence(
+    [
+      sp(1000, 'p1', 'Anna', true),
+      sp(1000, 'p1', 'Anna', true),
+      sp(3000, 'p1', 'Anna', false),
+      sp(3000, 'p1', 'Anna', false),
+      sp(6000, 'p1', 'Anna', true),
+      sp(8000, 'p1', 'Anna', false),
+    ],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(spans(intervals), [
+    ['Anna', 1, 3],
+    ['Anna', 6, 8],
+  ]);
+});
+
+test('a lost start after a closed turn loses that turn only; it does not reopen from 0', () => {
+  const { intervals } = eventsToEvidence(
+    [
+      sp(10_000, 'p1', 'Anna', true),
+      sp(20_000, 'p1', 'Anna', false),
+      sp(110_000, 'p1', 'Anna', false),
+    ],
+    T0,
+    T0 + 120_000,
+    noLead,
+  );
+  assert.deepEqual(spans(intervals), [['Anna', 10, 20]]);
+});
+
+test('a lost stop stretches the turn to the next stop of that participant', () => {
+  const { intervals } = eventsToEvidence(
+    [sp(1000, 'p1', 'Anna', true), sp(6000, 'p1', 'Anna', true), sp(8000, 'p1', 'Anna', false)],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(spans(intervals), [['Anna', 1, 8]]);
+});
+
+test('a lost first start opens from 0 (documented residual) but loses ties to received evidence', () => {
+  const { intervals } = eventsToEvidence(
+    [
+      sp(1000, 'p1', 'Anna', true),
+      sp(50_000, 'p1', 'Anna', false),
+      sp(110_000, 'p2', 'Bo', false), // Bo's start at 100 s was lost
+    ],
+    T0,
+    T0 + 120_000,
+    noLead,
+  );
+  assert.deepEqual(spans(intervals), [
+    ['Bo', 0, 110],
+    ['Anna', 1, 50],
+  ]);
+  const out = attribute([{ channel: 'display', start: 10, end: 20, text: 'x' }], intervals);
+  assert.equal(out[0]?.speaker, 'Anna');
+});
+
+test('a stop stamped earlier than its arrival, before the recording start, yields nothing', () => {
+  const { intervals } = eventsToEvidence(
+    [roster(500, ['Anna']), sp(-200, 'p1', 'Anna', false), sp(3000, 'p1', 'Anna', true)],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(spans(intervals), [['Anna', 3, 10]]);
+});
+
+test('three hours of toggles convert exactly', () => {
+  const events: AdapterEvent[] = [];
+  const turn = 20_000;
+  for (let t = 0, i = 0; t < 3 * 3600 * 1000; t += turn, i++) {
+    const [id, name] = i % 2 ? ['p2', 'Bo'] : ['p1', 'Anna'];
+    events.push(sp(t + 300, id, name, true), sp(t + turn - 100, id, name, false));
+  }
+  const { intervals } = eventsToEvidence(events, T0, T0 + 3 * 3600 * 1000, noLead);
+  assert.equal(intervals.length, 540);
+  assert.deepEqual(spans(intervals).slice(-1), [['Bo', 10780.3, 10799.9]]);
+  assert.ok(intervals.every((iv, i) => i === 0 || iv.start >= intervals[i - 1]!.start));
+});
+
 test('an interval entirely before the start or after the end is dropped; one straddling the end is clipped', () => {
   const { intervals } = eventsToEvidence(
     [
@@ -319,7 +427,50 @@ test('a participant first seen under the id fallback takes the real name once it
     ['Anna', 1, 2],
     ['Anna', 3, 5],
   ]);
-  assert.deepEqual(participants, ['p1', 'Anna']);
+  assert.deepEqual(participants, ['Anna']);
+});
+
+test('a participant whose name never resolves is labelled Speaker and is not a participant', () => {
+  const events = [
+    roster(0, ['Anna']),
+    sp(1000, 'spaces/x/devices/9', 'spaces/x/devices/9', true),
+    sp(3000, 'spaces/x/devices/9', 'spaces/x/devices/9', false),
+    sp(4000, 'p1', 'Anna', true),
+    sp(5000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(spans(out.intervals), [
+    ['Speaker', 1, 3],
+    ['Anna', 4, 5],
+  ]);
+  assert.deepEqual(out.participants, ['Anna']);
+  const guest = eventsToEvidence(events, T0, T0 + 10_000, { ...noLead, unresolvedLabel: 'Guest' });
+  assert.equal(guest.intervals[0]?.speaker, 'Guest');
+});
+
+test('a roster name equal to a participant id is the fallback, not a participant', () => {
+  const { participants } = eventsToEvidence(
+    [roster(0, ['p1', 'Anna']), sp(1000, 'p1', 'Bo', true), sp(2000, 'p1', 'Bo', false)],
+    T0,
+    T0 + 10_000,
+  );
+  assert.deepEqual(participants, ['Anna', 'Bo']);
+});
+
+test('a self tile first seen unresolved and later as You loses all its intervals', () => {
+  const { intervals, participants } = eventsToEvidence(
+    [
+      sp(1000, 'me', 'me', true),
+      sp(2000, 'me', 'me', false),
+      sp(3000, 'me', 'You', true),
+      sp(4000, 'me', 'You', false),
+    ],
+    T0,
+    T0 + 10_000,
+    { ...noLead, selfLabel: 'Ulf' },
+  );
+  assert.deepEqual(intervals, []);
+  assert.deepEqual(participants, ['Ulf']);
 });
 
 test('no events, or an empty recording, yields nothing', () => {
