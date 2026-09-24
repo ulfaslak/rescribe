@@ -10,6 +10,11 @@
 //   METER_SELECTOR finds, inside a tile, the audio-level meter. Its class list flips between
 //                  level classes while the participant speaks (observed on the human's own tile
 //                  in a live call, 2026-09-24; assumed for remote tiles until LIVE_CHECKS confirms).
+//                  For the record, that call showed the meter idle as `DYfzY cYKTje gjg47c`
+//                  (mic RMS 0.002) and carrying `sxlEM` plus a level class while audio flowed.
+//                  We do not depend on those names; motion is the signal.
+//   NAME_SELECTOR  the participant's display name, a `span.notranslate` (same call). The text
+//                  heuristic below is the fallback when it is absent.
 // A MutationObserver stamps every meter class change at the moment it happens; ChangeActivity
 // turns runs of changes into speaking intervals (start = first change of the run, stop = last
 // change). The 250 ms poll only closes intervals, tracks the roster, and reports drift. Polling is
@@ -28,8 +33,12 @@ import type { Message } from '../lib/messages.ts';
 import { ChangeActivity } from '../lib/activity.ts';
 
 const PLATFORM = 'meet' as const;
+/** The messages this adapter emits: the platform-stamped members of the union. */
+type AdapterMessage = Extract<Message, { platform: typeof PLATFORM }>;
 const TILE_SELECTOR = '[data-participant-id]';
 const METER_SELECTOR = '[jsname="QgSmzd"]';
+const NAME_SELECTOR = 'span.notranslate';
+const RECENT_EVENTS = 200;
 const ACTIVITY_WINDOW_MS = 700;
 const POLL_MS = 250;
 const DIAGNOSTIC_AFTER_MS = 60_000;
@@ -41,8 +50,12 @@ const NAME_EXCLUDE =
 const NAME_STOPLIST = /^(muted|unmuted|pinned|host|co-host|presenting|hd|sd|live|new)$/i;
 
 const harness = document.documentElement.hasAttribute('data-rescribe-harness');
+/** The last messages this adapter emitted, so a calibration report can show its own behaviour. */
+const recent: AdapterMessage[] = [];
 
-function send(msg: Message): void {
+function send(msg: AdapterMessage): void {
+  recent.push(msg);
+  if (recent.length > RECENT_EVENTS) recent.shift();
   if (harness) {
     try {
       window.dispatchEvent(new CustomEvent('rescribe:event', { detail: msg }));
@@ -98,12 +111,12 @@ export function textCandidates(tile: HTMLElement): TextCandidate[] {
   return out.sort((a, b) => a.text.length - b.text.length);
 }
 
-/** Best-effort display name for a tile. Meet labels the human's own tile "You". */
+/** Display name for a tile: the name span when present, else the shortest plausible text. */
 export function tileName(tile: HTMLElement): string | undefined {
-  const self =
-    tile.getAttribute('data-self-name') ??
-    tile.querySelector('[data-self-name]')?.getAttribute('data-self-name');
-  if (self) return self;
+  for (const el of tile.querySelectorAll<HTMLElement>(NAME_SELECTOR)) {
+    const text = el.textContent?.trim() ?? '';
+    if (text && text.length <= 60 && !NAME_STOPLIST.test(text)) return text;
+  }
   return textCandidates(tile)[0]?.text;
 }
 
@@ -366,6 +379,9 @@ async function calibrate(requestedSeconds: number): Promise<void> {
         ]),
       ),
       media: mediaElements(),
+      adapterEvents: recent
+        .filter((m) => m.type !== 'adapter-diagnostic' && m.at >= started)
+        .map((m) => ({ ...m, at: Number(((m.at - started) / 1000).toFixed(2)) })),
     };
     console.info('[rescribe] calibration report (paste this to the agent):');
     console.info(JSON.stringify(report, null, 2));
