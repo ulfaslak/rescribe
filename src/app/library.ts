@@ -15,7 +15,7 @@ import {
   getExportDirectory,
   writeExportFile,
 } from '../storage/export.ts';
-import { EVENTS_FILE, isMediaFile, pcmFileName, videoFileName } from '../storage/opfs.ts';
+import { isExportableArtifact, isMediaFile, pcmFileName, videoFileName } from '../storage/opfs.ts';
 import {
   deleteMedia,
   deleteRecording,
@@ -96,9 +96,7 @@ function inventory(rec: Recording, usage: StorageUsage): Inventory {
   return {
     video: size(videoFileName(rec.container)) > 0,
     pcm: size(pcmFileName('mic')) > 0 || size(pcmFileName('display')) > 0,
-    artifacts: Object.keys(files)
-      .filter((n) => n !== EVENTS_FILE && !isMediaFile(n))
-      .sort(),
+    artifacts: Object.keys(files).filter(isExportableArtifact).sort(),
     bytes: usage.perRecording[rec.id] ?? 0,
     mediaBytes: Object.entries(files)
       .filter(([n]) => isMediaFile(n))

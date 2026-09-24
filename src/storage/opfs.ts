@@ -21,6 +21,17 @@ export function isMediaFile(name: string): boolean {
   return /^video\.(mp4|webm)$/.test(name) || /^(mic|display)\.pcm$/.test(name);
 }
 
+/** The pipeline's per-channel recogniser cache (`segments.<channel>.json`): local only, never exported. */
+export function isSegmentsCache(name: string): boolean {
+  return /^segments\.(mic|display)\.json$/.test(name);
+}
+
+/** An artifact the export folder gets (transcript.md, transcript.json, meta.json): everything in
+ * the directory that is neither raw media, nor the events log, nor the segments cache. */
+export function isExportableArtifact(name: string): boolean {
+  return !isMediaFile(name) && name !== EVENTS_FILE && !isSegmentsCache(name);
+}
+
 export async function recordingsRoot(
   create: boolean,
 ): Promise<FileSystemDirectoryHandle | undefined> {

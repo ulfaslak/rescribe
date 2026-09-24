@@ -227,6 +227,8 @@ async function setUp(
     container: 'mp4',
     pathTemplate: '{date} {time} {title}',
     micByDefault: true,
+    // The pipeline (#2) transcribes on stop by default; these tests seed recordings, not transcripts.
+    autoTranscribe: false,
     ...settings,
   });
   await page.reload();
@@ -467,6 +469,8 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
   await opfsRemove(page, exportedPath);
   expect(await opfsDirExists(page, exportedPath)).toBe(false);
   await writeOpfsFile(page, ['recordings', a!.id, 'transcript.md'], '# Transcript\n');
+  // The pipeline's per-channel cache stays local: it must not be exported.
+  await writeOpfsFile(page, ['recordings', a!.id, 'segments.mic.json'], '{}');
   await page.reload();
   await ready(page);
   await row(page, a!.id).locator('button.re-export').click();
@@ -476,6 +480,7 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
   );
   expect(await opfsSize(page, [...exportedPath, 'recording.mp4'])).toBe(videoBytes);
   expect(await opfsSize(page, [...exportedPath, 'transcript.md'])).toBe('# Transcript\n'.length);
+  expect(await opfsSize(page, [...exportedPath, 'segments.mic.json'])).toBe(-1);
   expect((await recording(page, a!.id))!.exportPath).toBe(a!.exportPath);
 
   // With the media deleted, Re-export still writes the artifact, and says so.

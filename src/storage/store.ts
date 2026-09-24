@@ -5,7 +5,7 @@ import { idb } from '../lib/idb.ts';
 import { int16ToFloat32 } from '../lib/pcm.ts';
 import type { ChannelId, Container, Recording } from '../lib/types.ts';
 import {
-  EVENTS_FILE,
+  isExportableArtifact,
   isMediaFile,
   listRecordingFiles,
   pcmFileName,
@@ -89,11 +89,11 @@ export async function deleteRecording(id: string): Promise<void> {
   await idb.del('recordings', id);
 }
 
-/** Names of the artifacts in `recordings/<id>/`: every file that is neither raw media nor the
- * events log (transcript.md, transcript.json, meta.json once transcription writes them). */
+/** Names of the exportable artifacts in `recordings/<id>/` (transcript.md, transcript.json,
+ * meta.json once transcription writes them); see `isExportableArtifact`. */
 export async function listArtifactNames(id: string): Promise<string[]> {
   return Object.keys(await listRecordingFiles(id))
-    .filter((n) => n !== EVENTS_FILE && !isMediaFile(n))
+    .filter(isExportableArtifact)
     .sort();
 }
 
