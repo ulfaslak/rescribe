@@ -4,6 +4,7 @@
 import { idb } from '../lib/idb.ts';
 import { candidateName, renderPathTemplate } from '../lib/pathtemplate.ts';
 import type { Recording } from '../lib/types.ts';
+import { listArtifacts, readArtifact } from './store.ts';
 
 export const EXPORT_HANDLE_KEY = 'export';
 
@@ -126,4 +127,23 @@ export async function writeExportFile(
   } catch (err) {
     throw wrap(err);
   }
+}
+
+/**
+ * Export the transcript artifacts present in OPFS (`listArtifacts`) into the recording's
+ * directory: `rec.exportPath` when set, otherwise a fresh `<template>/`. Returns the path and the
+ * names written. Throws ExportError like getExportDirectory and writeExportFile. The pipeline
+ * calls it once the video is exported; "Save now" calls it after `finalize` for everything else.
+ */
+export async function exportArtifacts(
+  rec: Recording,
+  pathTemplate: string,
+): Promise<{ path: string; names: string[] }> {
+  const names = await listArtifacts(rec.id);
+  const { dir, path } = await getExportDirectory(rec, pathTemplate);
+  for (const name of names) {
+    const text = await readArtifact(rec.id, name);
+    if (text !== undefined) await writeExportFile(dir, name, text);
+  }
+  return { path, names };
 }

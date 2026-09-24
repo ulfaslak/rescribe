@@ -303,7 +303,23 @@ export class Recorder {
     void this.stop();
   }
 
-  /** Append one JSON line to `events.jsonl` (speaker events; the consumer lands with #3). */
+  /**
+   * Append prose to the recording's note, in memory (so stop keeps it) and in the stored record
+   * (so a crash keeps it): a platform adapter's diagnostic, say. The same text is added once.
+   */
+  addNote(text: string): void {
+    const current = this.recording.note ?? '';
+    if (current.includes(text)) return;
+    const note = [current, text].filter(Boolean).join(' ');
+    this.recording = { ...this.recording, note };
+    void updateRecording(this.recording.id, { note }).catch(() => undefined);
+  }
+
+  /**
+   * Append one JSON line to `events.jsonl`: an adapter message as received (app.ts forwards
+   * speaker, roster and adapter-diagnostic messages while recording) or a recorder event
+   * (clock-gap). The pipeline reads the file back through `parseEventLog` (lib/assemble.ts).
+   */
   appendEvent(event: object): void {
     const bytes = new TextEncoder().encode(JSON.stringify(event) + '\n');
     this.writer.append(
@@ -465,7 +481,9 @@ export async function recoverInterrupted(pathTemplate: string): Promise<Recordin
         : Math.max(rec.startedAt, video.lastModified);
     const updated = await updateRecording(rec.id, {
       endedAt,
-      note: 'Interrupted: the Rescribe tab closed while recording. Recovered from disk.',
+      note: [rec.note, 'Interrupted: the Rescribe tab closed while recording. Recovered from disk.']
+        .filter(Boolean)
+        .join(' '),
     });
     out.push(await finalize(updated, pathTemplate));
   }

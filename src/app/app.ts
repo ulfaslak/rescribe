@@ -15,6 +15,12 @@ import type { Captured } from '../recorder/capture.ts';
 import { exportVideoName, finalize, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { listRecordings } from '../storage/store.ts';
+import {
+  isPipelineBusy,
+  onPipelineProgress,
+  recoverInterruptedTranscriptions,
+  transcribeRecording,
+} from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -27,16 +33,26 @@ let recorder: Recorder | undefined;
 let starting = false;
 let ticker: number | undefined;
 
+/**
+ * `status` is the recorder's state and what `query-status` answers, so a toolbar click can still
+ * start a recording while a transcription runs. The pill and the badge show that transcription
+ * when nothing is being recorded.
+ */
 function setStatus(next: AppStatus): void {
   status = next;
+  refreshStatus();
+}
+
+function refreshStatus(): void {
+  const shown: AppStatus = status === 'idle' && isPipelineBusy() ? 'transcribing' : status;
   const pill = $<HTMLSpanElement>('#status');
-  pill.textContent = next;
-  pill.className = `pill ${next === 'recording' ? 'recording' : next === 'transcribing' ? 'processing' : ''}`;
-  $<HTMLButtonElement>('#stop').disabled = next !== 'recording';
-  $<HTMLButtonElement>('#record-screen').disabled = next !== 'idle';
+  pill.textContent = shown;
+  pill.className = `pill ${shown === 'recording' ? 'recording' : shown === 'transcribing' ? 'processing' : ''}`;
+  $<HTMLButtonElement>('#stop').disabled = status !== 'recording';
+  $<HTMLButtonElement>('#record-screen').disabled = status !== 'idle';
   void send({
     type: 'badge',
-    state: next === 'recording' ? 'recording' : next === 'transcribing' ? 'processing' : 'idle',
+    state: shown === 'recording' ? 'recording' : shown === 'transcribing' ? 'processing' : 'idle',
   });
 }
 
@@ -63,7 +79,14 @@ function onMessage(
     case 'speaker':
     case 'roster':
     case 'adapter-diagnostic':
-      console.info('[rescribe] adapter', msg);
+      // Into events.jsonl, stamps as received, while a recording runs; the pipeline reads the
+      // file back (lib/assemble.ts). Outside a recording there is nothing to attach them to.
+      if (recorder && status === 'recording') {
+        recorder.appendEvent(msg);
+        if (msg.type === 'adapter-diagnostic') recorder.addNote(`Meet adapter: ${msg.message}`);
+      } else {
+        console.info('[rescribe] adapter message outside a recording', msg);
+      }
       return false;
     default:
       return false;
@@ -71,7 +94,7 @@ function onMessage(
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (status !== 'idle') e.preventDefault();
+  if (status !== 'idle' || isPipelineBusy()) e.preventDefault();
 });
 
 // --- Recording ----------------------------------------------------------------------------
@@ -187,9 +210,34 @@ function onRecorderChange(
       if (rec.status === 'failed') note(`Recording failed: ${rec.error ?? 'unknown error'}`, true);
       else if (rec.error) note(`Recorded, but ${rec.error}`, true);
       else note(`Saved to ${rec.exportPath ?? '?'}/`);
+      // Exported or not: the artifacts go to OPFS first and follow the video when it is saved.
+      if (rec.status === 'recorded') void autoTranscribe(rec.id);
       break;
   }
   void renderList();
+}
+
+// --- Transcription (steps 3–5 live in pipeline.ts; this is the status line around them) --------
+async function autoTranscribe(id: string): Promise<void> {
+  if ((await loadSettings()).autoTranscribe) await runPipeline(id);
+}
+
+async function runPipeline(id: string): Promise<void> {
+  const done = transcribeRecording(id);
+  refreshStatus();
+  try {
+    const rec = await done;
+    if (status !== 'idle') return;
+    if (rec.status === 'failed')
+      note(`Transcription failed: ${rec.error ?? 'unknown error'}`, true);
+    else if (rec.error) note(`Transcribed. ${rec.error}`, true);
+    else note(`Transcript saved to ${rec.exportPath ?? '?'}/`);
+  } catch (err) {
+    if (status === 'idle') note(`Transcription failed: ${String(err)}`, true);
+  } finally {
+    refreshStatus();
+    void renderList();
+  }
 }
 
 async function onStop(): Promise<void> {
@@ -328,6 +376,8 @@ function bindSettings(settings: Settings): void {
   (fields.namedItem('container') as HTMLSelectElement).value = settings.container;
   (fields.namedItem('micByDefault') as HTMLInputElement).checked = settings.micByDefault;
   (fields.namedItem('model') as HTMLSelectElement).value = settings.model;
+  (fields.namedItem('backend') as HTMLSelectElement).value = settings.backend;
+  (fields.namedItem('autoTranscribe') as HTMLInputElement).checked = settings.autoTranscribe;
   $<HTMLInputElement>('#mic').checked = settings.micByDefault;
 
   let timer: number | undefined;
@@ -341,6 +391,8 @@ function bindSettings(settings: Settings): void {
         container: data.get('container') === 'webm' ? 'webm' : 'mp4',
         micByDefault: data.get('micByDefault') === 'on',
         model: String(data.get('model') || settings.model),
+        backend: data.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',
+        autoTranscribe: data.get('autoTranscribe') === 'on',
       });
       const saved = $<HTMLElement>('#settings-saved');
       saved.textContent = 'Saved.';
@@ -371,6 +423,11 @@ async function main(): Promise<void> {
   }
   chrome.runtime.onMessage.addListener(onMessage);
   setStatus('idle');
+  // The Record section's status line follows the pipeline while nothing is being recorded; the
+  // library follows it per row.
+  onPipelineProgress((_id, p) => {
+    if (status === 'idle') note(p.message);
+  });
   const settings = await loadSettings();
   bindSettings(settings);
   $<HTMLButtonElement>('#choose-folder').addEventListener('click', () => void chooseFolder());
@@ -387,6 +444,12 @@ async function main(): Promise<void> {
     note(`Recovered ${recovered.length} interrupted recording${recovered.length > 1 ? 's' : ''}.`);
     await renderList();
   }
+  // A transcription the last page load left unfinished starts again, once, whatever the
+  // auto-transcribe setting: it was already under way. A recovered recording follows the setting.
+  const interrupted = await recoverInterruptedTranscriptions();
+  for (const rec of interrupted) void runPipeline(rec.id);
+  for (const rec of recovered) if (rec.status === 'recorded') void autoTranscribe(rec.id);
+  if (interrupted.length > 0) await renderList();
   // Startup is complete (recovery included); the e2e harness waits for this.
   document.body.dataset['ready'] = 'owner';
 }

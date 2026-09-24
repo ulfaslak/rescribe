@@ -4,7 +4,14 @@
 import { idb } from '../lib/idb.ts';
 import { int16ToFloat32 } from '../lib/pcm.ts';
 import type { ChannelId, Container, Recording } from '../lib/types.ts';
-import { pcmFileName, recordingFile, removeRecordingDir, videoFileName } from './opfs.ts';
+import {
+  EVENTS_FILE,
+  pcmFileName,
+  recordingDir,
+  recordingFile,
+  removeRecordingDir,
+  videoFileName,
+} from './opfs.ts';
 
 export async function listRecordings(): Promise<Recording[]> {
   const all = await idb.all<Recording>('recordings');
@@ -56,6 +63,54 @@ export async function readChannelPcm(
 
 /** Int16 samples → Float32 in [-1, 1], what an ASR engine takes. */
 export const pcmToFloat32 = int16ToFloat32;
+
+// --- Transcript artifacts (pipeline steps 4–5; ARCHITECTURE § Storage) ----------------------
+
+/** The files the pipeline writes into `recordings/<id>/` and exports next to the video. */
+export const ARTIFACT_NAMES = ['transcript.md', 'transcript.json', 'meta.json'] as const;
+export type ArtifactName = (typeof ARTIFACT_NAMES)[number];
+
+/**
+ * One channel's recogniser output, kept so a re-run skips a channel already transcribed with the
+ * same model, backend and Rescribe version (a re-run after a failure on the other channel, or
+ * with another "my name"). Never exported.
+ */
+export function segmentsArtifactName(channel: ChannelId): string {
+  return `segments.${channel}.json`;
+}
+
+/** Write (replace) a text file in the recording's OPFS directory. */
+export async function writeArtifact(id: string, name: string, text: string): Promise<void> {
+  const dir = await recordingDir(id, true);
+  if (!dir) throw new Error(`recording directory ${id} could not be opened`);
+  const fh = await dir.getFileHandle(name, { create: true });
+  const writable = await fh.createWritable({ keepExistingData: false });
+  try {
+    await writable.write(text);
+    await writable.close();
+  } catch (err) {
+    await writable.abort().catch(() => undefined);
+    throw err;
+  }
+}
+
+/** A text file from the recording's OPFS directory, or undefined when absent. */
+export async function readArtifact(id: string, name: string): Promise<string | undefined> {
+  const file = await recordingFile(id, name);
+  return file ? file.text() : undefined;
+}
+
+/** The exportable artifacts present in OPFS, in ARTIFACT_NAMES order. */
+export async function listArtifacts(id: string): Promise<ArtifactName[]> {
+  const out: ArtifactName[] = [];
+  for (const name of ARTIFACT_NAMES) if (await recordingFile(id, name)) out.push(name);
+  return out;
+}
+
+/** The recording's event log (events.jsonl) as text; empty when absent. */
+export async function readEventLog(id: string): Promise<string> {
+  return (await readArtifact(id, EVENTS_FILE)) ?? '';
+}
 
 /** Delete the recording's OPFS directory (video, PCM, events). The record stays. */
 export function deleteMedia(id: string): Promise<void> {
