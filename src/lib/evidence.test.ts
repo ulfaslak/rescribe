@@ -83,8 +83,9 @@ test('lead is applied after the blip filter, so it cannot rescue a blip', () => 
   assert.deepEqual(cleanIntervals([iv('Anna', 1, 1.2)], { lead: 0.5 }), []);
 });
 
-test('lead defaults to 0', () => {
+test('lead defaults to 0 and a negative lead is treated as 0', () => {
   assert.deepEqual(spans(cleanIntervals([iv('Anna', 1, 2)])), [['Anna', 1, 2]]);
+  assert.deepEqual(spans(cleanIntervals([iv('Anna', 1, 2)], { lead: -5 })), [['Anna', 1, 2]]);
 });
 
 test('cleanIntervals drops invalid intervals and does not mutate its input', () => {
@@ -227,6 +228,31 @@ test('events before the start are clipped to 0, not dropped', () => {
     noLead,
   );
   assert.deepEqual(spans(intervals), [['Anna', 0, 2]]);
+});
+
+test('a stop without a received start means speaking since before listening began: on from 0', () => {
+  const only = eventsToEvidence([sp(3000, 'p1', 'Anna', false)], T0, T0 + 10_000, noLead);
+  assert.deepEqual(spans(only.intervals), [['Anna', 0, 3]]);
+
+  const thenNormal = eventsToEvidence(
+    [sp(1000, 'p1', 'Anna', false), sp(5000, 'p1', 'Anna', true), sp(8000, 'p1', 'Anna', false)],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(spans(thenNormal.intervals), [
+    ['Anna', 0, 1],
+    ['Anna', 5, 8],
+  ]);
+
+  // An orphan stop before the recording started describes speech that ended before t=0.
+  const before = eventsToEvidence(
+    [sp(-1000, 'p1', 'Anna', false), sp(2000, 'p1', 'Anna', true), sp(4000, 'p1', 'Anna', false)],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(spans(before.intervals), [['Anna', 2, 4]]);
 });
 
 test('an interval entirely before the start or after the end is dropped; one straddling the end is clipped', () => {

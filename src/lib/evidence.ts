@@ -39,7 +39,7 @@ export function cleanIntervals(
   // 0.29999999999999982 s. Duration comparisons get a microsecond of slack.
   const minDuration = (opts.minDuration ?? 0.3) - EPSILON;
   const mergeGap = (opts.mergeGap ?? 0.3) + EPSILON;
-  const lead = opts.lead ?? 0;
+  const lead = Math.max(0, opts.lead ?? 0);
 
   const groups = new Map<string, SpeakerInterval[]>();
   for (const iv of intervals) {
@@ -115,7 +115,8 @@ export const MEET_LEAD = 0.3;
  * Turns the adapter's message stream for one recording into platform evidence. Toggles are
  * paired per participant id (two participants with the same display name stay apart); the
  * speaker label is the display name. A participant still speaking at `endedAtMs` is closed
- * there; intervals are clipped to [0, duration], so a speaker already on at t=0 is on from 0.
+ * there; intervals are clipped to [0, duration], so a speaker already on at t=0 is on from 0,
+ * whether their start event was received or only their stop.
  */
 export function eventsToEvidence(
   events: AdapterEvent[],
@@ -150,6 +151,20 @@ export function eventsToEvidence(
       speaker: ev.id,
       speaking: ev.speaking,
     });
+  }
+
+  // The adapter never emits a stop without having sent its start, so a stop with no open start
+  // means the start predates what the app tab received: that participant was already speaking
+  // when listening began. Open them from -Infinity; the clip below makes that t=0.
+  const orphaned = new Set<string>();
+  const open = new Set<string>();
+  for (const tg of [...toggles].sort((a, b) => a.t - b.t)) {
+    if (tg.speaking) open.add(tg.speaker);
+    else if (open.has(tg.speaker)) open.delete(tg.speaker);
+    else orphaned.add(tg.speaker);
+  }
+  for (const speaker of orphaned) {
+    toggles.push({ t: Number.NEGATIVE_INFINITY, speaker, speaking: true });
   }
 
   const raw = togglesToIntervals('display', toggles, duration)
