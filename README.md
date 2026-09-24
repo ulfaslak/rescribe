@@ -21,6 +21,8 @@ When you stop, the video is saved immediately into a folder named by the templat
 
 A recording that could not be saved to the folder (after a browser restart Chrome asks for the folder permission again, and it can only ask from a click) is kept and shows a **Save now** button in the list; click it to grant the permission and save. Keep one Rescribe tab: a second one only offers to take you to the first.
 
+**Recordings** is the library. Click the pencil to rename a recording (the folder on disk keeps its name). **Re-export** writes the video and the transcript files into the folder again, recreating it if you deleted it. **Delete media** frees the video and audio Rescribe keeps in the browser and leaves the record and the folder alone; **Delete** removes the record too, still never the folder. Both ask you to click once more. The line under the list shows how much the browser holds; **Delete media for exported recordings** frees all of it at once.
+
 ## Develop
 
 See `CLAUDE.md` and `AGENTS/DNA/DEVELOPMENT.md`.
