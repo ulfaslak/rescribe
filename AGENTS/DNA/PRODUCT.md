@@ -20,6 +20,7 @@ Every recording produces, in the folder chosen in Settings, under a per-recordin
 ### Shipped
 
 - Repository scaffold, build, test harness (2026-09-24). No user-facing feature yet.
+- Meet speaker adapter (2026-09-24): on meet.google.com the extension knows who is speaking when and who is present, validated in a two-person call. Nothing consumes the events yet; that lands with transcription (#2) and #3.
 
 ### Planned, in order
 
