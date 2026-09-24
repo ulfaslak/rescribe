@@ -37,6 +37,7 @@ let recordedTabId: number | undefined;
 /** Tabs whose speaker or roster events reached the current recording (the picker path). */
 const contributingTabs = new Set<number>();
 const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+/** A start is under way, from its first capture to the recorder running; one at a time. */
 let starting = false;
 let ticker: number | undefined;
 
@@ -74,7 +75,8 @@ function note(text: string, isError = false): void {
  * background (background.ts `onToggle`), so anything that needs the human's eyes or hands during a
  * start asks for the foreground: a permission prompt (Chrome shows it only for a visible tab; in
  * a hidden one the request waits, and with it the recording) or a start that failed, whose note
- * would otherwise sit unseen while the human waits for the badge. A no-op when already in front.
+ * would otherwise sit unseen while the human waits for the badge. Already in front, it only
+ * raises this tab's window.
  */
 function comeForward(): void {
   void send({ type: 'focus-app' });
@@ -148,14 +150,43 @@ function tick(): void {
   note(`Recording ${formatDuration(Date.now() - rec.startedAt)} · ${describeSources(rec)}`);
 }
 
-/** Toolbar button or keyboard command: the service worker obtained a tab-capture stream id. */
+/** True once `#mic` reflects Settings; a toggle that lands before then reads Settings itself. */
+let formBound = false;
+
+/** Whether this recording wants the microphone: the checkbox once bound, Settings before. */
+function micWanted(settings: Settings): boolean {
+  return formBound ? $<HTMLInputElement>('#mic').checked : settings.micByDefault;
+}
+
+/** The microphone when wanted; `missing` when it was wanted and unavailable (denied, absent). */
+interface MicResult {
+  mic?: Captured;
+  missing: boolean;
+}
+
+/**
+ * The microphone, when wanted. A permission prompt brings this tab forward first: Chrome shows
+ * the prompt only for a visible tab, and a toolbar click on a call platform tab leaves this tab
+ * hidden. Unavailable is not a failure: the recording goes on without it.
+ */
+async function acquireMic(settings: Settings): Promise<MicResult> {
+  if (!micWanted(settings)) return { missing: false };
+  if (await micWillPrompt()) comeForward();
+  const mic = await captureMic();
+  return { mic, missing: !mic };
+}
+
+/**
+ * Toolbar button or keyboard command: the service worker obtained a tab-capture stream id. It
+ * sends this only after reading `idle`, so a message that arrives while not idle, or while a
+ * start is pending, is a click it did not bring this tab forward for: do it now, with whatever
+ * the pending start waits on (a permission prompt) or with Stop.
+ */
 async function onToggleRecording(
   msg: Extract<Message, { type: 'toggle-recording' }>,
 ): Promise<void> {
   if (status !== 'idle' || starting) {
-    // A second click while a start is still pending in the background: whatever it waits on
-    // (a permission prompt) shows once this tab is visible.
-    if (starting) comeForward();
+    comeForward();
     return;
   }
   if (!msg.streamId) {
@@ -166,56 +197,79 @@ async function onToggleRecording(
     comeForward();
     return;
   }
-  let display: Captured;
-  try {
-    display = await captureTab(msg.streamId, msg.tabTitle);
-  } catch (err) {
-    note(`Couldn't capture that tab: ${String(err)}`, true);
-    comeForward();
-    return;
-  }
-  await startRecording(display, msg.tabTitle || 'Tab recording', msg.tabId);
-}
-
-/** "Record screen…": Chrome's picker, from a click in this tab. */
-async function onRecordScreen(): Promise<void> {
-  if (status !== 'idle' || starting) return;
-  let display: Captured;
-  try {
-    display = await captureDisplay();
-  } catch (err) {
-    if (err instanceof CaptureCancelled) note('');
-    else note(`Couldn't start: ${String(err)}`, true);
-    return;
-  }
-  await startRecording(display, 'Screen recording');
-}
-
-async function startRecording(display: Captured, title: string, tabId?: number): Promise<void> {
-  if (status !== 'idle' || starting) {
-    stopAll(display.stream);
-    return;
-  }
   starting = true;
-  recordedTabId = tabId;
-  contributingTabs.clear();
   try {
     const settings = await loadSettings();
-    const wantMic = $<HTMLInputElement>('#mic').checked;
-    if (wantMic && (await micWillPrompt())) comeForward();
-    const mic = wantMic ? await captureMic() : undefined;
-    if (wantMic && !mic) {
-      note('Microphone unavailable; recording without it.', true);
+    // The microphone before the tab: consuming the stream id mutes the captured tab for the
+    // human until the recorder plays it back, and a permission prompt takes as long as the human
+    // takes. The id lives 10 s from issue (background.ts): enough once the microphone is granted;
+    // a prompt answered later fails the tab capture visibly and the next click succeeds.
+    const mic = await acquireMic(settings);
+    let display: Captured;
+    try {
+      display = await captureTab(msg.streamId, msg.tabTitle);
+    } catch (err) {
+      if (mic.mic) stopAll(mic.mic.stream);
+      note(`Couldn't capture that tab: ${String(err)}`, true);
       comeForward();
+      return;
     }
+    await startRecording(display, mic, settings, msg.tabTitle || 'Tab recording', msg.tabId);
+  } finally {
+    starting = false;
+  }
+}
+
+/** "Record screen…": Chrome's picker, from a click in this tab. The picker first: it needs the gesture. */
+async function onRecordScreen(): Promise<void> {
+  if (status !== 'idle' || starting) return;
+  starting = true;
+  try {
+    let display: Captured;
+    try {
+      display = await captureDisplay();
+    } catch (err) {
+      if (err instanceof CaptureCancelled) note('');
+      else note(`Couldn't start: ${String(err)}`, true);
+      return;
+    }
+    const settings = await loadSettings();
+    const mic = await acquireMic(settings);
+    await startRecording(display, mic, settings, 'Screen recording');
+  } finally {
+    starting = false;
+  }
+}
+
+/**
+ * The recorder over the captured streams. `starting` is the caller's, held from its first
+ * capture, so two starts cannot both get here; the status guard is for the recorder's own state.
+ */
+async function startRecording(
+  display: Captured,
+  mic: MicResult,
+  settings: Settings,
+  title: string,
+  tabId?: number,
+): Promise<void> {
+  if (status !== 'idle') {
+    stopAll(display.stream);
+    if (mic.mic) stopAll(mic.mic.stream);
+    return;
+  }
+  recordedTabId = tabId;
+  contributingTabs.clear();
+  // The recording starts anyway; the row keeps the note. Not a reason to come forward.
+  if (mic.missing) note('Microphone unavailable; recording without it.', true);
+  try {
     recorder = await Recorder.start(
       {
         display,
-        mic,
+        mic: mic.mic,
         title,
         container: settings.container,
         pathTemplate: settings.pathTemplate,
-        note: wantMic && !mic ? 'Microphone unavailable at start; recorded without it.' : undefined,
+        note: mic.missing ? 'Microphone unavailable at start; recorded without it.' : undefined,
       },
       onRecorderChange,
     );
@@ -224,8 +278,6 @@ async function startRecording(display: Captured, title: string, tabId?: number):
     comeForward();
     recordedTabId = undefined;
     setStatus('idle');
-  } finally {
-    starting = false;
   }
 }
 
@@ -337,6 +389,7 @@ function bindSettings(settings: Settings): void {
   (fields.namedItem('backend') as HTMLSelectElement).value = settings.backend;
   (fields.namedItem('autoTranscribe') as HTMLInputElement).checked = settings.autoTranscribe;
   $<HTMLInputElement>('#mic').checked = settings.micByDefault;
+  formBound = true;
 
   let timer: number | undefined;
   form.addEventListener('input', () => {

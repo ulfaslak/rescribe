@@ -150,6 +150,9 @@ chrome.action.onClicked.addListener((tab) => {
   void onToggle(tab);
 });
 
+// For DevTools and the e2e harness: the toolbar click with a Tab-shaped object (id, url, title).
+(globalThis as unknown as { rescribe: unknown }).rescribe = { onToggle };
+
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'toggle-recording') void onToggle(tab ?? undefined);
 });

@@ -1,6 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { platformOf } from './platform.ts';
+
+test('every page a content script runs on is a platform (manifest and platform.ts agree)', () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'),
+  ) as {
+    content_scripts: { matches: string[] }[];
+  };
+  const matches = manifest.content_scripts.flatMap((cs) => cs.matches);
+  assert.ok(matches.length > 0);
+  for (const m of matches) {
+    // `https://host/*` → a URL on that host.
+    assert.ok(platformOf(m.replace(/\*$/, 'x')), `${m} is not a platform`);
+  }
+});
 
 test('a Meet call is meet', () => {
   assert.equal(platformOf('https://meet.google.com/abc-defg-hij'), 'meet');
