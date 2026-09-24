@@ -710,35 +710,41 @@ test('a row with an action in progress shows it and offers nothing, whatever re-
   await expect(ra.locator('button.delete')).toBeVisible();
 });
 
-test('a deletion that lands while the storage walk is on that directory still removes the row', async ({
+test('the storage walk survives a recording directory removed from under it', async ({
   context,
   extensionId,
 }) => {
   const page = await setUp(context, extensionId);
   const [a, b] = await seed(page, 2);
-  // Every directory listing yields slowly, so the render an action starts is still walking
-  // `recordings/` when the action removes B's directory from under it.
-  await page.addInitScript(() => {
-    const orig = FileSystemDirectoryHandle.prototype.entries as (
+  // The first listing of B's directory removes B before it lists: what a delete landing while
+  // the walk holds that handle looks like (the handle then throws NotFoundError).
+  await page.addInitScript((victim: string) => {
+    type Entries = (
       this: FileSystemDirectoryHandle,
     ) => AsyncIterableIterator<[string, FileSystemHandle]>;
-    (FileSystemDirectoryHandle.prototype as unknown as { entries: unknown }).entries =
-      async function* (this: FileSystemDirectoryHandle) {
-        for await (const entry of orig.call(this)) {
-          await new Promise((r) => setTimeout(r, 60));
-          yield entry;
-        }
-      };
-  });
-  await page.reload();
-  await ready(page);
+    const proto = FileSystemDirectoryHandle.prototype as unknown as { entries: Entries };
+    const orig = proto.entries;
+    let removed = false;
+    proto.entries = async function* (this: FileSystemDirectoryHandle) {
+      if (this.name === victim && !removed) {
+        removed = true;
+        const root = await navigator.storage.getDirectory();
+        const recs = await root.getDirectoryHandle('recordings');
+        await recs.removeEntry(victim, { recursive: true });
+      }
+      for await (const entry of orig.call(this)) yield entry;
+    };
+  }, b!.id);
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await clickTwice(row(page, b!.id).locator('button.delete'));
-  await expect(page.locator('#library-status')).toContainText('Deleted "', { timeout: 15_000 });
-  await expect(row(page, b!.id)).toHaveCount(0);
-  await expect(row(page, a!.id)).toHaveCount(1);
-  expect(await recording(page, b!.id)).toBeUndefined();
+  await page.reload();
+  // The load's render walked `recordings/` and B vanished under it: the app is still up.
+  await ready(page);
+  expect(await opfsDirExists(page, ['recordings', b!.id])).toBe(false);
+  await expect(row(page, b!.id)).toHaveCount(1); // the record is still there…
+  await expect(row(page, b!.id).locator('.size')).toHaveCount(0); // …with nothing local
+  await expect(row(page, a!.id).locator('.size')).toHaveCount(1);
+  await expect(page.locator('#library-status')).toHaveText('');
   expect(errors).toEqual([]);
   await expectStorageMatchesWalk(page);
 });
