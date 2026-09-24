@@ -24,6 +24,10 @@ System audio with `getDisplayMedia` on macOS needs Chrome 141+ and macOS 14.2+ (
 - Chrome fires `ended` on a display track when the source ends (Stop sharing, tab closed); `track.stop()` from the page does not, and the MediaRecorder keeps running.
 - A file written through a sync access handle in a worker is readable with `getFile()` from another page while the handle is open, with the flushed size; the storage worker's `flush()` per write is what makes the recovery path see the data.
 
+### A tab-capture stream id must name the app tab as its consumer (Brave, 2026-09-24)
+
+`chrome.tabCapture.getMediaStreamId({ targetTabId })` from the service worker without `consumerTabId` produced an id that the app tab could not consume: `getUserMedia` there rejected with `AbortError: Error starting tab capture`. Chromium's `DesktopStreamsRegistry` hands a stream only to the render process it was registered for; for an MV3 service-worker caller that is the worker's own process, and the app tab runs in another one because its COOP/COEP headers make it cross-origin isolated. `consumerTabId: <app tab id>` binds the id to the app tab's frame instead. The registered id lives 10 s. The e2e harness cannot press the toolbar button, so this path is a [[LIVE_CHECKS]] entry; the failure was seen by the human on the first real click.
+
 ### Playwright
 
 Chromium for Playwright 1.63 is installed in `~/Library/Caches/ms-playwright/`. The e2e profile `.playwright/profile/` caches the Parakeet model files the spikes and the transcribe spec have requested (about 4 GB after the kickoff runs: int8, fp16 and fp32 encoders); see [[DEVELOPMENT]] § "The e2e harness". Two Playwright runs cannot share the profile at once (Chromium locks the user-data-dir): run e2e specs sequentially.

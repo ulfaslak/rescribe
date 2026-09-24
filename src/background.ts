@@ -102,25 +102,31 @@ async function setBadge(state: BadgeState): Promise<void> {
  * The toolbar button. Idle: start recording the clicked tab (plus mic) through the app tab.
  * Otherwise: bring the app tab forward, where Stop lives. Misclicks must not stop a recording.
  *
- * The tab-capture stream id is obtained first, before any other await: the extension has just
- * been invoked on the tab, which is what `getMediaStreamId` requires. The id is consumed by
- * getUserMedia in the app tab (recorder/capture.ts) and is sent to that tab only, never
+ * The tab-capture stream id is bound to the app tab (`consumerTabId`) and requested last. Without
+ * `consumerTabId` Chromium binds the id to the caller's render process, the service worker's; the
+ * app tab is cross-origin isolated (COOP/COEP, for multithreaded WASM) and runs in another
+ * process, so getUserMedia there fails with "AbortError: Error starting tab capture" (observed in
+ * Brave, 2026-09-24). Ordering: the invocation grant on the target tab lasts until it navigates,
+ * so waiting for the app tab first is safe; the id itself expires 10 s after it is issued
+ * (Chromium's DesktopStreamsRegistry), so it is issued right before it is sent. The id is consumed
+ * by getUserMedia in the app tab (recorder/capture.ts) and is sent to that tab only, never
  * broadcast. Clicking on the app tab itself only focuses it.
  */
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
   const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
-  let streamId: string | undefined;
-  let error: string | undefined;
-  if (target?.id !== undefined) {
-    try {
-      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: target.id });
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
-  }
   const status = await queryStatus();
   const app = await ensureAppTab(true);
   if (app?.id === undefined || status !== 'idle' || !target?.id) return;
+  let streamId: string | undefined;
+  let error: string | undefined;
+  try {
+    streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: target.id,
+      consumerTabId: app.id,
+    });
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
   await chrome.tabs
     .sendMessage(app.id, {
       type: 'toggle-recording',
