@@ -54,7 +54,7 @@ describe('sanitizeSegment', () => {
   });
   it('caps the length without leaving a trailing space', () => {
     const s = sanitizeSegment('ab '.repeat(100));
-    assert.ok(s.length <= 120);
+    assert.ok(s.length <= 200);
     assert.notEqual(s.at(-1), ' ');
   });
   it('replaces control characters', () => {
@@ -73,5 +73,41 @@ describe('uniqueName', () => {
   it('candidateName is the sequence uniqueName walks', () => {
     assert.equal(candidateName('x', 1), 'x');
     assert.equal(candidateName('x', 2), 'x (2)');
+  });
+});
+
+/** True when the string has no lone surrogate (encodeURIComponent throws on one). */
+const wellFormed = (s: string): boolean => {
+  try {
+    encodeURIComponent(s);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+describe('sanitizeSegment: file-system limits', () => {
+  it('caps by UTF-8 bytes on a code-point boundary', () => {
+    const title = '会議'.repeat(100); // 600 bytes
+    const s = sanitizeSegment(title);
+    assert.ok(new TextEncoder().encode(s).length <= 200, 'under the byte cap');
+    assert.equal(s.length % 2, 0, 'whole characters');
+    assert.ok(s.startsWith('会議会議'));
+  });
+  it('never splits a surrogate pair', () => {
+    const s = sanitizeSegment('a'.repeat(199) + '😀' + 'b'.repeat(10));
+    assert.ok(wellFormed(s));
+    assert.equal(s, 'a'.repeat(199), 'the emoji did not fit in the last byte');
+    const t = sanitizeSegment('a'.repeat(196) + '😀' + 'b'.repeat(10));
+    assert.ok(wellFormed(t));
+    assert.equal(t, 'a'.repeat(196) + '😀');
+  });
+  it('escapes Windows reserved device names', () => {
+    for (const name of ['CON', 'con', 'NUL', 'com1', 'LPT9', 'aux.txt', 'PRN.log']) {
+      const s = sanitizeSegment(name);
+      assert.equal(s, `_${name}`, name);
+    }
+    assert.equal(sanitizeSegment('console'), 'console');
+    assert.equal(sanitizeSegment('com10'), 'com10');
   });
 });

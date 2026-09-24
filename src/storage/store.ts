@@ -38,7 +38,12 @@ export function getChannelFile(id: string, channel: ChannelId): Promise<File | u
   return recordingFile(id, pcmFileName(channel));
 }
 
-/** A channel's whole PCM as Int16 samples (the on-disk representation; 2 bytes per second-sample). */
+/**
+ * A channel's whole PCM as Int16 samples, the on-disk representation (32 kB per second; a two-hour
+ * channel is 230 MB). Hand the array to the transcribe worker as a transfer and convert to Float32
+ * there, in pieces; never convert a whole channel in the app tab (twice the memory, on the UI
+ * thread). For anything incremental use `getChannelFile` and `File.slice`.
+ */
 export async function readChannelPcm(
   id: string,
   channel: ChannelId,

@@ -8,6 +8,7 @@ import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
 import type { Recording } from '../src/lib/types.ts';
+import { exportVideoName } from '../src/recorder/recorder.ts';
 
 /** The export "folder" is a directory in OPFS: an OPFS handle is a FileSystemDirectoryHandle, so
  * the export code runs unchanged and the test reads the result back through OPFS. */
@@ -39,6 +40,7 @@ async function openApp(context: BrowserContext, extensionId: string): Promise<Pa
   });
   page.on('pageerror', (e) => console.log('[pageerror]', e.message));
   await page.goto(`chrome-extension://${extensionId}/app/app.html`);
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
   return page;
 }
@@ -158,7 +160,7 @@ async function saveExport(page: Page, rec: Recording, name: string): Promise<str
   const bytes = await opfsBytes(page, [
     EXPORT_DIR,
     ...rec.exportPath!.split('/'),
-    rec.container === 'mp4' ? 'recording.mp4' : 'recording.webm',
+    exportVideoName(rec.container),
   ]);
   writeFileSync(file, bytes);
   return file;
@@ -173,6 +175,17 @@ async function record(page: Page, seconds: number): Promise<number> {
   await page.click('#stop');
   await expect(page.locator('#status')).toHaveText('idle', { timeout: 30_000 });
   return clickedAt;
+}
+
+/** RMS of an Int16 LE PCM buffer, in dBFS. */
+function rmsDb(pcm: Buffer): number {
+  const n = Math.floor(pcm.length / 2);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = pcm.readInt16LE(i * 2) / 32768;
+    sum += v * v;
+  }
+  return 20 * Math.log10(Math.sqrt(sum / Math.max(1, n)) || 1e-9);
 }
 
 function expectPcmLength(bytes: number, seconds: number, what: string): void {
@@ -195,6 +208,7 @@ test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twi
   // No {time}: the second recording renders the same folder name and must get a suffix.
   await setSettings(page, { container: 'mp4', pathTemplate: '{date} {title}', micByDefault: true });
   await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
   await expect(page.locator('#folder-name')).toHaveText(EXPORT_DIR);
   await expect(page.locator('#mic')).toBeChecked();
@@ -219,6 +233,17 @@ test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twi
   const opfs = ['recordings', rec!.id];
   expectPcmLength(await opfsSize(page, [...opfs, 'mic.pcm']), seconds, 'mic.pcm');
   expectPcmLength(await opfsSize(page, [...opfs, 'display.pcm']), seconds, 'display.pcm');
+  // Content, not just length: the taps zero-fill when starved, so a starved tap has the right size.
+  const micDb = rmsDb(await opfsBytes(page, [...opfs, 'mic.pcm']));
+  const displayDb = rmsDb(await opfsBytes(page, [...opfs, 'display.pcm']));
+  console.log(
+    `levels: mic ${micDb.toFixed(1)} dBFS, display ${displayDb.toFixed(1)} dBFS; stored ${JSON.stringify(rec!.levels)}`,
+  );
+  expect(micDb, 'the speech fixture reached mic.pcm').toBeGreaterThan(-40);
+  expect(displayDb, 'fake display audio reached display.pcm').toBeGreaterThan(-40);
+  expect(rec!.levels?.mic).toBeDefined();
+  expect(Math.abs((rec!.levels?.mic ?? -999) - micDb)).toBeLessThan(1);
+  // No render gaps were padded on a healthy run (a false positive would write a clock-gap line).
   expect(await opfsSize(page, [...opfs, 'events.jsonl'])).toBe(0);
   const videoBytes = await opfsSize(page, [...opfs, 'video.mp4']);
   expect(videoBytes).toBeGreaterThan(10_000);
@@ -256,6 +281,7 @@ test('webm container: vp9 + opus', async ({ context, extensionId }) => {
   await seedExportFolder(page);
   await setSettings(page, { container: 'webm', pathTemplate: '{date} {time} {title}' });
   await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
 
   await record(page, 2);
@@ -279,6 +305,7 @@ test('app tab closed mid-recording: data is on disk, recovered and exported on n
   await seedExportFolder(page);
   await setSettings(page, { container: 'mp4', pathTemplate: '{date} {time} {title}' });
   await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
 
   await page.click('#record-screen');
@@ -315,6 +342,7 @@ test('display track ends mid-recording (Stop sharing, tab closed): same as Stop'
   await seedExportFolder(page);
   await setSettings(page, { container: 'mp4', pathTemplate: '{date} {time} {title}' });
   await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
 
   await page.click('#record-screen');
@@ -339,7 +367,7 @@ test('display track ends mid-recording (Stop sharing, tab closed): same as Stop'
   expect(probe.duration).toBeGreaterThan(1);
 });
 
-test('no export folder chosen: recorded, not exported, media kept for a later re-export', async ({
+test('no export folder chosen: recorded, not exported, media kept; Save now exports it later', async ({
   context,
   extensionId,
 }) => {
@@ -359,8 +387,9 @@ test('no export folder chosen: recorded, not exported, media kept for a later re
         };
       }),
   );
-  await setSettings(page, { container: 'mp4' });
+  await setSettings(page, { container: 'mp4', pathTemplate: '{date} {time} {title}' });
   await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#folder-name')).toHaveText('No folder chosen');
 
   await record(page, 2);
@@ -371,4 +400,126 @@ test('no export folder chosen: recorded, not exported, media kept for a later re
   expect(rec!.error).toMatch(/No export folder/);
   expect(await opfsSize(page, ['recordings', rec!.id, 'video.mp4'])).toBeGreaterThan(10_000);
   await expect(page.locator('#record-status')).toContainText('No export folder');
+
+  // The row offers Save now; once a folder exists, the click exports without re-recording.
+  const row = page.locator(`.recording-item[data-id="${rec!.id}"]`);
+  await expect(row.locator('button.save-now')).toBeVisible();
+  await seedExportFolder(page);
+  await row.locator('button.save-now').click();
+  await expect(row.locator('.path')).toHaveText(/Screen recording\/$/, { timeout: 15_000 });
+  const [saved] = await recordings(page);
+  expect(saved!.id).toBe(rec!.id);
+  expect(saved!.status).toBe('recorded');
+  expect(saved!.error).toBeUndefined();
+  expect(saved!.exportPath).toBeDefined();
+  expect(await opfsSize(page, [EXPORT_DIR, saved!.exportPath!, 'recording.mp4'])).toBeGreaterThan(
+    10_000,
+  );
+  await expect(row.locator('button.save-now')).toHaveCount(0);
+});
+
+test('a second app tab is inert: no badge change, no second recording', async ({
+  context,
+  extensionId,
+}) => {
+  await openTarget(context);
+  const a = await openApp(context, extensionId);
+  await clearRecordings(a);
+  await seedExportFolder(a);
+  await a.reload();
+  await expect(a.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  await expect(a.locator('#status')).toHaveText('idle');
+  await a.click('#record-screen');
+  await expect(a.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+  const badge = () => a.evaluate(() => chrome.action.getBadgeText({}));
+  expect(await badge()).toBe('REC');
+  const aTabId = await a.evaluate(async () => (await chrome.tabs.getCurrent())!.id!);
+
+  const b = await context.newPage();
+  await b.goto(`chrome-extension://${extensionId}/app/app.html`);
+  await expect(b.locator('#duplicate')).toBeVisible();
+  await expect(b.locator('main')).toBeHidden();
+  expect(await badge()).toBe('REC');
+  // The service worker's per-tab query reaches the owner and only the owner.
+  expect(
+    await b.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'query-status' }), aTabId),
+  ).toBe('recording');
+  // A broadcast toggle (as a keyboard command would be, before the fix) starts nothing in B.
+  await b.evaluate(() => chrome.runtime.sendMessage({ type: 'toggle-recording', tabId: 1 }));
+  await b.waitForTimeout(1000);
+  await expect(a.locator('#status')).toHaveText('recording');
+  expect(await badge()).toBe('REC');
+
+  // "Go to the Rescribe tab" focuses A and closes the duplicate.
+  await b.click('#focus-app');
+  await expect.poll(() => b.isClosed(), { timeout: 10_000 }).toBe(true);
+  await a.click('#stop');
+  await expect(a.locator('#status')).toHaveText('idle', { timeout: 30_000 });
+  const recs = await recordings(a);
+  expect(recs).toHaveLength(1);
+  expect(recs[0]!.status).toBe('recorded');
+  expect(await badge()).toBe('');
+});
+
+test('storage worker fails to load: start fails visibly, nothing persisted, capture released', async ({
+  context,
+  extensionId,
+}) => {
+  await openTarget(context);
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const Orig = window.Worker;
+    window.Worker = class extends Orig {
+      constructor(url: string | URL, opts?: WorkerOptions) {
+        super(String(url).replace('storage.js', 'missing.js'), opts);
+      }
+    };
+  });
+  await page.goto(`chrome-extension://${extensionId}/app/app.html`);
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  await expect(page.locator('#status')).toHaveText('idle');
+  await clearRecordings(page);
+  await page.click('#record-screen');
+  await expect(page.locator('#record-status')).toContainText("Couldn't start", { timeout: 15_000 });
+  await expect(page.locator('#record-status')).toContainText('storage worker');
+  await expect(page.locator('#status')).toHaveText('idle');
+  expect(await recordings(page)).toHaveLength(0);
+  await expect(page.locator('#record-screen')).toBeEnabled();
+});
+
+test('a lost video chunk fails the recording at once and releases everything', async ({
+  context,
+  extensionId,
+}) => {
+  await openTarget(context);
+  const page = await openApp(context, extensionId);
+  await page.addInitScript(() => {
+    let calls = 0;
+    const orig = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = function (this: Blob) {
+      calls++;
+      if (calls === 2) return Promise.reject(new Error('synthetic arrayBuffer failure'));
+      return orig.call(this);
+    };
+  });
+  await clearRecordings(page);
+  await seedExportFolder(page);
+  await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  await expect(page.locator('#status')).toHaveText('idle');
+  await page.click('#record-screen');
+  await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+  // Without a Stop click: the second chunk (~2 s) fails and the recording ends by itself.
+  await expect(page.locator('#status')).toHaveText('idle', { timeout: 15_000 });
+  const [rec] = await recordings(page);
+  console.log(JSON.stringify(rec));
+  expect(rec!.status).toBe('failed');
+  expect(rec!.error).toMatch(/Video chunk lost.*synthetic/);
+  expect(rec!.endedAt! - rec!.startedAt).toBeLessThan(5000);
+  await expect(page.locator('#record-status')).toContainText('Recording failed');
+  // Contexts and the writer were released: a new recording works in the same page.
+  await record(page, 2);
+  const [next] = await recordings(page);
+  expect(next!.id).not.toBe(rec!.id);
+  expect(next!.status).toBe('recorded');
 });

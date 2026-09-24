@@ -12,7 +12,7 @@ import {
   stopAll,
 } from '../recorder/capture.ts';
 import type { Captured } from '../recorder/capture.ts';
-import { Recorder, recoverInterrupted } from '../recorder/recorder.ts';
+import { exportVideoName, finalize, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { listRecordings } from '../storage/store.ts';
 
@@ -47,7 +47,12 @@ function note(text: string, isError = false): void {
 }
 
 // --- Messages from the service worker and content scripts ---------------------------------
-chrome.runtime.onMessage.addListener((msg: Message, _sender, sendResponse) => {
+// Registered by main() only in the tab that owns the recorder; a duplicate tab never listens.
+function onMessage(
+  msg: Message,
+  _sender: chrome.runtime.MessageSender,
+  sendResponse: (res: AppStatus) => void,
+): boolean {
   switch (msg.type) {
     case 'query-status':
       sendResponse(status);
@@ -63,7 +68,7 @@ chrome.runtime.onMessage.addListener((msg: Message, _sender, sendResponse) => {
     default:
       return false;
   }
-});
+}
 
 window.addEventListener('beforeunload', (e) => {
   if (status !== 'idle') e.preventDefault();
@@ -174,7 +179,7 @@ function onRecorderChange(
       note('Finishing…');
       break;
     case 'exporting':
-      note(`Saving ${rec.container === 'mp4' ? 'recording.mp4' : 'recording.webm'}…`);
+      note(`Saving ${exportVideoName(rec.container)}…`);
       break;
     case 'done':
       recorder = undefined;
@@ -196,6 +201,33 @@ async function onStop(): Promise<void> {
 }
 
 // --- Library (plain list; #4 grows it) ---------------------------------------------------------
+/** "Save now": export a `recorded` recording that has no export path yet, from a click, so the
+ * folder permission can be re-requested (after a browser restart, or when the share ended from
+ * Chrome's bar and finalize ran outside a gesture). */
+async function saveNow(rec: Recording, button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    await ensureExportPermission().catch(() => undefined);
+    const settings = await loadSettings();
+    const done = await finalize(rec, settings.pathTemplate);
+    note(
+      done.exportPath ? `Saved to ${done.exportPath}/` : `Still not saved: ${done.error ?? '?'}`,
+      !done.exportPath,
+    );
+  } finally {
+    await renderList();
+  }
+}
+
+function formatLevels(levels: Recording['levels']): string | undefined {
+  if (!levels) return undefined;
+  const parts = (['mic', 'display'] as const)
+    .filter((ch) => levels[ch] !== undefined)
+    .map((ch) => `${ch} ${levels[ch]} dBFS`);
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
 function item(rec: Recording): HTMLLIElement {
   const li = document.createElement('li');
   li.className = 'recording-item';
@@ -216,6 +248,13 @@ function item(rec: Recording): HTMLLIElement {
   pill.className = `pill ${rec.status}`;
   pill.textContent = rec.status;
   meta.append(when, dur, src, pill);
+  const levels = formatLevels(rec.levels);
+  if (levels) {
+    const lv = document.createElement('span');
+    lv.className = 'levels';
+    lv.textContent = levels;
+    meta.append(lv);
+  }
   li.append(title, meta);
   if (rec.exportPath) {
     const path = document.createElement('div');
@@ -232,6 +271,13 @@ function item(rec: Recording): HTMLLIElement {
     p.className = cls;
     p.textContent = text;
     li.append(p);
+  }
+  if (rec.status === 'recorded' && !rec.exportPath) {
+    const save = document.createElement('button');
+    save.className = 'save-now';
+    save.textContent = 'Save now';
+    save.addEventListener('click', () => void saveNow(rec, save));
+    li.append(save);
   }
   return li;
 }
@@ -303,7 +349,27 @@ function bindSettings(settings: Settings): void {
   });
 }
 
+/** A second app tab: inert, so the two cannot disagree about the badge or start two recordings. */
+function showDuplicate(): void {
+  document.body.classList.add('duplicate');
+  const section = $<HTMLElement>('#duplicate');
+  section.hidden = false;
+  $<HTMLButtonElement>('#focus-app').addEventListener(
+    'click',
+    () => void send({ type: 'focus-app' }),
+  );
+}
+
 async function main(): Promise<void> {
+  // Single-owner rule: if another app tab answers, this tab does nothing at all. The service
+  // worker does not answer query-status, so any answer is a live sibling.
+  const sibling = await send({ type: 'query-status' });
+  if (sibling !== undefined) {
+    showDuplicate();
+    document.body.dataset['ready'] = 'duplicate';
+    return;
+  }
+  chrome.runtime.onMessage.addListener(onMessage);
   setStatus('idle');
   const settings = await loadSettings();
   bindSettings(settings);
@@ -312,7 +378,8 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>('#stop').addEventListener('click', () => void onStop());
   await describeFolder();
   await renderList();
-  // A second app tab must not "recover" a recording the first one is still making.
+  // A duplicate tab is inert (above), so a `recording` answer here can only come from an owner
+  // tab that loaded in the same instant as this one; its recording must not be "recovered".
   const elsewhere = await send({ type: 'query-status' });
   const recovered =
     elsewhere === 'recording' ? [] : await recoverInterrupted(settings.pathTemplate);
@@ -320,6 +387,8 @@ async function main(): Promise<void> {
     note(`Recovered ${recovered.length} interrupted recording${recovered.length > 1 ? 's' : ''}.`);
     await renderList();
   }
+  // Startup is complete (recovery included); the e2e harness waits for this.
+  document.body.dataset['ready'] = 'owner';
 }
 
 void main();

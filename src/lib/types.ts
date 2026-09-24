@@ -31,6 +31,8 @@ export interface Recording {
   error?: string;
   /** Something the human should know that is not a failure (e.g. recovered after an interruption). */
   note?: string;
+  /** RMS level of each channel over the whole recording, dBFS. A silent mic sits far below the display. */
+  levels?: Partial<Record<ChannelId, number>>;
 }
 
 export interface Word {

@@ -4,9 +4,10 @@
 // tracking elapsed time and `sample / 16000` stays recording-relative seconds (ARCHITECTURE § Clock).
 import { floatToInt16 } from '../lib/pcm.ts';
 
-/** Tap → app tab. */
+/** Tap → app tab. `position` is the number of frames the tap emitted before this block: the
+ * block's offset in the channel file, in samples (before any zero padding the recorder adds). */
 export type TapMessage =
-  { type: 'block'; pcm: ArrayBuffer; frame: number } | { type: 'flushed'; frames: number };
+  { type: 'block'; pcm: ArrayBuffer; position: number } | { type: 'flushed'; frames: number };
 /** App tab → tap. `flush` posts the partial block and stops the processor. */
 export type TapCommand = { type: 'flush' };
 
@@ -16,7 +17,7 @@ const QUANTUM = 128;
 class TapProcessor extends AudioWorkletProcessor {
   private buf = new Int16Array(BLOCK_FRAMES);
   private fill = 0;
-  private blockFrame = 0;
+  private blockPosition = 0;
   private total = 0;
   private done = false;
 
@@ -34,7 +35,7 @@ class TapProcessor extends AudioWorkletProcessor {
     if (this.fill === 0) return;
     const out = this.buf.slice(0, this.fill);
     this.port.postMessage(
-      { type: 'block', pcm: out.buffer, frame: this.blockFrame } satisfies TapMessage,
+      { type: 'block', pcm: out.buffer, position: this.blockPosition } satisfies TapMessage,
       [out.buffer],
     );
     this.fill = 0;
@@ -46,7 +47,7 @@ class TapProcessor extends AudioWorkletProcessor {
     const frames = input && input.length > 0 ? input.length : QUANTUM;
     let offset = 0;
     while (offset < frames) {
-      if (this.fill === 0) this.blockFrame = currentFrame + offset;
+      if (this.fill === 0) this.blockPosition = this.total;
       const room = BLOCK_FRAMES - this.fill;
       const n = Math.min(room, frames - offset);
       if (input && input.length > 0) {

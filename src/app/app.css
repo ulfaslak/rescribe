@@ -177,3 +177,22 @@ ul {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   word-break: break-all;
 }
+#duplicate {
+  max-width: 720px;
+  margin: 24px auto;
+  padding: 16px 20px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+#duplicate[hidden] {
+  display: none;
+}
+body.duplicate main {
+  display: none;
+}
+.recording-item button {
+  justify-self: start;
+  font-size: 13px;
+  padding: 4px 10px;
+}

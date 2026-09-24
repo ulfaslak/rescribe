@@ -20,7 +20,7 @@ System audio with `getDisplayMedia` on macOS needs Chrome 141+ and macOS 14.2+ (
 ### MediaRecorder cadence (probed 2026-09-24, headless Chromium, extension page)
 
 - `video/mp4` (fragmented MP4): a chunk is emitted only when a fragment closes, and a fragment closes at a keyframe. With defaults, `start(1000)` delivered the 1.2 kB header at +5 s and the first media fragment at +10 s. `videoKeyFrameIntervalDuration: 1000` makes a chunk arrive every timeslice (about 87 kB/s for a moving canvas at 2.5 Mbit/s). `video/webm` emits per timeslice regardless.
-- An AudioContext (default rate and `{ sampleRate: 16000 }`) starts `running` without any user gesture in the extension's app page, with and without an active capture. Brave unverified (LIVE_CHECKS).
+- An AudioContext (default rate and `{ sampleRate: 16000 }`) reported `running` without any user gesture in the extension's app page, with and without an active capture, in a one-off **headless** Chromium launched without `--autoplay-policy` (the e2e fixture passes `--autoplay-policy=no-user-gesture-required`, so e2e runs prove nothing about this). Headless may not apply the real policy either; the toolbar path in Brave is the check that counts (LIVE_CHECKS).
 - Chrome fires `ended` on a display track when the source ends (Stop sharing, tab closed); `track.stop()` from the page does not, and the MediaRecorder keeps running.
 - A file written through a sync access handle in a worker is readable with `getFile()` from another page while the handle is open, with the flushed size; the storage worker's `flush()` per write is what makes the recovery path see the data.
 
@@ -33,6 +33,10 @@ Verified 2026-09-24 in headless Chromium with the extension loaded: `crossOrigin
 Playwright empties `test-results/` at the start of every run. Anything a test wants to keep for inspection goes under `.playwright/out/`.
 
 `showDirectoryPicker` cannot be driven, so `e2e/record.spec.ts` stores an OPFS directory handle (`export-test/`) under `handles/export` in IndexedDB: it is a real `FileSystemDirectoryHandle`, the export code runs unchanged, and the test reads the exported file back through OPFS. `--auto-select-tab-capture-source-by-title` in headless mode still captures a virtual screen (`screen:-3:0`) with fake audio rather than the target tab; fine for the pipeline.
+
+### A reused Playwright profile runs the old service worker
+
+Chromium keeps an installed extension's service worker script in `<profile>/Default/Service Worker/` and, when the manifest version has not changed, serves that copy at the next launch instead of re-reading `dist/background.js` (found 2026-09-24, #18: a rebuilt worker's new message handler never ran while its old handlers did). Extension pages and content scripts are not affected. `e2e/fixtures.ts` deletes that directory before every launch; the model cache lives in IndexedDB and survives. `PW_PROFILE=<dir>` points a run at another profile (a fresh one is the cleanest control when a service worker change looks ignored).
 
 ### Claude in Chrome
 

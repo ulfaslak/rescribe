@@ -4,27 +4,22 @@
 import type { AppStatus, BadgeState, Message } from './lib/messages.ts';
 
 const APP_URL = chrome.runtime.getURL('app/app.html');
+const READY_TIMEOUT_MS = 5000;
+const RELOAD_TIMEOUT_MS = 8000;
 
-async function getAppTab(): Promise<chrome.tabs.Tab | undefined> {
-  const [tab] = await chrome.tabs.query({ url: APP_URL });
-  return tab;
-}
-
-/** Open the app tab (pinned) or bring the existing one forward. Resolves once it can receive messages. */
-async function ensureAppTab(focus: boolean): Promise<chrome.tabs.Tab> {
-  const existing = await getAppTab();
-  if (existing?.id !== undefined) {
-    if (focus) {
-      await chrome.tabs.update(existing.id, { active: true });
-      await chrome.windows.update(existing.windowId, { focused: true });
-    }
-    return existing;
+/** Ask one app tab for its status. Undefined when it is not listening (loading, discarded, a duplicate). */
+async function tabStatus(tabId: number): Promise<AppStatus | undefined> {
+  try {
+    const res = (await chrome.tabs.sendMessage(tabId, {
+      type: 'query-status',
+    } satisfies Message)) as AppStatus | undefined;
+    return res;
+  } catch {
+    return undefined;
   }
-  const tab = await chrome.tabs.create({ url: APP_URL, pinned: true, active: focus });
-  await waitForAppReady();
-  return tab;
 }
 
+/** Broadcast: answered by the one app tab that owns the recorder. 'idle' when none is open. */
 async function queryStatus(): Promise<AppStatus> {
   try {
     const res = (await chrome.runtime.sendMessage({ type: 'query-status' } satisfies Message)) as
@@ -35,23 +30,65 @@ async function queryStatus(): Promise<AppStatus> {
   }
 }
 
-async function waitForAppReady(timeoutMs = 5000): Promise<void> {
+async function waitForAppReady(tabId: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try {
-      const res = await chrome.runtime.sendMessage({ type: 'query-status' } satisfies Message);
-      if (res !== undefined) return;
-    } catch {
-      // not listening yet
-    }
+    if ((await tabStatus(tabId)) !== undefined) return true;
     await new Promise((r) => setTimeout(r, 100));
   }
+  return false;
+}
+
+/**
+ * The one app tab, listening. Opens it (pinned) when there is none; closes duplicates (a second
+ * app tab never listens, see app.ts); reloads a tab that exists but does not answer (discarded by
+ * the memory saver, stuck mid-reload, crashed). Undefined, with the badge in its error state, when
+ * no tab answers in time: a silent no-op on the toolbar button is worse than a visible one.
+ */
+async function ensureAppTab(focus: boolean): Promise<chrome.tabs.Tab | undefined> {
+  const tabs = (await chrome.tabs.query({ url: APP_URL })).filter((t) => t.id !== undefined);
+  let owner: chrome.tabs.Tab | undefined;
+  for (const t of tabs) {
+    if ((await tabStatus(t.id!)) !== undefined) {
+      owner = t;
+      break;
+    }
+  }
+  const keep = owner ?? tabs[0];
+  for (const t of tabs) {
+    if (t.id !== keep?.id) await chrome.tabs.remove(t.id!).catch(() => undefined);
+  }
+  if (keep?.id === undefined) {
+    const tab = await chrome.tabs.create({ url: APP_URL, pinned: true, active: focus });
+    if (tab.id === undefined || !(await waitForAppReady(tab.id, READY_TIMEOUT_MS))) {
+      await setBadge('error');
+      return undefined;
+    }
+    return tab;
+  }
+  if (focus) {
+    await chrome.tabs.update(keep.id, { active: true });
+    await chrome.windows.update(keep.windowId, { focused: true });
+  }
+  if (!owner) {
+    await chrome.tabs.reload(keep.id).catch(() => undefined);
+    if (!(await waitForAppReady(keep.id, RELOAD_TIMEOUT_MS))) {
+      await setBadge('error');
+      return undefined;
+    }
+  }
+  return keep;
 }
 
 const BADGE: Record<BadgeState, { text: string; color: string; title: string }> = {
   idle: { text: '', color: '#000000', title: 'Rescribe: record this tab' },
   recording: { text: 'REC', color: '#d93025', title: 'Rescribe: recording (click to open)' },
   processing: { text: '…', color: '#1a73e8', title: 'Rescribe: transcribing (click to open)' },
+  error: {
+    text: '!',
+    color: '#d93025',
+    title: 'Rescribe: the Rescribe tab did not answer. Reload it, then click again.',
+  },
 };
 
 async function setBadge(state: BadgeState): Promise<void> {
@@ -67,7 +104,8 @@ async function setBadge(state: BadgeState): Promise<void> {
  *
  * The tab-capture stream id is obtained first, before any other await: the extension has just
  * been invoked on the tab, which is what `getMediaStreamId` requires. The id is consumed by
- * getUserMedia in the app tab (recorder/capture.ts). Clicking on the app tab itself only focuses it.
+ * getUserMedia in the app tab (recorder/capture.ts) and is sent to that tab only, never
+ * broadcast. Clicking on the app tab itself only focuses it.
  */
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
   const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
@@ -81,10 +119,10 @@ async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
     }
   }
   const status = await queryStatus();
-  await ensureAppTab(true);
-  if (status !== 'idle' || !target?.id) return;
-  await chrome.runtime
-    .sendMessage({
+  const app = await ensureAppTab(true);
+  if (app?.id === undefined || status !== 'idle' || !target?.id) return;
+  await chrome.tabs
+    .sendMessage(app.id, {
       type: 'toggle-recording',
       tabId: target.id,
       tabTitle: target.title,
@@ -104,6 +142,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 chrome.runtime.onMessage.addListener((msg: Message) => {
   if (msg.type === 'badge') void setBadge(msg.state);
+  else if (msg.type === 'focus-app') void ensureAppTab(true);
   return false;
 });
 

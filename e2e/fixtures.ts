@@ -1,6 +1,7 @@
 // Playwright fixtures: launch Chromium with the built extension and Chrome's fake media devices.
 // See AGENTS/DNA/DEVELOPMENT.md § "The e2e harness".
 import { test as base, chromium, type BrowserContext } from '@playwright/test';
+import { rmSync } from 'node:fs';
 import path from 'node:path';
 
 /** Title of the page a test opens for getDisplayMedia to auto-select (see the flag below). */
@@ -12,7 +13,12 @@ export const test = base.extend<{ context: BrowserContext; extensionId: string }
     const dist = path.resolve('dist');
     const wav = path.resolve('e2e/fixtures/speech.wav');
     const headed = !!process.env['HEADED'];
-    const context = await chromium.launchPersistentContext(path.resolve('.playwright/profile'), {
+    const profile = path.resolve(process.env['PW_PROFILE'] ?? '.playwright/profile');
+    // The profile is reused for the model cache (IndexedDB), but Chromium also keeps the
+    // extension's service worker script in it and serves the stale copy after a rebuild
+    // (ENVIRONMENT_NOTES § "A reused profile runs the old service worker"). Drop that cache.
+    rmSync(path.join(profile, 'Default', 'Service Worker'), { recursive: true, force: true });
+    const context = await chromium.launchPersistentContext(profile, {
       channel: process.env['CHROME_CHANNEL'] ?? 'chromium',
       headless: !headed,
       args: [

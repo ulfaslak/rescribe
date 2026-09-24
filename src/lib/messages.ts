@@ -3,15 +3,20 @@
 // postMessage, and each worker's protocol is typed in its own file under src/workers/.
 import type { RecordingStatus } from './types.ts';
 
-export type BadgeState = 'idle' | 'recording' | 'processing';
+export type BadgeState = 'idle' | 'recording' | 'processing' | 'error';
 
 export type Platform = 'meet';
 
 export type Message =
   /** App tab → service worker: reflect state on the toolbar button. */
   | { type: 'badge'; state: BadgeState }
-  /** Service worker → app tab: is anything going on? Answered with an AppStatus. */
+  /**
+   * Service worker → app tab, or a second app tab → the first: is anything going on? Answered
+   * with an AppStatus by the one app tab that owns the recorder (a duplicate tab never listens).
+   */
   | { type: 'query-status' }
+  /** A duplicate app tab → service worker: bring the owning app tab forward and close me. */
+  | { type: 'focus-app' }
   /**
    * Service worker → app tab: the toolbar button or the keyboard command fired on `tabId`.
    * `streamId` is the tab-capture id to consume with getUserMedia; when it could not be obtained,
