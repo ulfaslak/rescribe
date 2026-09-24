@@ -42,8 +42,12 @@ function compare(a: Candidate, b: Candidate): number {
   const aOver = a.overlap > 0 ? 1 : 0;
   const bOver = b.overlap > 0 ? 1 : 0;
   if (aOver !== bOver) return bOver - aOver;
-  if (aOver) return b.overlap - a.overlap;
-  return a.gap - b.gap;
+  const closeness = aOver ? b.overlap - a.overlap : a.gap - b.gap;
+  if (closeness !== 0) return closeness;
+  // An exact tie goes to the later-starting interval, so the label does not depend on the order
+  // the evidence arrived in. Detectors trail speech, so the newer interval under-reports its
+  // overlap and the older one over-reports it.
+  return b.iv.start - a.iv.start;
 }
 
 export function attribute(

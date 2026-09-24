@@ -23,3 +23,7 @@ The adapter's header stated that Meet's page scripts cannot read a CustomEvent's
 ### 2026-09-24 · #12 · TypeScript syntax that Node's type stripping rejects `[learned]`
 
 A constructor parameter property in `src/lib/activity.ts` compiled under `tsc` and esbuild but made the test file fail to load under `node --test`. Codified in DEVELOPMENT § Commands (`npm test` row).
+
+### 2026-09-24 · #3 · threshold compare on ms-derived seconds `[learned]`
+
+`cleanIntervals` tested `end - start < minDuration` and dropped a 300 ms interval, because `5.3 - 5` is `0.29999999999999982`. Every stamp in the pipeline arrives as epoch ms and becomes seconds by division, so any threshold on a difference of two such values sits on this edge; the first unit test with a boundary fixture caught it. Codified as the `EPSILON` slack in `src/lib/evidence.ts` with two boundary tests in `evidence.test.ts`. `attribute()`'s `tolerance` and `toTurns()`'s `maxGap` have the same exposure and no slack yet.
