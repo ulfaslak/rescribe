@@ -18,9 +18,10 @@ rescribe/
     lib/                  pure, context-free logic; everything here is unit-testable in Node
       types.ts            the data model (below)
       attribution.ts      speaker evidence → labelled segments
+      evidence.ts         adapter speaker/roster messages → cleaned platform SpeakerInterval[] + participants
       transcript.ts       labelled segments → turns → markdown / json
       activity.ts         "value changed recently" detector, the Meet speaking signal
-      (planned) clock.ts        wall-clock ms → recording-relative seconds, the only conversion
+      clock.ts            wall-clock ms ↔ recording-relative seconds, the only conversion
       pathtemplate.ts     export directory name(s) from the Settings template, collision suffixes
       pcm.ts              Float32 ↔ Int16 PCM, the 16 kHz constants
       (planned) vad.ts          energy-based silence gate over 16 kHz PCM → voiced regions
@@ -77,7 +78,7 @@ Messages that cross `chrome.runtime` (service worker, app tab, content scripts) 
 
 ## Clock
 
-Recording-relative seconds everywhere in `lib/`. `startedAt` is the epoch ms of the first captured sample, defined precisely as: `Date.now()` taken in the app tab in the same task that creates both AudioWorklet taps (`Recorder.start`, after the AudioContexts are running). Both taps begin at the next render quantum, within ~10 ms. From then on each tap writes exactly one sample per 1/16000 s of context time, zeros when its input is absent, so `sample_index / 16000` in either PCM file is recording-relative seconds from `startedAt`. The MediaRecorder starts in the same task; its video may begin a frame later, which is playback, not pipeline timing. Content scripts stamp with `Date.now()`; the app tab converts on receipt. See [[INVARIANTS]].
+Recording-relative seconds everywhere in `lib/`. `startedAt` is the epoch ms of the first captured sample, defined precisely as: `Date.now()` taken in the app tab in the same task that creates both AudioWorklet taps (`Recorder.start`, after the AudioContexts are running). Both taps begin at the next render quantum, within ~10 ms. From then on each tap writes exactly one sample per 1/16000 s of context time, zeros when its input is absent, so `sample_index / 16000` in either PCM file is recording-relative seconds from `startedAt`. The MediaRecorder starts in the same task; its video may begin a frame later, which is playback, not pipeline timing. Content scripts stamp with `Date.now()`; the app tab keeps the stamps as received (`events.jsonl`, written by `Recorder.appendEvent`; today `app.ts` only logs them) and converts when it builds evidence (`eventsToEvidence` in `lib/evidence.ts`, through `lib/clock.ts`), so evidence can be rebuilt from disk. See [[INVARIANTS]].
 
 ## Storage
 
