@@ -6,12 +6,6 @@ Remove an entry in the PR that resolves it.
 
 ---
 
-### Delete `spikes/parakeet` once the transcribe worker exists
-
-**What**: `spikes/parakeet` is a throwaway page built into `dist/spikes/` and driven by `e2e/spikes/parakeet.spec.ts`. Not product code.
-**Why deferred**: its answer is the only executable proof of the ASR assumptions until the real transcribe worker exists.
-**Trigger**: the transcription PR. Delete the spike directory and its e2e spec in that PR. It is the last spike, so also remove `spikes/README.md`, the spike glue in `scripts/build.mjs` (it throws on a missing `spikes/`) and the `spikes/**` globs in `package.json`.
-
 ### WebM exports carry no duration header
 
 **What**: a MediaRecorder WebM is a live stream: the header has no `Duration` element, so `ffprobe` reports none and players show an unknown length until they parse the whole file. The MP4 path is unaffected (fragmented MP4 with `mfra`; see the QuickTime live check).
