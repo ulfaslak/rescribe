@@ -1,40 +1,51 @@
 <!doctype html>
-<html>
+<html data-rescribe-harness>
   <head>
     <meta charset="utf-8" />
     <title>Fake Meet</title>
   </head>
   <body>
-    <!-- Two participant tiles shaped like Meet's: a tile element with data-participant-id, an audio
-         meter with jsname="QgSmzd" whose classes flip while "speaking", a name, and a menu item that
-         must not be mistaken for the name. -->
+    <!-- Participant tiles shaped like Meet's: a tile element with data-participant-id, an audio
+         meter with jsname="QgSmzd" whose classes flip while "speaking", a name, plus the traps the
+         real page has: a menu item ("Reframe"), a status chip ("Muted"), and the self view rendered
+         twice under one id with a static second meter. -->
     <div data-participant-id="spaces/x/devices/1">
       <div jsname="QgSmzd" class="meter l0"></div>
       <div role="menu"><div role="menuitem">Reframe</div></div>
+      <span class="chip">Muted</span>
       <span>Anna</span>
     </div>
-    <div data-participant-id="spaces/x/devices/2">
+    <div data-participant-id="spaces/x/devices/1" class="thumbnail">
+      <div jsname="QgSmzd" class="meter"></div>
+      <span>Anna</span>
+    </div>
+    <div data-participant-id="spaces/x/devices/2" id="bo">
       <div jsname="QgSmzd" class="meter l0"></div>
       <div role="menu"><div role="menuitem">Reframe</div></div>
       <span>Bo</span>
     </div>
     <script>
-      // Anna "speaks" from 0.5 s to 2.0 s, Bo from 3.0 s to 4.5 s. Speaking = the meter class wobbles.
-      const meters = document.querySelectorAll('[jsname="QgSmzd"]');
-      function wobble(meter, from, to) {
-        let i = 0;
-        const start = setTimeout(() => {
+      window.__t0 = Date.now();
+      const tiles = document.querySelectorAll('[data-participant-id]');
+      const meter = (tile) => tile.querySelector('[jsname="QgSmzd"]');
+      // Speaking = the meter class wobbles every 100 ms. Schedule (ms after load):
+      //   Anna 500–2000; Bo 3000–4500; Bo again from 5200, and at 5600 Bo's tile is removed mid-speech.
+      function wobble(m, from, to) {
+        setTimeout(() => {
+          let i = 0;
           const iv = setInterval(() => {
-            meter.className = `meter l${1 + (i++ % 3)}`;
+            m.className = `meter l${1 + (i++ % 3)}`;
           }, 100);
           setTimeout(() => {
             clearInterval(iv);
-            meter.className = 'meter l0';
+            m.className = 'meter l0';
           }, to - from);
         }, from);
       }
-      wobble(meters[0], 500, 2000);
-      wobble(meters[1], 3000, 4500);
+      wobble(meter(tiles[0]), 500, 2000);
+      wobble(meter(tiles[2]), 3000, 4500);
+      wobble(meter(tiles[2]), 5200, 7000);
+      setTimeout(() => document.getElementById('bo').remove(), 5600);
     </script>
   </body>
 </html>

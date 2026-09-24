@@ -32,5 +32,10 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### A platform adapter that stops matching the page must say so, not go quiet
 
-**Mechanism:** an adapter emits a `roster` event when it finds participant tiles and a `no-signal` diagnostic when it finds tiles but no speaking signal for N seconds while the display channel has speech. The app tab surfaces this on the recording. (Planned.)
+**Mechanism:** the Meet adapter emits `roster` when it finds participant tiles and an `adapter-diagnostic` message after 60 s of either no tiles or tiles without an audio meter (rate-limited to one per 5 min). The app tab surfaces it on the recording (planned). The e2e fixture asserts no diagnostic fires on a healthy page.
 **Incident:** none. Seeded 2026-09-24 because Meet's markup is obfuscated and will change.
+
+### Every speaking start has a matching stop, and both are stamped at the change, not at its detection
+
+**Mechanism:** `src/content/meet.ts` keeps the set of participants it has reported as speaking and closes each one on the first of: the meter went quiet (stop stamped at the last meter change via `ChangeActivity.lastChangeAt`), the meter element vanished (mute), or the tile left the layout. Starts are stamped at the first change of the run. The e2e fixture removes a tile mid-speech and asserts every stamp within 300 ms of the scripted truth (`e2e/meet-adapter.spec.ts`).
+**Incident:** adversarial review of #12 (2026-09-24): the first version never closed an interval when a tile or meter disappeared, so a participant who muted stayed "speaking" until they unmuted, and stops were stamped at poll time, up to a second late, making every turn handover look like overlap.

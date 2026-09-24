@@ -3,13 +3,14 @@ import { expect, test } from './fixtures.ts';
 
 interface Ev {
   type: string;
+  id?: string;
   name?: string;
   names?: string[];
   speaking?: boolean;
   at: number;
 }
 
-test('Meet adapter: roster from tiles, speaking from meter activity, menu text ignored', async ({
+test('Meet adapter: roster, speaking intervals stamped at change time, traps of the real page', async ({
   context,
 }) => {
   const page = await context.newPage();
@@ -20,21 +21,39 @@ test('Meet adapter: roster from tiles, speaking from meter activity, menu text i
   });
   await page.goto('file://' + path.resolve('e2e/fixtures/fake-meet.html'));
   await page.addScriptTag({ path: path.resolve('dist/content/meet.js') });
-  await page.waitForTimeout(5500);
-  const events = (await page.evaluate(
-    () => (window as unknown as { __events: Ev[] }).__events,
-  )) as Ev[];
-  console.log(JSON.stringify(events));
+  await page.waitForTimeout(6800);
+  const { events, t0 } = await page.evaluate(() => {
+    const w = window as unknown as { __events: Ev[]; __t0: number };
+    return { events: w.__events, t0: w.__t0 };
+  });
+  const rel = events.map((e) => ({ ...e, at: e.at - t0 }));
+  console.log(JSON.stringify(rel));
 
-  const roster = events.find((e) => e.type === 'roster');
-  expect(roster?.names).toEqual(['Anna', 'Bo']);
+  // Roster: one entry per participant despite the duplicated self tile; chips and menu text ignored.
+  const rosters = rel.filter((e) => e.type === 'roster');
+  expect(rosters[0]?.names).toEqual(['Anna', 'Bo']);
+  expect(rosters.at(-1)?.names).toEqual(['Anna']);
 
-  const speakers = events.filter((e) => e.type === 'speaker').map((e) => `${e.name}:${e.speaking}`);
-  expect(speakers).toEqual(['Anna:true', 'Anna:false', 'Bo:true', 'Bo:false']);
+  const sp = rel.filter((e) => e.type === 'speaker');
+  expect(sp.map((e) => `${e.name}:${e.speaking}`)).toEqual([
+    'Anna:true',
+    'Anna:false',
+    'Bo:true',
+    'Bo:false',
+    'Bo:true',
+    'Bo:false',
+  ]);
+  expect(sp.every((e) => typeof e.id === 'string' && e.id.startsWith('spaces/'))).toBe(true);
 
-  const [annaOn, annaOff, boOn] = events.filter((e) => e.type === 'speaker');
-  expect(annaOff!.at - annaOn!.at).toBeGreaterThan(1200);
-  expect(annaOff!.at - annaOn!.at).toBeLessThan(2600);
-  expect(boOn!.at - annaOn!.at).toBeGreaterThan(2000);
-  expect(events.some((e) => e.type === 'adapter-diagnostic')).toBe(false);
+  // Stamps are change times, not detection times: starts within ~250 ms of the first wobble,
+  // stops at the last wobble (not a window later), the removed tile closed at removal.
+  const near = (actual: number, expected: number, tol: number) =>
+    expect(Math.abs(actual - expected), `${actual} vs ${expected}`).toBeLessThanOrEqual(tol);
+  near(sp[0]!.at, 500, 300);
+  near(sp[1]!.at, 2000, 300);
+  near(sp[2]!.at, 3000, 300);
+  near(sp[3]!.at, 4500, 300);
+  near(sp[4]!.at, 5200, 300);
+  near(sp[5]!.at, 5600, 400);
+  expect(rel.some((e) => e.type === 'adapter-diagnostic')).toBe(false);
 });
