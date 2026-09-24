@@ -20,10 +20,18 @@ rescribe/
       attribution.ts      speaker evidence → labelled segments
       transcript.ts       labelled segments → turns → markdown / json
       activity.ts         "value changed recently" detector, the Meet speaking signal
-      (planned) clock.ts, vad.ts, pathtemplate.ts, asr/engine.ts, asr/parakeet.ts
-    (planned) recorder/   capture graph, MediaRecorder, AudioWorklet taps (app-tab only)
-    (planned) storage/    OPFS store, storage worker, IndexedDB metadata, folder export
-    (planned) workers/    transcribe worker (parakeet.js + ORT), storage worker
+      (planned) clock.ts        wall-clock ms → recording-relative seconds, the only conversion
+      (planned) pathtemplate.ts export directory name from the Settings template
+      (planned) vad.ts          energy-based silence gate over 16 kHz PCM → voiced regions
+      (planned) asr/engine.ts   the ASR engine interface (load with progress, transcribe PCM)
+      (planned) asr/parakeet.ts the parakeet.js implementation of it
+    (planned) recorder/   capture graph, MediaRecorder, AudioWorklet taps (app-tab only);
+                          `*.worklet.ts` files are AudioWorklet processors, each its own bundle
+    (planned) storage/    OPFS store client, IndexedDB metadata, folder export (app-tab only)
+    workers/              one file per worker, each its own bundle; a worker's request/response
+                          types are exported from the worker file itself, not from lib/messages.ts
+      (planned) storage.ts     appends video chunks and PCM blocks to OPFS (sync access handle)
+      (planned) transcribe.ts  VAD → Parakeet (parakeet.js + ORT) → Segment[] for one channel
   e2e/                    Playwright: fixtures.ts (extension + fake media), *.spec.ts, fixtures/ (wav, fake-meet.html)
   spikes/                 throwaway experiments, see spikes/README.md
   dist/                   build output, gitignored, what Chrome loads
@@ -40,9 +48,10 @@ Four execution contexts, each with a distinct job:
 | Service worker | `background.ts` | ephemeral, event-driven | toolbar click and keyboard command, badge, `chrome.tabCapture.getMediaStreamId` (must happen inside the click), opens/focuses the app tab, forwards nothing else |
 | App tab | `app/app.ts` | while open; pinned; warns on close when busy | owns the recorder, the audio graph, OPFS writes, transcription workers, export, settings UI, library UI |
 | Content script | `content/meet.ts` | per Meet page | observes the DOM, emits speaker events and roster to the extension via `chrome.runtime.sendMessage`; mirrors every message as a `rescribe:event` CustomEvent on `window` for the e2e harness (Meet's scripts cannot read the detail across worlds) |
-| Workers **(planned)** | `workers/*.ts` | per job | storage worker (OPFS sync access handle), transcribe worker (parakeet.js on WebGPU/WASM) |
+| Storage worker **(planned)** | `workers/storage.ts` | per recording | appends video chunks and PCM blocks to OPFS through a sync access handle, flushing per write |
+| Transcribe worker **(planned)** | `workers/transcribe.ts` | per job | VAD, then parakeet.js on WASM (default) or WebGPU, one channel per job |
 
-Messages between contexts are typed in `src/lib/messages.ts`; the union there is the single roster of message types.
+Messages that cross `chrome.runtime` (service worker, app tab, content scripts) are typed in `src/lib/messages.ts`; the union there is the single roster of those message types. A worker's `postMessage` protocol is typed in the worker's own file and imported by its one client, so adding a worker touches no shared file.
 
 ## Data model (`src/lib/types.ts`)
 
