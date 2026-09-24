@@ -5,7 +5,7 @@ Record a Google Meet call, a Teams call, a tab, a window or your whole screen fr
 ## Install
 
 1. `npm install && npm run build`
-2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, pick the `dist/` folder.
+2. Open `chrome://extensions` (Brave: `brave://extensions`, and enable `brave://flags/#file-system-access-api` first), turn on **Developer mode**, click **Load unpacked**, pick the `dist/` folder.
 3. Pin the Rescribe button to the toolbar.
 4. Open Rescribe from the toolbar, go to **Settings**, choose the folder recordings should be saved to.
 

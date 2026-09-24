@@ -74,7 +74,7 @@ Non-negotiable for every PR, including one-line fixes.
 2. **Self-test, picking the method that produces signal** (see [[DEVELOPMENT]] § "Self-testing"): a Playwright walk of the extension with fake media for anything in the record-to-transcript path; unit tests for pure logic; the real Chrome for anything that fake devices cannot exercise, which then becomes a [[LIVE_CHECKS]] entry. Enumerate edge cases on paper before testing: stream lifecycle (track ended, picker cancelled, mic denied, tab closed mid-recording), clock edges (recording-relative vs wall time), long recordings, silence, overlapping speakers, storage (quota, folder permission revoked). Fix everything you find as fix commits on the branch, and run the negative control once per fix: make the check fail, then re-apply.
 3. **Adversarial review** for any diff touching the pipeline (`src/lib/`, the recorder, workers, content adapters): spawn the `adversarial-reviewer` agent with only the diff and file paths, never your reasoning. Triage its findings yourself.
 4. **Document mistakes** only if self-testing found real bugs: a `## Mistakes found during self-testing` section in the PR and an entry in [[AGENT_MISTAKES]]. Don't fabricate.
-5. **Clean up.** Kill watchers and browsers you started. Merge. Then from the primary clone: `git checkout main && git pull && npm run build`, and tell the human to reload the extension at `chrome://extensions` (see [[DEVELOPMENT]] § "Release").
+5. **Clean up.** Kill watchers and browsers you started. Merge. Then from the primary clone: `git checkout main && git pull && npm run build`, and tell the human to reload the extension at `brave://extensions` (see [[DEVELOPMENT]] § "Release").
 
 # Guardrail changes
 
