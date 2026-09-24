@@ -37,6 +37,8 @@ const $ = <T extends Element>(sel: string): T => {
 
 /** How long a two-step button stays armed before it quietly disarms. */
 const ARM_MS = 8000;
+/** A confirming click sooner than this after arming is ignored: a double-click must not delete. */
+const ARM_GUARD_MS = 350;
 const LIVE_REFRESH_MS = 1000;
 
 // --- Formatting ---------------------------------------------------------------------------------
@@ -170,8 +172,8 @@ async function reExport(id: string): Promise<string | undefined> {
   // First thing inside the click: after a browser restart the persisted folder handle is
   // `prompt`, and requestPermission only prompts from a user gesture.
   await ensureExportPermission().catch(() => undefined);
-  const rec = await getRecording(id);
-  if (!rec) return 'That recording no longer exists.';
+  const rec = await claim(id, 'export it');
+  if (typeof rec === 'string') return rec;
   const settings = await loadSettings();
   const video = await getVideoFile(rec.id, rec.container);
   const artifacts = await listArtifactNames(rec.id);
@@ -201,24 +203,44 @@ async function reExport(id: string): Promise<string | undefined> {
   }
 }
 
-async function removeMedia(id: string): Promise<string> {
+const live = (rec: Recording): boolean =>
+  rec.status === 'recording' || rec.status === 'transcribing';
+
+/**
+ * The record as it is now, not as the row was rendered: a recording the recorder or the pipeline
+ * has taken since (status `recording` or `transcribing`) must not have its files touched.
+ */
+async function claim(id: string, what: string): Promise<Recording | string> {
   const rec = await getRecording(id);
+  if (!rec) return 'That recording no longer exists.';
+  if (live(rec)) return `"${rec.title}" is ${rec.status}; ${what} once it is done.`;
+  return rec;
+}
+
+async function removeMedia(id: string): Promise<string> {
+  const rec = await claim(id, 'delete its media');
+  if (typeof rec === 'string') return rec;
   const freed = await deleteMedia(id);
-  const kept = rec?.exportPath ? `; ${rec.exportPath}/ is untouched` : '';
-  return `Deleted ${formatBytes(freed)} of media for "${rec?.title ?? id}"${kept}.`;
+  const kept = rec.exportPath ? `; ${rec.exportPath}/ is untouched` : '';
+  return `Deleted ${formatBytes(freed)} of media for "${rec.title}"${kept}.`;
 }
 
 async function remove(id: string): Promise<string> {
-  const rec = await getRecording(id);
+  const rec = await claim(id, 'delete it');
+  if (typeof rec === 'string') return rec;
   await deleteRecording(id);
-  const kept = rec?.exportPath ? `; ${rec.exportPath}/ is untouched` : '';
-  return `Deleted "${rec?.title ?? id}" from Rescribe${kept}.`;
+  const kept = rec.exportPath ? `; ${rec.exportPath}/ is untouched` : '';
+  return `Deleted "${rec.title}" from Rescribe${kept}.`;
 }
 
-async function removeExportedMedia(ids: string[]): Promise<string> {
+/** The bulk target is re-computed from the store at click time, never from the rendered list. */
+async function removeExportedMedia(): Promise<string> {
+  const [recs, usage] = await Promise.all([listRecordings(), storageUsage()]);
+  const targets = exportedWithMedia(recs, usage);
+  if (targets.length === 0) return 'Nothing to delete: no exported recording has media left.';
   let freed = 0;
-  for (const id of ids) freed += await deleteMedia(id);
-  return `Freed ${formatBytes(freed)}: media deleted for ${plural(ids.length, 'exported recording')}; the exported files remain.`;
+  for (const rec of targets) freed += await deleteMedia(rec.id);
+  return `Freed ${formatBytes(freed)}: media deleted for ${plural(targets.length, 'exported recording')}; the exported files remain.`;
 }
 
 // --- Widgets ------------------------------------------------------------------------------------
@@ -237,6 +259,7 @@ function confirmButton(
   b.className = cls;
   b.textContent = label;
   let timer: number | undefined;
+  let armedAt = 0;
   const onOutside = (e: Event): void => {
     if (e.target !== b) disarm();
   };
@@ -250,11 +273,13 @@ function confirmButton(
     if (!b.classList.contains('armed')) {
       b.classList.add('armed');
       b.textContent = question;
+      armedAt = performance.now();
       timer = window.setTimeout(disarm, ARM_MS);
       // Deferred: the arming click is still propagating and would disarm at once.
       window.setTimeout(() => document.addEventListener('click', onOutside, true), 0);
       return;
     }
+    if (performance.now() - armedAt < ARM_GUARD_MS) return; // the second half of a double-click
     disarm();
     run();
   });
@@ -423,7 +448,7 @@ function renderStorage(recs: Recording[], usage: StorageUsage): void {
     'Delete media for exported recordings',
     `Free ${formatBytes(bytes)} from ${plural(targets.length, 'exported recording')}?`,
     'delete-exported-media',
-    () => void runAction(actions, () => removeExportedMedia(targets.map((r) => r.id))),
+    () => void runAction(actions, removeExportedMedia),
   );
   button.title =
     'Deletes the video and audio in local storage of every recording whose files are in the export folder.';
