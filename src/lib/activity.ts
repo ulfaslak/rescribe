@@ -13,6 +13,8 @@ interface Entry {
   runStart: number;
   runCount: number;
   latest: number;
+  /** Last change of the most recent run that reached activity, once a newer run has begun. */
+  activeEnd: number;
 }
 
 export class ChangeActivity {
@@ -30,10 +32,12 @@ export class ChangeActivity {
       runStart: now,
       runCount: 0,
       latest: Number.NEGATIVE_INFINITY,
+      activeEnd: Number.NEGATIVE_INFINITY,
     };
     if (now - e.latest <= this.windowMs) {
       e.runCount++;
     } else {
+      if (e.runCount >= 2) e.activeEnd = e.latest;
       e.runStart = now;
       e.runCount = 1;
     }
@@ -50,6 +54,7 @@ export class ChangeActivity {
         runStart: now,
         runCount: 0,
         latest: Number.NEGATIVE_INFINITY,
+        activeEnd: Number.NEGATIVE_INFINITY,
       });
       return false;
     }
@@ -75,6 +80,18 @@ export class ChangeActivity {
   lastChangeAt(key: string): number | undefined {
     const e = this.entries.get(key);
     return e && e.runCount > 0 ? e.latest : undefined;
+  }
+
+  /**
+   * When the activity ended: the last change of the current run if it is (or was) active, else
+   * the last change of the previous active run. A lone change that opens a new run does not move
+   * it. Undefined when the key never became active.
+   */
+  activeUntil(key: string): number | undefined {
+    const e = this.entries.get(key);
+    if (!e) return undefined;
+    if (e.runCount >= 2) return e.latest;
+    return Number.isFinite(e.activeEnd) ? e.activeEnd : undefined;
   }
 
   forget(key: string): void {

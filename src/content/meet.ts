@@ -15,6 +15,9 @@
 //                  We do not depend on those names; motion is the signal.
 //   NAME_SELECTOR  the participant's display name, a `span.notranslate` (same call). The text
 //                  heuristic below is the fallback when it is absent.
+// Validated in a two-person call on 2026-09-24: the remote tile's meter moves exactly while the
+// remote person talks, and the emitted timeline matched the alternating turns. Meet's DOM holds no
+// <audio> elements, only <video>, so per-participant audio is not reachable from the page.
 // A MutationObserver stamps every meter class change at the moment it happens; ChangeActivity
 // turns runs of changes into speaking intervals (start = first change of the run, stop = last
 // change). The 250 ms poll only closes intervals, tracks the roster, and reports drift. Polling is
@@ -186,7 +189,7 @@ function poll(): void {
       stop(id, now);
       activity.forget(id);
     } else if (!activity.isActive(id, now)) {
-      stop(id, activity.lastChangeAt(id) ?? now);
+      stop(id, activity.activeUntil(id) ?? now);
     }
   }
   for (const id of [...speaking.keys()]) if (!present.has(id)) speaking.delete(id);
