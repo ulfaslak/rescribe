@@ -36,3 +36,8 @@ The Claude browser extension was not connected in the kickoff session, so browse
 ### The gtr post-create hook has not run
 
 `.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed.
+
+### The capture spike can die when it runs after the Meet adapter spec (2026-09-24, cause unknown)
+
+Observed in the `feat-meet-evidence-layer` worktree while two other agents were also running e2e on this Mac: `npm run e2e` failed `e2e/spikes/capture.spec.ts` in 3 of 4 full runs with `page.waitForFunction: Target page, context or browser has been closed` right after clicking `#go`, and the browser stderr carried `CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670`; the one passing full run printed no such line. Run alone (`npx playwright test e2e/spikes/capture.spec.ts`) the spike passed 5 of 5 with no display-link errors, and the other two specs together passed. The branch under test touched only `src/lib/` and `AGENTS/`, which the spike does not import. Hypotheses, none verified: the previous spec's context shutdown leaving Chromium's display path broken; the Mac's display asleep; concurrent screen capture from sibling Chromiums. If a full run fails only there, rerun the spike alone before blaming the change; if it fails alone, it is real.
+
