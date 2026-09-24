@@ -33,7 +33,9 @@ The profile lives in `.playwright/profile/` (gitignored) and is **reused between
 
 Headless by default (`channel: 'chromium'`, new headless supports extensions and, on this Mac, WebGPU with f16). `HEADED=1 npm run e2e` opens a window; `CHROME_CHANNEL=chrome` uses the installed Google Chrome instead of Playwright's Chromium; `RESCRIBE_E2E_WEBGPU=1` also runs the WebGPU transcription variant (2.4 GB download, skipped by default).
 
-Extension pages are opened by URL: `chrome-extension://<id>/app/app.html`, where the id comes from the service worker URL (see `fixtures.ts`).
+Extension pages are opened by URL: `chrome-extension://<id>/app/app.html`, where the id comes from the service worker URL (see `fixtures.ts`). The id of an unpacked extension is a hash of its `dist/` path, and the model cache lives in the extension origin's IndexedDB, so **each worktree's first e2e run downloads the model again** into that worktree's profile.
+
+`e2e/helpers.ts` holds the app-page helpers for specs written after `record.spec.ts` (open the page, seed the export folder, record, poll a record until a status, read OPFS files). `record.spec.ts` covers steps 1–2 and sets `autoTranscribe: false` in its `openApp`, so a recording ends at `recorded` with the pill idle; `pipeline.spec.ts` sets it back. Settings persist in the profile between tests, so a spec that depends on one sets it explicitly.
 
 ## Self-testing: pick the method that produces signal
 

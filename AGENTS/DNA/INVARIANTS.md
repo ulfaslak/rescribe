@@ -12,7 +12,7 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### No audio, video or transcript ever leaves the machine
 
-**Mechanism:** the only permitted network traffic is the one-time model download from `huggingface.co`: `ParakeetEngine.load` fetches each file with parakeet.js's `getModelFile`, which serves its IndexedDB cache before the network, so a cached model loads with zero requests (`e2e/transcribe.spec.ts` asserts that on a fresh worker). `e2e/privacy.ts` records every HTTP(S) request a Playwright context makes, the transcribe worker's included, and every WebSocket a page opens, and fails on any network host outside its pinned list: `huggingface.co` and `<region>.<cloud>.cdn.hf.co`, the CDN it redirects to (observed `us.aws.cdn.hf.co`). The recording spec must assert it too once it exists. The ORT binaries come from `dist/vendor/ort/`: `load` sets `ort.env.wasm.wasmPaths` before parakeet.js can default to jsDelivr. The manifest declares no `host_permissions`.
+**Mechanism:** the only permitted network traffic is the one-time model download from `huggingface.co`: `ParakeetEngine.load` fetches each file with parakeet.js's `getModelFile`, which serves its IndexedDB cache before the network, so a cached model loads with zero requests (`e2e/transcribe.spec.ts` asserts that on a fresh worker). `e2e/privacy.ts` records every HTTP(S) request a Playwright context makes, the transcribe worker's included, and every WebSocket a page opens, and fails on any network host outside its pinned list: `huggingface.co` and `<region>.<cloud>.cdn.hf.co`, the CDN it redirects to (observed `us.aws.cdn.hf.co`). Every test in `e2e/pipeline.spec.ts` asserts it over a whole run: record, transcribe, export; `e2e/transcribe.spec.ts` over the worker alone. The ORT binaries come from `dist/vendor/ort/`: `load` sets `ort.env.wasm.wasmPaths` before parakeet.js can default to jsDelivr. The manifest declares no `host_permissions`.
 **Incident:** none. Seeded 2026-09-24 as the product's core promise.
 
 ### The mic channel and the display channel are never mixed before transcription
@@ -32,8 +32,13 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### A platform adapter that stops matching the page must say so, not go quiet
 
-**Mechanism:** the Meet adapter emits `roster` when it finds participant tiles and an `adapter-diagnostic` message after 60 s of either no tiles or tiles without an audio meter (rate-limited to one per 5 min). The app tab surfaces it on the recording (planned). The e2e fixture asserts no diagnostic fires on a healthy page.
+**Mechanism:** the Meet adapter emits `roster` when it finds participant tiles and an `adapter-diagnostic` message after 60 s of either no tiles or tiles without an audio meter (rate-limited to one per 5 min). The app tab appends it to the recording's note while recording (`Recorder.addNote`, persisted at once so a crash keeps it) and to `events.jsonl`, so the row shows "Meet adapter: …". The e2e fixture asserts no diagnostic fires on a healthy page; `e2e/pipeline.spec.ts` injects one during a recording and asserts the note and the row.
 **Incident:** none. Seeded 2026-09-24 because Meet's markup is obfuscated and will change.
+
+### A transcript exists in OPFS before its export is attempted
+
+**Mechanism:** `app/pipeline.ts` writes `transcript.md`, `transcript.json` and `meta.json` with `writeArtifact` and only then calls `exportArtifacts`, and only when the video is already exported; an export failure leaves the recording `done` with `error` set, never `failed`, and **Save now** exports what is in OPFS. `e2e/pipeline.spec.ts` "no export folder" records with no folder chosen and asserts the three files in `recordings/<id>/` and the recording at `done`.
+**Incident:** none. Seeded 2026-09-24: transcription may finish long after Stop's click, when the folder's permission is gone (after a browser restart) or no folder was chosen; a transcript that took minutes of GPU or CPU time must not depend on either.
 
 ### Every speaking start has a matching stop, and both are stamped at the change, not at its detection
 

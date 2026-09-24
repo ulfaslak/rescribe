@@ -30,6 +30,8 @@ const $ = <T extends Element>(sel: string): T => {
 
 let status: AppStatus = 'idle';
 let recorder: Recorder | undefined;
+/** The tab a toolbar recording captures; adapter events from other tabs are not its events. */
+let recordedTabId: number | undefined;
 let starting = false;
 let ticker: number | undefined;
 
@@ -66,7 +68,7 @@ function note(text: string, isError = false): void {
 // Registered by main() only in the tab that owns the recorder; a duplicate tab never listens.
 function onMessage(
   msg: Message,
-  _sender: chrome.runtime.MessageSender,
+  sender: chrome.runtime.MessageSender,
   sendResponse: (res: AppStatus) => void,
 ): boolean {
   switch (msg.type) {
@@ -80,8 +82,15 @@ function onMessage(
     case 'roster':
     case 'adapter-diagnostic':
       // Into events.jsonl, stamps as received, while a recording runs; the pipeline reads the
-      // file back (lib/assemble.ts). Outside a recording there is nothing to attach them to.
+      // file back (lib/assemble.ts). Outside a recording there is nothing to attach them to. A
+      // toolbar recording captures one tab, so a Meet call idling in another tab is not its
+      // evidence; a picker recording (a window, the screen) cannot tell and takes every tab's.
       if (recorder && status === 'recording') {
+        const from = sender.tab?.id;
+        if (recordedTabId !== undefined && from !== undefined && from !== recordedTabId) {
+          console.info('[rescribe] adapter message from another tab', msg);
+          return false;
+        }
         recorder.appendEvent(msg);
         if (msg.type === 'adapter-diagnostic') recorder.addNote(`Meet adapter: ${msg.message}`);
       } else {
@@ -138,7 +147,7 @@ async function onToggleRecording(
     note(`Couldn't capture that tab: ${String(err)}`, true);
     return;
   }
-  await startRecording(display, msg.tabTitle || 'Tab recording');
+  await startRecording(display, msg.tabTitle || 'Tab recording', msg.tabId);
 }
 
 /** "Record screen…": Chrome's picker, from a click in this tab. */
@@ -155,12 +164,13 @@ async function onRecordScreen(): Promise<void> {
   await startRecording(display, 'Screen recording');
 }
 
-async function startRecording(display: Captured, title: string): Promise<void> {
+async function startRecording(display: Captured, title: string, tabId?: number): Promise<void> {
   if (status !== 'idle' || starting) {
     stopAll(display.stream);
     return;
   }
   starting = true;
+  recordedTabId = tabId;
   try {
     const settings = await loadSettings();
     const wantMic = $<HTMLInputElement>('#mic').checked;
@@ -179,6 +189,7 @@ async function startRecording(display: Captured, title: string): Promise<void> {
     );
   } catch (err) {
     note(`Couldn't start: ${err instanceof Error ? err.message : String(err)}`, true);
+    recordedTabId = undefined;
     setStatus('idle');
   } finally {
     starting = false;
@@ -206,6 +217,7 @@ function onRecorderChange(
       break;
     case 'done':
       recorder = undefined;
+      recordedTabId = undefined;
       setStatus('idle');
       if (rec.status === 'failed') note(`Recording failed: ${rec.error ?? 'unknown error'}`, true);
       else if (rec.error) note(`Recorded, but ${rec.error}`, true);

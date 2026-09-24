@@ -13,6 +13,7 @@ import type { ChannelId, Recording, Segment } from '../lib/types.ts';
 import { exportArtifacts } from '../storage/export.ts';
 import {
   getRecording,
+  getVideoFile,
   listRecordings,
   readArtifact,
   readChannelPcm,
@@ -56,6 +57,11 @@ export function onPipelineProgress(listener: Listener): () => void {
 /** True while any recording is queued or transcribing (beforeunload, badge). */
 export function isPipelineBusy(): boolean {
   return running.size > 0;
+}
+
+/** True while this recording is queued or transcribing (the library must not delete it then). */
+export function isTranscribing(id: string): boolean {
+  return running.has(id);
 }
 
 /**
@@ -188,14 +194,17 @@ async function run(id: string): Promise<Recording> {
 
   // 3. Transcribe, one channel at a time.
   const segments: Segment[] = [];
+  let found = false;
   for (const channel of CHANNELS) {
     const cached = await cachedSegments(id, channel, key);
     if (cached) {
+      found = true;
       segments.push(...cached);
       continue;
     }
     const pcm = await readChannelPcm(id, channel);
     if (!pcm || pcm.length === 0) continue;
+    found = true;
     let last: TranscribeProgress['phase'] | undefined;
     let out: Segment[];
     try {
@@ -232,6 +241,14 @@ async function run(id: string): Promise<Recording> {
     }
     segments.push(...out);
   }
+
+  // No channel and no cache: a video-only recording has nothing to transcribe and is done with
+  // an empty transcript; a recording whose media was deleted must not be.
+  if (!found && !(await getVideoFile(id, rec.container)))
+    return updateRecording(id, {
+      status: 'failed',
+      error: "Nothing to transcribe: the recording's media is no longer in Rescribe's storage.",
+    });
 
   // 4–5. Attribute and render from what is on disk: the segments and the event log.
   emit(id, { phase: 'attribute', message: 'Attributing speakers…' });
