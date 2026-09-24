@@ -119,24 +119,25 @@ async function opfsBytes(page: Page, segments: string[]): Promise<Buffer> {
 }
 
 function ffprobe(file: string): { codecs: string[]; duration: number; format: string } {
-  const probe = JSON.parse(
-    execFileSync('ffprobe', [
-      '-v',
-      'error',
-      '-print_format',
-      'json',
-      '-show_streams',
-      '-show_format',
-      file,
-    ]).toString(),
-  ) as {
-    streams: Array<{ codec_name: string }>;
-    format: { duration?: string; format_name: string };
-  };
+  const run = (args: string[]) =>
+    JSON.parse(
+      execFileSync('ffprobe', ['-v', 'error', '-print_format', 'json', ...args, file]).toString(),
+    ) as {
+      streams?: Array<{ codec_name: string }>;
+      format?: { duration?: string; format_name: string };
+      packets?: Array<{ pts_time?: string }>;
+    };
+  const probe = run(['-show_streams', '-show_format']);
+  let duration = Number(probe.format?.duration);
+  if (!Number.isFinite(duration)) {
+    // A MediaRecorder WebM is a live stream: no duration in the header. Take the last packet.
+    const packets = run(['-show_packets', '-select_streams', 'a:0']).packets ?? [];
+    duration = Math.max(0, ...packets.map((p) => Number(p.pts_time)).filter(Number.isFinite));
+  }
   return {
-    codecs: probe.streams.map((s) => s.codec_name),
-    duration: Number(probe.format.duration),
-    format: probe.format.format_name,
+    codecs: (probe.streams ?? []).map((s) => s.codec_name),
+    duration,
+    format: probe.format?.format_name ?? '',
   };
 }
 

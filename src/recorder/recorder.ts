@@ -23,6 +23,10 @@ import { buildGraph, planGraph, TAP_SAMPLE_RATE, type BuiltGraph } from './graph
 import type { TapCommand, TapMessage } from './tap.worklet.ts';
 
 const TIMESLICE_MS = 1000;
+/** Chrome's fragmented-MP4 muxer emits a fragment only at a keyframe, and its default keyframe
+ * interval is about 5 s (measured 2026-09-24: first media fragment at +10 s). A keyframe per
+ * timeslice makes every timeslice a chunk on disk, which is what "on disk within seconds" needs. */
+const KEYFRAME_INTERVAL_MS = 1000;
 const VIDEO_BPS = 2_500_000;
 const AUDIO_BPS = 128_000;
 const MIME: Record<Container, string> = {
@@ -137,7 +141,12 @@ export class Recorder {
       const graph = buildGraph(plan, mixCtx, tapCtx, tracks);
       const rec = new MediaRecorder(
         new MediaStream([videoTrack, ...graph.mixer.stream.getAudioTracks()]),
-        { mimeType: mime, videoBitsPerSecond: VIDEO_BPS, audioBitsPerSecond: AUDIO_BPS },
+        {
+          mimeType: mime,
+          videoBitsPerSecond: VIDEO_BPS,
+          audioBitsPerSecond: AUDIO_BPS,
+          videoKeyFrameIntervalDuration: KEYFRAME_INTERVAL_MS,
+        } as MediaRecorderOptions,
       );
       const recording: Recording = {
         id,
