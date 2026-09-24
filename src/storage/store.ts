@@ -5,10 +5,12 @@ import { idb } from '../lib/idb.ts';
 import { int16ToFloat32 } from '../lib/pcm.ts';
 import type { ChannelId, Container, Recording } from '../lib/types.ts';
 import {
+  EVENTS_FILE,
   isExportableArtifact,
   isMediaFile,
   listRecordingFiles,
   pcmFileName,
+  recordingDir,
   recordingFile,
   removeRecordingDir,
   removeRecordingFile,
@@ -71,10 +73,58 @@ export async function readChannelPcm(
 /** Int16 samples → Float32 in [-1, 1], what an ASR engine takes. */
 export const pcmToFloat32 = int16ToFloat32;
 
+// --- Transcript artifacts (pipeline steps 4–5; ARCHITECTURE § Storage) ----------------------
+
 /**
- * Delete the raw media (video, PCM) from OPFS and mark the record `mediaDeleted`. The events log,
- * the artifacts (transcript, meta), the record and the exported files stay. Idempotent. Returns
- * the bytes freed.
+ * One channel's recogniser output, kept so a re-run skips a channel already transcribed with the
+ * same model, backend and Rescribe version (a re-run after a failure on the other channel, or
+ * with another "my name"). Never exported.
+ */
+export function segmentsArtifactName(channel: ChannelId): string {
+  return `segments.${channel}.json`;
+}
+
+/** Write (replace) a text file in the recording's OPFS directory. */
+export async function writeArtifact(id: string, name: string, text: string): Promise<void> {
+  const dir = await recordingDir(id, true);
+  if (!dir) throw new Error(`recording directory ${id} could not be opened`);
+  const fh = await dir.getFileHandle(name, { create: true });
+  const writable = await fh.createWritable({ keepExistingData: false });
+  try {
+    await writable.write(text);
+    await writable.close();
+  } catch (err) {
+    await writable.abort().catch(() => undefined);
+    throw err;
+  }
+}
+
+/** A text file from the recording's OPFS directory, or undefined when absent. */
+export async function readArtifact(id: string, name: string): Promise<string | undefined> {
+  const file = await recordingFile(id, name);
+  return file ? file.text() : undefined;
+}
+
+/** The exportable artifacts present in OPFS (`isExportableArtifact`), sorted by name. */
+export async function listArtifacts(id: string): Promise<string[]> {
+  const dir = await recordingDir(id, false);
+  if (!dir) return [];
+  const out: string[] = [];
+  for await (const [name, handle] of dir.entries())
+    if (handle.kind === 'file' && isExportableArtifact(name)) out.push(name);
+  return out.sort();
+}
+
+/** The recording's event log (events.jsonl) as text; empty when absent. */
+export async function readEventLog(id: string): Promise<string> {
+  return (await readArtifact(id, EVENTS_FILE)) ?? '';
+}
+
+/**
+ * Delete the video and the PCM out of OPFS and mark the record `mediaDeleted`. The event log,
+ * the artifacts and the segments cache stay, so the transcript can still be exported and, from
+ * the cache, assembled again (a re-run with another "my name"); without the cache a re-run fails.
+ * Idempotent; a missing record is not an error. Returns the bytes freed (the library reports it).
  */
 export async function deleteMedia(id: string): Promise<number> {
   let freed = 0;
@@ -83,7 +133,7 @@ export async function deleteMedia(id: string): Promise<number> {
     await removeRecordingFile(id, name);
     freed += size;
   }
-  if (await getRecording(id)) await updateRecording(id, { mediaDeleted: true });
+  await updateRecording(id, { mediaDeleted: true }).catch(() => undefined);
   return freed;
 }
 
@@ -91,19 +141,6 @@ export async function deleteMedia(id: string): Promise<number> {
 export async function deleteRecording(id: string): Promise<void> {
   await removeRecordingDir(id);
   await idb.del('recordings', id);
-}
-
-/** Names of the exportable artifacts in `recordings/<id>/` (transcript.md, transcript.json,
- * meta.json once transcription writes them); see `isExportableArtifact`. */
-export async function listArtifactNames(id: string): Promise<string[]> {
-  return Object.keys(await listRecordingFiles(id))
-    .filter(isExportableArtifact)
-    .sort();
-}
-
-/** An artifact of the recording as a `File` (to stream into the export folder), or undefined. */
-export function getArtifactFile(id: string, name: string): Promise<File | undefined> {
-  return recordingFile(id, name);
 }
 
 export interface StorageUsage {

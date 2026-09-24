@@ -1,124 +1,41 @@
 // The recording library (#4): recordings seeded through the picker path, then the actions that
 // work from what is on disk. Asserts on IndexedDB and OPFS (the export "folder" is an OPFS
 // directory, as in record.spec.ts), and on the row's data attributes and buttons, not on prose.
-import path from 'node:path';
+// The pipeline cases run the real transcriber on the fixture audio (the model is cached in the
+// profile after the first transcribe run).
 import type { BrowserContext, Locator, Page } from '@playwright/test';
-import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
+import { expect, test } from './fixtures.ts';
+import {
+  clearExportFolder,
+  clearRecordings,
+  EXPORT_DIR,
+  exported,
+  openApp,
+  openTarget,
+  opfsSize,
+  opfsText,
+  patchRecording,
+  recordings,
+  removeOpfs,
+  rerun as runPipeline,
+  seedExportFolder,
+  setSettings,
+  waitForRecording,
+} from './helpers.ts';
 import type { Recording } from '../src/lib/types.ts';
 import { formatBytes } from '../src/app/library.ts';
 
-const EXPORT_DIR = 'export-test';
-/** Statuses a recording can rest at; the pipeline (#2), once it runs after stop, passes through `transcribing`. */
+/** Statuses a recording can rest at; the pipeline, when it runs after stop, passes through `transcribing`. */
 const SETTLED = new Set(['recorded', 'done', 'failed']);
 
-async function openTarget(context: BrowserContext): Promise<Page> {
-  const target = await context.newPage();
-  await target.goto('file://' + path.resolve('e2e/fixtures/capture-target.html'));
-  await expect(target).toHaveTitle(CAPTURE_TARGET_TITLE);
-  return target;
-}
-
-async function openApp(context: BrowserContext, extensionId: string): Promise<Page> {
-  const page = await context.newPage();
-  page.on('console', (m) => {
-    if (m.type() === 'error' || m.type() === 'warning') console.log(`[page ${m.type()}]`, m.text());
-  });
-  page.on('pageerror', (e) => console.log('[pageerror]', e.message));
-  await page.goto(`chrome-extension://${extensionId}/app/app.html`);
-  await ready(page);
-  return page;
-}
-
-async function ready(page: Page): Promise<void> {
+/** The app is up and the recorder idle (the pill may show `transcribing` while the pipeline runs). */
+async function readyIdle(page: Page): Promise<void> {
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
 }
 
-function idbWrite(page: Page, store: string, fn: string, args: unknown[]): Promise<void> {
-  return page.evaluate(
-    ({ store, fn, args }) =>
-      new Promise<void>((resolve, reject) => {
-        const req = indexedDB.open('rescribe');
-        req.onerror = () => reject(req.error);
-        req.onsuccess = () => {
-          const tx = req.result.transaction(store, 'readwrite');
-          const os = tx.objectStore(store) as unknown as Record<
-            string,
-            (...a: unknown[]) => IDBRequest
-          >;
-          os[fn]!(...args);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-        };
-      }),
-    { store, fn, args },
-  );
-}
-
-async function seedExportFolder(page: Page): Promise<void> {
-  await page.evaluate(async (dirName) => {
-    const root = await navigator.storage.getDirectory();
-    const dir = await root.getDirectoryHandle(dirName, { create: true });
-    await new Promise<void>((resolve, reject) => {
-      const req = indexedDB.open('rescribe');
-      req.onerror = () => reject(req.error);
-      req.onsuccess = () => {
-        const tx = req.result.transaction('handles', 'readwrite');
-        tx.objectStore('handles').put(dir, 'export');
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      };
-    });
-  }, EXPORT_DIR);
-}
-
-async function setSettings(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (patch) => {
-    const cur = ((await chrome.storage.local.get('settings'))['settings'] ?? {}) as object;
-    await chrome.storage.local.set({ settings: { ...cur, ...patch } });
-  }, patch);
-}
-
-async function clearRecordings(page: Page): Promise<void> {
-  await idbWrite(page, 'recordings', 'clear', []);
-  await page.evaluate(async (dirName) => {
-    const root = await navigator.storage.getDirectory();
-    for (const name of ['recordings', dirName])
-      await root.removeEntry(name, { recursive: true }).catch(() => undefined);
-  }, EXPORT_DIR);
-}
-
-async function recordings(page: Page): Promise<Recording[]> {
-  return page.evaluate(
-    () =>
-      new Promise<Recording[]>((resolve, reject) => {
-        const req = indexedDB.open('rescribe');
-        req.onerror = () => reject(req.error);
-        req.onsuccess = () => {
-          const r = req.result.transaction('recordings').objectStore('recordings').getAll();
-          r.onsuccess = () =>
-            resolve((r.result as Recording[]).sort((a, b) => b.startedAt - a.startedAt));
-          r.onerror = () => reject(r.error);
-        };
-      }),
-  );
-}
-
 async function recording(page: Page, id: string): Promise<Recording | undefined> {
   return (await recordings(page)).find((r) => r.id === id);
-}
-
-/** Byte length of an OPFS file, or -1 when it does not exist. */
-async function opfsSize(page: Page, segments: string[]): Promise<number> {
-  return page.evaluate(async (segments) => {
-    let dir = await navigator.storage.getDirectory();
-    try {
-      for (const s of segments.slice(0, -1)) dir = await dir.getDirectoryHandle(s);
-      return (await (await dir.getFileHandle(segments[segments.length - 1]!)).getFile()).size;
-    } catch {
-      return -1;
-    }
-  }, segments);
 }
 
 async function opfsDirExists(page: Page, segments: string[]): Promise<boolean> {
@@ -130,14 +47,6 @@ async function opfsDirExists(page: Page, segments: string[]): Promise<boolean> {
     } catch {
       return false;
     }
-  }, segments);
-}
-
-async function opfsRemove(page: Page, segments: string[]): Promise<void> {
-  await page.evaluate(async (segments) => {
-    let dir = await navigator.storage.getDirectory();
-    for (const s of segments.slice(0, -1)) dir = await dir.getDirectoryHandle(s);
-    await dir.removeEntry(segments[segments.length - 1]!, { recursive: true });
   }, segments);
 }
 
@@ -187,7 +96,7 @@ async function record(page: Page, seconds: number): Promise<Recording> {
   await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
   await page.waitForTimeout(seconds * 1000);
   await page.click('#stop');
-  await expect(page.locator('#status')).toHaveText('idle', { timeout: 30_000 });
+  await expect(page.locator('#record-screen')).toBeEnabled({ timeout: 30_000 });
   const fresh = (await recordings(page)).find((r) => !before.has(r.id));
   expect(fresh).toBeDefined();
   return settled(page, fresh!.id);
@@ -195,17 +104,7 @@ async function record(page: Page, seconds: number): Promise<Recording> {
 
 /** The record once it rests at `recorded`, `done` or `failed` (the pipeline may run in between). */
 async function settled(page: Page, id: string): Promise<Recording> {
-  let rec: Recording | undefined;
-  await expect
-    .poll(
-      async () => {
-        rec = await recording(page, id);
-        return rec?.status;
-      },
-      { timeout: 5 * 60_000, message: `recording ${id} settles` },
-    )
-    .toMatch(new RegExp(`^(${[...SETTLED].join('|')})$`));
-  return rec!;
+  return waitForRecording(page, id, (r) => SETTLED.has(r.status), { label: 'settle' });
 }
 
 async function seed(page: Page, n: number, seconds = 2): Promise<Recording[]> {
@@ -227,12 +126,16 @@ async function setUp(
     container: 'mp4',
     pathTemplate: '{date} {time} {title}',
     micByDefault: true,
-    // The pipeline (#2) transcribes on stop by default; these tests seed recordings, not transcripts.
+    myName: 'Ulf',
+    model: 'parakeet-tdt-0.6b-v3',
+    backend: 'wasm',
+    // The pipeline transcribes on stop by default; these tests seed recordings and run it when
+    // they mean to (window.rescribe.transcribeRecording, or the row's Re-run).
     autoTranscribe: false,
     ...settings,
   });
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   await expect(page.locator('#folder-name')).toHaveText(EXPORT_DIR);
   return page;
 }
@@ -247,16 +150,21 @@ async function clickTwice(button: Locator): Promise<void> {
   await button.click();
 }
 
-async function setStatus(page: Page, rec: Recording, status: Recording['status']): Promise<void> {
-  await idbWrite(page, 'recordings', 'put', [{ ...rec, status }, rec.id]);
-}
-
 const storageText = (page: Page): Locator => page.locator('#storage-usage');
 
 async function expectStorageMatchesWalk(page: Page): Promise<number> {
   const bytes = await opfsRecordingsBytes(page);
   await expect(storageText(page)).toHaveText(`Local storage: ${formatBytes(bytes)}`);
   return bytes;
+}
+
+async function opfsRecordingsBytesOf(page: Page, id: string): Promise<number> {
+  let total = 0;
+  for (const name of ['video.mp4', 'video.webm', 'mic.pcm', 'display.pcm', 'events.jsonl']) {
+    const s = await opfsSize(page, ['recordings', id, name]);
+    if (s > 0) total += s;
+  }
+  return total;
 }
 
 test('rename persists across reload and never renames the folder; a recording row ticks; storage matches the walk', async ({
@@ -284,7 +192,7 @@ test('rename persists across reload and never renames the folder; a recording ro
   await input.press('Enter');
   await expect(r.locator('.title')).toHaveText('Weekly sync');
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   await expect(row(page, a!.id).locator('.title')).toHaveText('Weekly sync');
   const renamed = await recording(page, a!.id);
   expect(renamed!.title).toBe('Weekly sync');
@@ -334,15 +242,6 @@ test('rename persists across reload and never renames the folder; a recording ro
   await page.screenshot({ path: 'screenshots/library.png', fullPage: true });
 });
 
-async function opfsRecordingsBytesOf(page: Page, id: string): Promise<number> {
-  let total = 0;
-  for (const name of ['video.mp4', 'video.webm', 'mic.pcm', 'display.pcm', 'events.jsonl']) {
-    const s = await opfsSize(page, ['recordings', id, name]);
-    if (s > 0) total += s;
-  }
-  return total;
-}
-
 test('delete media keeps the record, the events log and the export; delete recording keeps only the export; the bulk button frees the rest', async ({
   context,
   extensionId,
@@ -380,7 +279,7 @@ test('delete media keeps the record, the events log and the export; delete recor
   // Armed, then the pipeline takes the recording: the confirm is refused, the files stay.
   await ra.locator('button.delete-media').click();
   await expect(ra.locator('button.delete-media')).toHaveClass(/armed/);
-  await setStatus(page, a!, 'transcribing');
+  await patchRecording(page, a!.id, { status: 'transcribing' });
   await page.waitForTimeout(400);
   await ra.locator('button.delete-media').click();
   await expect(page.locator('#library-status')).toContainText('is transcribing');
@@ -389,9 +288,9 @@ test('delete media keeps the record, the events log and the export; delete recor
   expect((await recording(page, a!.id))!.mediaDeleted).toBeUndefined();
   await expect(ra).toHaveAttribute('data-status', 'transcribing');
   await expect(ra.locator('.actions')).toHaveCount(0);
-  await setStatus(page, a!, a!.status);
+  await patchRecording(page, a!.id, { status: a!.status });
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
 
   // Delete media on A: a recorded row says what is lost, then goes through.
   await ra.locator('button.delete-media').click();
@@ -433,16 +332,16 @@ test('delete media keeps the record, the events log and the export; delete recor
   // Bulk: a recorded row is never a target (its audio is what a transcript is made from); a done
   // one is.
   await expect(page.locator('#storage-actions button')).toHaveCount(0);
-  await setStatus(page, c!, 'done');
+  await patchRecording(page, c!.id, { status: 'done' });
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   const bulk = page.locator('#storage-actions button.delete-exported-media');
   await expect(bulk).toBeVisible();
 
   // C's exported video is gone (deleted in Finder, folder moved): the row refuses, the bulk keeps
   // C and names it, and nothing local is touched.
   const cVideo = [EXPORT_DIR, ...c!.exportPath!.split('/'), 'recording.mp4'];
-  await opfsRemove(page, cVideo);
+  await removeOpfs(page, cVideo.slice(0, -1), ['recording.mp4']);
   await clickTwice(row(page, c!.id).locator('button.delete-media'));
   await expect(page.locator('#library-status')).toContainText('Media kept');
   await expect(page.locator('#library-status')).toContainText('not in the export folder');
@@ -462,7 +361,7 @@ test('delete media keeps the record, the events log and the export; delete recor
   expect(await opfsSize(page, cVideo)).toBeGreaterThan(10_000);
 
   // No export folder at all: the bulk refuses outright.
-  await idbWrite(page, 'handles', 'delete', ['export']);
+  await clearExportFolder(page);
   await clickTwice(bulk);
   await expect(page.locator('#library-status')).toContainText('no export folder chosen');
   expect(await opfsSize(page, ['recordings', c!.id, 'video.mp4'])).toBeGreaterThan(10_000);
@@ -472,14 +371,14 @@ test('delete media keeps the record, the events log and the export; delete recor
   // media stays.
   await bulk.click();
   await expect(bulk).toHaveText(/Free .* from 1 exported recording\?/);
-  await setStatus(page, (await recording(page, c!.id))!, 'transcribing');
+  await patchRecording(page, c!.id, { status: 'transcribing' });
   await page.waitForTimeout(400);
   await bulk.click();
-  await expect(page.locator('#library-status')).toContainText('Nothing to delete');
+  await expect(page.locator('#library-status')).toContainText('being transcribed');
   expect(await opfsSize(page, ['recordings', c!.id, 'video.mp4'])).toBeGreaterThan(10_000);
-  await setStatus(page, (await recording(page, c!.id))!, 'done');
+  await patchRecording(page, c!.id, { status: 'done' });
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   await clickTwice(page.locator('#storage-actions button.delete-exported-media'));
   await expect(page.locator('#library-status')).toContainText('Freed ');
   await expect(page.locator('#library-status')).toContainText('1 exported recording');
@@ -506,7 +405,7 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
   await expect(r.locator('button.save-now')).toHaveCount(0);
 
   // The exported file is gone: Re-export writes it again, same path, same status.
-  await opfsRemove(page, [...exportedPath, 'recording.mp4']);
+  await removeOpfs(page, exportedPath, ['recording.mp4']);
   expect(await opfsSize(page, [...exportedPath, 'recording.mp4'])).toBe(-1);
   await r.locator('button.re-export').click();
   await expect(page.locator('#library-status')).toHaveText(
@@ -521,13 +420,13 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
 
   // The whole folder is gone, and an artifact has appeared in OPFS (as the pipeline will write
   // them): Re-export recreates the folder and writes the artifact next to the video.
-  await opfsRemove(page, exportedPath);
+  await removeOpfs(page, [EXPORT_DIR], [a!.exportPath!]);
   expect(await opfsDirExists(page, exportedPath)).toBe(false);
   await writeOpfsFile(page, ['recordings', a!.id, 'transcript.md'], '# Transcript\n');
   // The pipeline's per-channel cache stays local: it must not be exported.
   await writeOpfsFile(page, ['recordings', a!.id, 'segments.mic.json'], '{}');
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   await row(page, a!.id).locator('button.re-export').click();
   await expect(page.locator('#library-status')).toHaveText(
     `Saved recording.mp4, transcript.md to ${a!.exportPath}/.`,
@@ -541,7 +440,7 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
   // With the media deleted, Re-export still writes the artifact, and says so.
   await clickTwice(row(page, a!.id).locator('button.delete-media'));
   await expect(row(page, a!.id).locator('.media-deleted')).toBeVisible();
-  await opfsRemove(page, [...exportedPath, 'transcript.md']);
+  await removeOpfs(page, exportedPath, ['transcript.md']);
   await row(page, a!.id).locator('button.re-export').click();
   await expect(page.locator('#library-status')).toHaveText(
     `Saved transcript.md to ${a!.exportPath}/.`,
@@ -550,7 +449,7 @@ test('Re-export recreates a deleted file and a deleted folder at the same path, 
   expect(await opfsSize(page, [...exportedPath, 'transcript.md'])).toBeGreaterThan(0);
 
   // No export folder: the failure lands on the record and the row, nothing else changes.
-  await idbWrite(page, 'handles', 'delete', ['export']);
+  await clearExportFolder(page);
   await row(page, a!.id).locator('button.re-export').click();
   await expect(row(page, a!.id).locator('.hint.error')).toContainText('No export folder', {
     timeout: 15_000,
@@ -582,9 +481,9 @@ test('a failed recording shows its error and offers only Delete', async ({
     container: 'mp4',
     error: 'Video chunk lost: synthetic arrayBuffer failure',
   };
-  await idbWrite(page, 'recordings', 'put', [failed, failed.id]);
+  await patchRecording(page, failed.id, failed as unknown as Record<string, unknown>);
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   const r = row(page, failed.id);
   await expect(r).toHaveAttribute('data-status', 'failed');
   await expect(r.locator('.pill')).toHaveText('failed');
@@ -602,20 +501,15 @@ test('a failed recording shows its error and offers only Delete', async ({
   // A failed recording whose video did reach disk (a chunk lost late in a long call): Save now
   // exports what is there; the status and the failure reason stay.
   const [v] = await seed(page, 1);
-  const { exportPath: _dropped, ...rest } = (await recording(page, v!.id))!;
-  const broken: Recording = {
-    ...rest,
-    status: 'failed',
-    error: 'Video chunk lost: synthetic arrayBuffer failure',
-  };
-  await idbWrite(page, 'recordings', 'put', [broken, broken.id]);
+  const broken = { status: 'failed', error: 'Video chunk lost: synthetic arrayBuffer failure' };
+  await patchRecording(page, v!.id, { ...broken, exportPath: undefined });
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
   const rv = row(page, v!.id);
   await expect(rv).toHaveAttribute('data-status', 'failed');
   await expect(rv.locator('button.save-now')).toBeVisible();
   await expect(rv.locator('button.delete-media')).toBeVisible();
-  await expect(rv.locator('button.rerun')).toBeDisabled();
+  await expect(rv.locator('button.rerun')).toHaveText('Transcribe');
   await rv.locator('button.save-now').click();
   await expect(page.locator('#library-status')).toHaveText(
     /^Saved recording\.mp4 to .*Screen recording.*\/\.$/,
@@ -624,12 +518,13 @@ test('a failed recording shows its error and offers only Delete', async ({
   const saved = (await recording(page, v!.id))!;
   expect(saved.status).toBe('failed');
   expect(saved.error).toBe(broken.error);
+  expect(saved.status).toBe('failed');
   expect(saved.exportPath).toBeDefined();
   expect(
     await opfsSize(page, [EXPORT_DIR, ...saved.exportPath!.split('/'), 'recording.mp4']),
   ).toBeGreaterThan(10_000);
   await expect(rv.locator('button.re-export')).toBeVisible();
-  await expect(rv.locator('.hint.error')).toHaveText(broken.error!);
+  await expect(rv.locator('.hint.error')).toHaveText(broken.error);
 });
 
 test('a re-render while a title is being edited neither saves the half-typed title nor closes the input; Escape cancels', async ({
@@ -638,28 +533,28 @@ test('a re-render while a title is being edited neither saves the half-typed tit
 }) => {
   const page = await setUp(context, extensionId);
   const [a, b] = await seed(page, 2);
-  // B "transcribing" keeps the live refresh running.
-  await setStatus(page, b!, 'transcribing');
-  await page.reload();
-  await ready(page);
-  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'transcribing');
   const ra = row(page, a!.id);
   await ra.locator('button.rename').click();
   const input = ra.locator('input.title-input');
   await input.fill('half typed');
-  // B finishes: the live refresh sees the change and wants to rebuild the list.
-  await setStatus(page, b!, 'recorded');
-  await page.waitForTimeout(2500);
+  // B goes through the pipeline meanwhile: its queued and done phases each want to rebuild the
+  // list (and, unlike a click elsewhere, never move the focus).
+  await page.evaluate((id) => {
+    void (
+      window as unknown as { rescribe: { transcribeRecording: (id: string) => Promise<unknown> } }
+    ).rescribe.transcribeRecording(id);
+  }, b!.id);
+  await waitForRecording(page, b!.id, (r) => r.status === 'done', { label: 'deferral' });
   await expect(input).toBeVisible();
   await expect(input).toHaveValue('half typed');
   expect((await recording(page, a!.id))!.title).toBe(a!.title);
-  // The rebuild waited: B's row still shows the old status.
-  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'transcribing');
+  // The rebuild waited: B's row still shows what it was.
+  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'recorded');
   await input.press('Escape');
   await expect(ra.locator('.title')).toHaveText(a!.title);
   expect((await recording(page, a!.id))!.title).toBe(a!.title);
   // …and the deferred rebuild ran.
-  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'recorded');
+  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'done');
   // Enter and blur still save.
   await ra.locator('button.rename').click();
   await ra.locator('input.title-input').fill('Final name');
@@ -677,8 +572,7 @@ test('a row with an action in progress shows it and offers nothing, whatever re-
   extensionId,
 }) => {
   const page = await setUp(context, extensionId);
-  const [a, b] = await seed(page, 2);
-  await setStatus(page, b!, 'transcribing');
+  const [a] = await seed(page, 1);
   // Every export write waits, so the action is long enough to watch.
   await page.addInitScript(() => {
     const orig = FileSystemFileHandle.prototype.createWritable;
@@ -691,23 +585,30 @@ test('a row with an action in progress shows it and offers nothing, whatever re-
     };
   });
   await page.reload();
-  await ready(page);
+  await readyIdle(page);
+  // The exported video is gone, so Re-export has to write it.
+  await removeOpfs(page, [EXPORT_DIR, a!.exportPath!], ['recording.mp4']);
   const ra = row(page, a!.id);
   await ra.locator('button.re-export').click();
   await expect(ra.locator('.busy')).toHaveText('Exporting…');
   await expect(ra.locator('button')).toHaveCount(0);
-  // B finishes meanwhile: the list is rebuilt; A's row must still show the action and no buttons.
-  await setStatus(page, b!, 'recorded');
-  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'recorded', { timeout: 5000 });
+  // A recording starts meanwhile: the list is rebuilt; A's row must still show the action and no
+  // buttons.
+  await page.click('#record-screen');
+  await expect(page.locator('.recording-item[data-status="recording"]')).toHaveCount(1, {
+    timeout: 15_000,
+  });
   await expect(ra.locator('.busy')).toHaveText('Exporting…');
   await expect(ra.locator('button')).toHaveCount(0);
   await expect(page.locator('#library-status')).toHaveText(
     `Saved recording.mp4 to ${a!.exportPath}/.`,
-    { timeout: 15_000 },
+    { timeout: 30_000 },
   );
   await expect(ra.locator('.busy')).toHaveCount(0);
   await expect(ra.locator('button.re-export')).toBeVisible();
   await expect(ra.locator('button.delete')).toBeVisible();
+  await page.click('#stop');
+  await expect(page.locator('#record-screen')).toBeEnabled({ timeout: 30_000 });
 });
 
 test('the storage walk survives a recording directory removed from under it', async ({
@@ -739,12 +640,179 @@ test('the storage walk survives a recording directory removed from under it', as
   page.on('pageerror', (e) => errors.push(e.message));
   await page.reload();
   // The load's render walked `recordings/` and B vanished under it: the app is still up.
-  await ready(page);
+  await readyIdle(page);
   expect(await opfsDirExists(page, ['recordings', b!.id])).toBe(false);
   await expect(row(page, b!.id)).toHaveCount(1); // the record is still there…
   await expect(row(page, b!.id).locator('.size')).toHaveCount(0); // …with nothing local
   await expect(row(page, a!.id).locator('.size')).toHaveCount(1);
   await expect(page.locator('#library-status')).toHaveText('');
   expect(errors).toEqual([]);
+  await expectStorageMatchesWalk(page);
+});
+
+// --- With the pipeline ----------------------------------------------------------------------------
+
+async function transcribed(page: Page, id: string): Promise<Recording> {
+  const rec = await runPipeline(page, id);
+  expect(rec.status, rec.error).toBe('done');
+  expect(rec.error).toBeUndefined();
+  expect(rec.transcribedAt).toBeDefined();
+  await expect(row(page, id)).toHaveAttribute('data-status', 'done');
+  return rec;
+}
+
+const ARTIFACTS = ['meta.json', 'transcript.json', 'transcript.md'];
+
+test('Re-run transcription on a done recording: the row shows the run, ends done with a fresh transcribedAt, meta.json carries it', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a] = await seed(page, 1);
+  const first = await transcribed(page, a!.id);
+  const t1 = first.transcribedAt!;
+  const ra = row(page, a!.id);
+  await expect(ra.locator('button.rerun')).toHaveText('Re-run transcription');
+  // Without the recogniser cache the re-run transcribes again, long enough to watch the row.
+  await removeOpfs(page, ['recordings', a!.id], ['segments.mic.json', 'segments.display.json']);
+  await ra.locator('button.rerun').click();
+  await expect(ra).toHaveAttribute('data-status', 'transcribing', { timeout: 10_000 });
+  await expect(ra.locator('.progress')).not.toHaveText('');
+  await expect(ra.locator('button')).toHaveCount(0);
+  const second = await waitForRecording(
+    page,
+    a!.id,
+    (r) => r.status !== 'transcribing' && (r.transcribedAt ?? 0) > t1,
+    { label: 'rerun' },
+  );
+  expect(second.status, second.error).toBe('done');
+  expect(second.error).toBeUndefined();
+  expect(second.exportPath).toBe(first.exportPath);
+  const meta = JSON.parse(await opfsText(page, exported(second, 'meta.json'))) as {
+    transcribedAt: number;
+  };
+  expect(meta.transcribedAt).toBe(second.transcribedAt);
+  await expect(page.locator('#library-status')).toHaveText(
+    `Transcript saved to ${second.exportPath}/.`,
+  );
+  await expect(ra).toHaveAttribute('data-status', 'done');
+  await expect(ra.locator('button.rerun')).toBeVisible();
+  await expect(ra.locator('button.rename')).toBeVisible();
+});
+
+test('Re-export on a done recording: the deleted folder comes back with the video and the transcript files; with the media gone the transcript files still follow the exported video', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a] = await seed(page, 1);
+  const done = await transcribed(page, a!.id);
+  const files = ['recording.mp4', ...ARTIFACTS];
+  const before: Record<string, number> = {};
+  for (const n of files) {
+    before[n] = await opfsSize(page, exported(done, n));
+    expect(before[n], n).toBeGreaterThan(0);
+  }
+  const ra = row(page, a!.id);
+
+  // The whole folder is gone: Re-export writes the video and every artifact again, same path.
+  await removeOpfs(page, [EXPORT_DIR], [done.exportPath!]);
+  await ra.locator('button.re-export').click();
+  await expect(page.locator('#library-status')).toHaveText(
+    `Saved recording.mp4, ${ARTIFACTS.join(', ')} to ${done.exportPath}/.`,
+    { timeout: 30_000 },
+  );
+  for (const n of files) expect(await opfsSize(page, exported(done, n)), n).toBe(before[n]);
+  expect(await recording(page, a!.id)).toMatchObject({
+    status: 'done',
+    exportPath: done.exportPath,
+    transcribedAt: done.transcribedAt,
+  });
+  expect((await recording(page, a!.id))!.error).toBeUndefined();
+
+  // Media deleted, transcript files deleted from the folder: they follow the exported video.
+  await clickTwice(ra.locator('button.delete-media'));
+  await expect(page.locator('#library-status')).toContainText('Deleted ');
+  await removeOpfs(page, [EXPORT_DIR, done.exportPath!], ARTIFACTS);
+  await ra.locator('button.re-export').click();
+  await expect(page.locator('#library-status')).toHaveText(
+    `Saved ${ARTIFACTS.join(', ')} to ${done.exportPath}/.`,
+    { timeout: 30_000 },
+  );
+  for (const n of ARTIFACTS) expect(await opfsSize(page, exported(done, n)), n).toBe(before[n]);
+  // The transcript can still be rebuilt from the kept recogniser output.
+  await expect(ra.locator('button.rerun')).toHaveText('Re-run transcription');
+
+  // Without the exported video and without the local one, nothing can be rebuilt: the row says so.
+  await removeOpfs(page, [EXPORT_DIR], [done.exportPath!]);
+  await ra.locator('button.re-export').click();
+  await expect(ra.locator('.hint.error')).toContainText(
+    "the video is no longer in Rescribe's storage",
+    { timeout: 15_000 },
+  );
+  await expect(ra).toHaveAttribute('data-status', 'done');
+});
+
+test('a recording queued or running in the pipeline keeps its media through a confirmed bulk delete and offers nothing', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a, b] = await seed(page, 2);
+  const da = await transcribed(page, a!.id);
+  const db = await transcribed(page, b!.id);
+  const bulk = page.locator('#storage-actions button.delete-exported-media');
+  await bulk.click();
+  await expect(bulk).toHaveText(/from 2 exported recordings\?/);
+  await page.waitForTimeout(400);
+  // A transcribes again for real (no cache) and B queues behind it; then the bulk is confirmed.
+  await removeOpfs(page, ['recordings', a!.id], ['segments.mic.json', 'segments.display.json']);
+  await page.evaluate(
+    ([x, y]) => {
+      const r = (
+        window as unknown as { rescribe: { transcribeRecording: (id: string) => Promise<unknown> } }
+      ).rescribe;
+      void r.transcribeRecording(x!);
+      void r.transcribeRecording(y!);
+      // The confirm in the same task, before the pipeline's status write or any re-render lands:
+      // the click that races the enqueue.
+      document
+        .querySelector<HTMLButtonElement>('#storage-actions button.delete-exported-media.armed')!
+        .click();
+    },
+    [a!.id, b!.id],
+  );
+  await expect(page.locator('#library-status')).toContainText('being transcribed');
+  for (const id of [a!.id, b!.id]) {
+    expect(await opfsSize(page, ['recordings', id, 'video.mp4']), id).toBeGreaterThan(10_000);
+    expect(await opfsSize(page, ['recordings', id, 'mic.pcm']), id).toBeGreaterThan(0);
+    expect((await recording(page, id))!.mediaDeleted).toBeUndefined();
+  }
+  await expect(row(page, b!.id).locator('button')).toHaveCount(0);
+  await expect(row(page, b!.id).locator('.progress')).not.toHaveText('');
+  const a2 = await waitForRecording(
+    page,
+    a!.id,
+    (r) => r.status === 'done' && (r.transcribedAt ?? 0) > da.transcribedAt!,
+    { label: 'rerun a' },
+  );
+  const b2 = await waitForRecording(
+    page,
+    b!.id,
+    (r) => r.status === 'done' && (r.transcribedAt ?? 0) > db.transcribedAt!,
+    { label: 'rerun b' },
+  );
+  expect(a2.error).toBeUndefined();
+  expect(b2.error).toBeUndefined();
+  for (const id of [a!.id, b!.id])
+    expect(await opfsSize(page, ['recordings', id, 'video.mp4']), id).toBeGreaterThan(10_000);
+  // Done again: the bulk goes through.
+  await clickTwice(page.locator('#storage-actions button.delete-exported-media'));
+  await expect(page.locator('#library-status')).toContainText('Freed ');
+  await expect(page.locator('#library-status')).toContainText('2 exported recordings');
+  for (const id of [a!.id, b!.id]) {
+    expect(await opfsSize(page, ['recordings', id, 'video.mp4']), id).toBe(-1);
+    expect((await recording(page, id))!.mediaDeleted).toBe(true);
+  }
   await expectStorageMatchesWalk(page);
 });

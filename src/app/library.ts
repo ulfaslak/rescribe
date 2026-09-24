@@ -2,35 +2,41 @@
 // One row per Recording: an editable title, the status, what is still on disk, and the actions
 // that work from OPFS (re-export, re-run transcription, delete media, delete). App-tab only.
 //
-// app.ts calls renderList() after every recorder phase change. Each render re-reads IndexedDB and
-// walks `recordings/` in OPFS once: the walk is both the storage figure and each row's inventory,
-// so a row only offers what it can actually do. While a row is `recording` or `transcribing` a
-// 1 s refresh keeps its duration and status current without help from the recorder or the pipeline.
+// app.ts calls renderList() after every recorder phase change and every pipeline phase. Each
+// render re-reads IndexedDB and walks `recordings/` in OPFS once: the walk is both the storage
+// figure and each row's inventory, so a row only offers what it can actually do. A recording the
+// recorder or the pipeline holds (`recording`, `transcribing`, or queued per `isTranscribing`) gets
+// no actions and no pencil. While a row is live a 1 s refresh keeps its duration and status
+// current without help from the recorder or the pipeline.
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
-import { exportVideoName } from '../recorder/recorder.ts';
+import { finalize } from '../recorder/recorder.ts';
 import {
   ensureExportPermission,
+  exportArtifacts,
   ExportError,
   exportedFileState,
-  getExportDirectory,
+  exportVideoName,
   getExportRoot,
-  writeExportFile,
   type ExportedFileState,
 } from '../storage/export.ts';
 import { isExportableArtifact, isMediaFile, pcmFileName, videoFileName } from '../storage/opfs.ts';
 import {
   deleteMedia,
   deleteRecording,
-  getArtifactFile,
   getRecording,
   getVideoFile,
-  listArtifactNames,
   listRecordings,
   storageUsage,
   updateRecording,
   type StorageUsage,
 } from '../storage/store.ts';
+import {
+  isTranscribing,
+  onPipelineProgress,
+  transcribeRecording,
+  type PipelineProgress,
+} from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -81,11 +87,15 @@ export function formatBytes(bytes: number): string {
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 // --- What a recording still has on disk ---------------------------------------------------------
 interface Inventory {
   video: boolean;
   pcm: boolean;
+  /** The pipeline's per-channel recogniser output: a re-run can rebuild the transcript from it
+   * after the media is gone. */
+  segmentsCache: boolean;
   artifacts: string[];
   /** Everything in the directory. */
   bytes: number;
@@ -99,6 +109,7 @@ function inventory(rec: Recording, usage: StorageUsage): Inventory {
   return {
     video: size(videoFileName(rec.container)) > 0,
     pcm: size(pcmFileName('mic')) > 0 || size(pcmFileName('display')) > 0,
+    segmentsCache: Object.keys(files).some((n) => /^segments\.[a-z]+\.json$/.test(n)),
     artifacts: Object.keys(files).filter(isExportableArtifact).sort(),
     bytes: usage.perRecording[rec.id] ?? 0,
     mediaBytes: Object.entries(files)
@@ -108,42 +119,50 @@ function inventory(rec: Recording, usage: StorageUsage): Inventory {
 }
 
 /**
- * The bulk target: `done` (video and transcript both exported), with an export path and media
- * present, and no action running on it. A `recorded` row is never a bulk target: its audio is
- * what a transcript would be made from. Whether the exported video actually exists is checked
- * per target at click time (`removeExportedMedia`), not here.
+ * The bulk candidates: `done` (video and transcript both exported), with an export path and media
+ * present. A `recorded` row is never one: its audio is what a transcript would be made from. What
+ * the pipeline or an action holds at click time, and whether each exported video actually exists,
+ * is decided in `removeExportedMedia`, not here, so the button does not flicker as the pipeline
+ * moves through the list.
  */
 function exportedWithMedia(recs: Recording[], usage: StorageUsage): Recording[] {
   return recs.filter(
-    (r) =>
-      r.exportPath !== undefined &&
-      r.status === 'done' &&
-      inventory(r, usage).mediaBytes > 0 &&
-      !inflight.has(r.id),
+    (r) => r.exportPath !== undefined && r.status === 'done' && inventory(r, usage).mediaBytes > 0,
   );
 }
 
-// --- Transcription (contract with src/app/pipeline.ts, #2) --------------------------------------
-// TODO(#2): when src/app/pipeline.ts is on main, import { transcribeRecording, onPipelineProgress }
-// from './pipeline.ts', set PIPELINE_AVAILABLE to true, subscribe in bindOnce() with
-// `onPipelineProgress(onProgress)` and make rerun() call `transcribeRecording(id)`. The row
-// already renders `progress.get(id)` while the status is `transcribing`.
-const PIPELINE_AVAILABLE = false;
-/** The pipeline's latest progress message per recording id, shown on a `transcribing` row. */
+/** Held by the recorder (`recording`), or by the pipeline: running (`transcribing` on disk) or
+ * queued (`isTranscribing`, in memory and ahead of the status on disk). */
+const live = (rec: Recording): boolean =>
+  rec.status === 'recording' || rec.status === 'transcribing' || isTranscribing(rec.id);
+
+// --- Transcription (steps 3–5 live in src/app/pipeline.ts) --------------------------------------
+/** The pipeline's latest progress message per recording id, shown on its row while it is held. */
 const progress = new Map<string, string>();
 
-function onProgress(id: string, p: { message: string }): void {
+/** app.ts re-renders the list on every phase change; here the line of a row already rendered as
+ * held is updated in place, and a row not yet rendered that way is rendered (coalesced). */
+function onProgress(id: string, p: PipelineProgress): void {
+  if (p.phase === 'done') {
+    progress.delete(id);
+    void renderList();
+    return;
+  }
   progress.set(id, p.message);
   const el = document.querySelector(`.recording-item[data-id="${CSS.escape(id)}"] .progress`);
   if (el) el.textContent = p.message;
-  else void renderList(); // the status flipped to `transcribing` under us
+  else void renderList();
 }
 
+/** Steps 3–5 again from what is on disk: the PCM, or the segments cache once the media is gone. */
 async function rerun(id: string): Promise<Outcome> {
   const rec = await claim(id, 'run it again');
   if (typeof rec === 'string') return rec;
-  // TODO(#2): `await transcribeRecording(id); return undefined;` (the row shows the outcome).
-  return `Transcription is not available yet (#2); "${rec.title}" was left as is.`;
+  const result = await transcribeRecording(id);
+  if (result.status === 'failed')
+    return fail(`Transcription failed: ${result.error ?? 'unknown error'}`);
+  if (result.error) return fail(`Transcribed, but ${result.error}`);
+  return `Transcript saved to ${result.exportPath ?? '?'}/.`;
 }
 
 // --- Actions ------------------------------------------------------------------------------------
@@ -200,67 +219,89 @@ async function runAction(
 }
 
 /**
- * Write everything the recording still has in OPFS into its export directory: the video (unless
- * the media was deleted) and every artifact (transcript.md, transcript.json, meta.json: any file
- * in recordings/<id>/ that is neither raw media nor the events log). Reuses `exportPath` when set,
- * so a folder the human deleted is recreated at the same path; a recording without one gets a
- * path from the template, as `finalize` does on stop. The status never changes: `done` stays
- * `done`, and a `failed` recording with a playable video (a chunk lost late in a long call) is
- * saved as `failed`, keeping its failure reason. Also "Save now" for a recording whose export
- * failed on stop (no folder, or the folder permission was not granted because finalize ran
- * outside a click).
+ * "Save now" and "Re-export", one action: the video through `finalize` unless it is already in its
+ * directory, then every artifact in OPFS (transcript.md, transcript.json, meta.json) through
+ * `exportArtifacts`, next to it. Works from the stored record, never while the recorder or the
+ * pipeline holds the recording, and re-requests the folder permission first thing in the click
+ * (after a browser restart the persisted handle is `prompt`). `finalize` reuses `exportPath`, so a
+ * folder the human deleted comes back at the same path. `error` is cleared only when both are in
+ * the folder; a `done` recording stays `done`. A `failed` recording with a playable video (a chunk
+ * lost late in a long call) is saved as `failed` and keeps its reason: what went wrong on export
+ * goes to the status line, not the record.
  */
 async function reExport(id: string): Promise<Outcome> {
-  // First thing inside the click: after a browser restart the persisted folder handle is
-  // `prompt`, and requestPermission only prompts from a user gesture.
   await ensureExportPermission().catch(() => undefined);
-  const rec = await claim(id, 'export it');
-  if (typeof rec === 'string') return rec;
+  const claimed = await claim(id, 'save it');
+  if (typeof claimed === 'string') return claimed;
+  let rec = claimed;
+  const failed = rec.status === 'failed';
+  const reason = rec.error;
   const settings = await loadSettings();
-  const video = await getVideoFile(rec.id, rec.container);
-  const artifacts = await listArtifactNames(rec.id);
-  const hasVideo = video !== undefined && video.size > 0;
-  if (!hasVideo && artifacts.length === 0)
-    return `Nothing left in local storage to export for "${rec.title}".`;
-  try {
-    const { dir, path } = await getExportDirectory(rec, settings.pathTemplate);
-    const written: string[] = [];
-    if (hasVideo) {
-      const name = exportVideoName(rec.container);
-      await writeExportFile(dir, name, video.stream());
-      written.push(name);
+  const written: string[] = [];
+  const notExported = async (msg: string): Promise<Outcome> => {
+    if (!failed) await updateRecording(rec.id, { error: msg });
+    return fail(msg);
+  };
+  const artifactsFailed = async (err: unknown): Promise<Outcome> => {
+    const msg = `Transcript not exported: ${describe(err)}`;
+    if (!failed) await updateRecording(rec.id, { error: msg });
+    return fail(
+      written.length ? `Saved ${written.join(', ')} to ${rec.exportPath}/, but ${msg}` : msg,
+    );
+  };
+  // 1. Artifacts next to a video already in the folder; `missing` means redo both. No folder or no
+  //    permission stops everything and says so as an export failure, not a transcript one.
+  let needVideo = !rec.exportPath;
+  if (!needVideo) {
+    try {
+      written.push(...(await exportArtifacts(rec)).names);
+    } catch (err) {
+      if (!(err instanceof ExportError)) return artifactsFailed(err);
+      if (err.reason === 'missing') needVideo = true;
+      else if (err.reason === 'io') return artifactsFailed(err);
+      else return notExported(`Not exported: ${err.message}`);
     }
-    for (const name of artifacts) {
-      const file = await getArtifactFile(rec.id, name);
-      if (!file) continue; // deleted between the listing and now
-      await writeExportFile(dir, name, file.stream());
-      written.push(name);
-    }
-    // A failed recording's `error` is why it failed; only a non-failed one carries an export error.
-    await updateRecording(rec.id, {
-      exportPath: path,
-      ...(rec.status === 'failed' ? {} : { error: undefined }),
-    });
-    return `Saved ${written.join(', ')} to ${path}/.`;
-  } catch (err) {
-    const msg = `Not exported: ${err instanceof ExportError ? err.message : String(err)}`;
-    if (rec.status === 'failed') return fail(msg);
-    await updateRecording(rec.id, { error: msg });
-    return undefined; // the row shows the error
   }
+  // 2. The video first, then the artifacts, when the folder does not have the video.
+  if (needVideo) {
+    const video = await getVideoFile(rec.id, rec.container);
+    if (!video || video.size === 0)
+      return notExported("Not exported: the video is no longer in Rescribe's storage.");
+    rec = await finalize(rec, settings.pathTemplate);
+    if (failed && reason !== rec.error) {
+      // finalize reports through `error`; a failed recording's `error` is its failure reason.
+      const exportError = rec.error;
+      rec = await updateRecording(rec.id, { error: reason });
+      if (!rec.exportPath) return fail(`Still not saved: ${exportError ?? '?'}`);
+    } else if (!rec.exportPath) return fail(`Still not saved: ${rec.error ?? '?'}`);
+    written.push(exportVideoName(rec.container));
+    try {
+      written.push(...(await exportArtifacts(rec)).names);
+    } catch (err) {
+      return artifactsFailed(err);
+    }
+  }
+  if (!failed && rec.error) rec = await updateRecording(rec.id, { error: undefined });
+  return written.length
+    ? `Saved ${written.join(', ')} to ${rec.exportPath}/.`
+    : `${rec.exportPath}/ is up to date: ${exportVideoName(rec.container)} is there and there is no transcript to save yet.`;
 }
-
-const live = (rec: Recording): boolean =>
-  rec.status === 'recording' || rec.status === 'transcribing';
 
 /**
  * The record as it is now, not as the row was rendered: a recording the recorder or the pipeline
- * has taken since (status `recording` or `transcribing`) must not have its files touched.
+ * has taken since (`recording`, `transcribing`, or queued behind another one, which the status on
+ * disk may not say yet) must not have its files touched.
  */
 async function claim(id: string, what: string): Promise<Recording | string> {
   const rec = await getRecording(id);
   if (!rec) return 'That recording no longer exists.';
-  if (live(rec)) return `"${rec.title}" is ${rec.status}; ${what} once it is done.`;
+  const held =
+    rec.status === 'recording' || rec.status === 'transcribing'
+      ? rec.status
+      : isTranscribing(rec.id)
+        ? 'queued for transcription'
+        : undefined;
+  if (held) return `"${rec.title}" is ${held}; ${what} once it is done.`;
   return rec;
 }
 
@@ -287,7 +328,7 @@ async function removeMedia(id: string): Promise<Outcome> {
   const rec = await claim(id, 'delete its media');
   if (typeof rec === 'string') return rec;
   if (rec.exportPath) {
-    const state = await exportedFileState(rec.exportPath, exportVideoName(rec.container));
+    const state = await exportedFileState(rec);
     if (state !== 'present') return fail(`Media kept: ${explainExport(state, rec)}`);
   }
   const freed = await deleteMedia(id);
@@ -306,15 +347,29 @@ async function remove(id: string): Promise<Outcome> {
 let bulkRunning = false;
 
 /**
- * The bulk target set is re-computed from the store at click time, never from the rendered list,
- * and each target's exported video is looked up before its media goes: a missing one is kept
- * and named. No folder, or no permission to look, refuses the whole run.
+ * The bulk target set is re-computed from the store at click time, never from the rendered list:
+ * a candidate the pipeline holds (running or queued) or an action of ours is on is left alone and
+ * counted, and each target's exported video is looked up before its media goes: a missing one is
+ * kept and named. No folder, or no permission to look, refuses the whole run.
  */
 async function removeExportedMedia(): Promise<Outcome> {
   await ensureExportPermission().catch(() => undefined);
   const [recs, usage] = await Promise.all([listRecordings(), storageUsage()]);
-  const targets = exportedWithMedia(recs, usage);
-  if (targets.length === 0) return 'Nothing to delete: no exported recording has media left.';
+  // Held: by the pipeline (running or queued; the status on disk says `transcribing` from the
+  // enqueue, `isTranscribing` says it a moment earlier) or by an action of ours.
+  const withMedia = recs.filter(
+    (r) => r.exportPath !== undefined && inventory(r, usage).mediaBytes > 0,
+  );
+  const held = withMedia.filter(
+    (r) => r.status === 'transcribing' || isTranscribing(r.id) || inflight.has(r.id),
+  );
+  const targets = exportedWithMedia(recs, usage).filter((r) => !held.includes(r));
+  if (targets.length === 0) {
+    if (held.length === 0) return 'Nothing to delete: no exported recording has media left.';
+    return fail(
+      `Nothing deleted: ${plural(held.length, 'recording')} ${held.length === 1 ? 'is' : 'are'} being transcribed or exported; try again when done.`,
+    );
+  }
   const root = await getExportRoot();
   if (!root) return fail('Nothing deleted: no export folder chosen in Settings.');
   if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted')
@@ -328,7 +383,7 @@ async function removeExportedMedia(): Promise<Outcome> {
     let deleted = 0;
     const kept: string[] = [];
     for (const rec of targets) {
-      const state = await exportedFileState(rec.exportPath!, exportVideoName(rec.container));
+      const state = await exportedFileState(rec);
       if (state !== 'present') {
         kept.push(`${rec.exportPath}/`);
         continue;
@@ -339,8 +394,11 @@ async function removeExportedMedia(): Promise<Outcome> {
     const keptText = kept.length
       ? ` Kept the media of ${plural(kept.length, 'recording')} whose exported video is missing: ${kept.join(', ')}. Re-export first.`
       : '';
-    if (deleted === 0) return fail(`Nothing deleted.${keptText}`);
-    return `Freed ${formatBytes(freed)}: media deleted for ${plural(deleted, 'exported recording')}; the exported files remain.${keptText}`;
+    const heldText = held.length
+      ? ` Left ${plural(held.length, 'recording')} being transcribed or exported alone.`
+      : '';
+    if (deleted === 0) return fail(`Nothing deleted.${keptText}${heldText}`);
+    return `Freed ${formatBytes(freed)}: media deleted for ${plural(deleted, 'exported recording')}; the exported files remain.${keptText}${heldText}`;
   } finally {
     for (const rec of targets) inflight.delete(rec.id);
     bulkRunning = false;
@@ -484,8 +542,14 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
   li.append(titleRow, meta);
 
   if (rec.exportPath) li.append(div('path', `${rec.exportPath}/`));
-  if (rec.status === 'transcribing')
-    li.append(div('progress', progress.get(rec.id) ?? 'Transcribing…'));
+  if (rec.status === 'transcribing' || isTranscribing(rec.id))
+    li.append(
+      div(
+        'progress',
+        progress.get(rec.id) ??
+          (rec.status === 'transcribing' ? 'Transcribing…' : 'Queued for transcription…'),
+      ),
+    );
   if (rec.error) li.append(div('hint error', rec.error));
   if (rec.note) li.append(div('hint', rec.note));
   if (rec.mediaDeleted)
@@ -517,14 +581,13 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
     );
     actions.append(b);
   }
-  if (inv.pcm) {
+  if (inv.pcm || inv.segmentsCache) {
     const b = document.createElement('button');
     b.className = 'rerun';
     b.textContent = rec.status === 'done' ? 'Re-run transcription' : 'Transcribe';
-    if (!PIPELINE_AVAILABLE) {
-      b.disabled = true;
-      b.title = 'Transcription lands with #2.';
-    }
+    b.title = inv.pcm
+      ? 'Transcribe each channel again and rebuild the transcript'
+      : 'Rebuild the transcript from the kept recogniser output; the audio is gone';
     b.addEventListener(
       'click',
       () => void runAction([rec.id], 'Transcribing…', li, () => rerun(rec.id)),
@@ -598,13 +661,17 @@ let bound = false;
 
 const signatureOf = (recs: Recording[]): string =>
   recs
-    .map((r) => [r.id, r.status, r.exportPath, r.error, r.note, r.mediaDeleted].join('\u0001'))
+    .map((r) =>
+      [r.id, r.status, r.exportPath, r.error, r.note, r.mediaDeleted, r.transcribedAt].join(
+        '\u0001',
+      ),
+    )
     .join('\u0002');
 
 function bindOnce(): void {
   if (bound) return;
   bound = true;
-  // TODO(#2): onPipelineProgress(onProgress);
+  onPipelineProgress(onProgress);
 }
 
 async function render(): Promise<void> {
@@ -616,7 +683,7 @@ async function render(): Promise<void> {
   $<HTMLElement>('#recordings-empty').hidden = recs.length > 0;
   renderStorage(recs, usage);
   signature = signatureOf(recs);
-  setLive(recs.some((r) => r.status === 'recording' || r.status === 'transcribing'));
+  setLive(recs.some(live));
 }
 
 /**

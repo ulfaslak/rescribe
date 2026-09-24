@@ -12,11 +12,17 @@ Remove an entry in the PR that resolves it.
 **Why deferred**: WebM is the non-default container; remuxing on export means shipping a muxer.
 **Trigger**: the human uses WebM and a player refuses to seek, or a downstream tool needs the duration.
 
-### `meta.json` is not written on stop
+### The loaded model stays in memory for the life of the app tab
 
-**What**: PRODUCT lists `meta.json` (when, what was captured, roster, model) among the assets; the vertical slice writes only the video on stop.
-**Why deferred**: half of its content (roster, model and version) exists only once #2 and #3 land; one write at transcription completion beats two.
-**Trigger**: the transcription PR (#2) writes it alongside `transcript.md`.
+**What**: `app/pipeline.ts` keeps one `Transcriber` (one worker, the model loaded) after the first transcription; ARCHITECTURE § Runtime topology says the worker lives as long as the app tab. The pinned tab lives all day, so the int8 model's working set (about 1 GB on WASM) stays resident between calls. Freeing it after an idle period costs a reload from the cache (seconds) on the next recording.
+**Why deferred**: no measurement of the resident size in Brave yet, and reloading per recording would slow every transcript.
+**Trigger**: the human notices the Rescribe tab's memory in Brave's task manager, or a transcription fails with an out-of-memory after a long day.
+
+### Adapter events on the picker path are not tied to a tab
+
+**What**: a toolbar recording captures one tab, and `app.ts` drops adapter messages from any other tab. A picker recording (a window, the whole screen) has no tab id, so a Meet call speaking in another tab lands in its `events.jsonl` and names its display turns (its diagnostics are dropped unless that tab already contributed events).
+**Why deferred**: the picker path cannot know which tab the shared window belongs to; the only Meet-while-recording-something-else case is unusual.
+**Trigger**: a narrated screen recording gets Meet names in its transcript. Then: a per-recording switch ("use Meet events") in the Record section, or match the shared window's title to a Meet tab.
 
 ### Self tile identified structurally by the adapter
 

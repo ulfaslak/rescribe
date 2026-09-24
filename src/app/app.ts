@@ -14,7 +14,15 @@ import {
 import type { Captured } from '../recorder/capture.ts';
 import { exportVideoName, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
+import { getRecording } from '../storage/store.ts';
 import { describeSources, formatDuration, renderList } from './library.ts';
+import {
+  isPipelineBusy,
+  onPipelineProgress,
+  recoverInterruptedTranscriptions,
+  transcribeRecording,
+  type PipelinePhase,
+} from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -24,19 +32,34 @@ const $ = <T extends Element>(sel: string): T => {
 
 let status: AppStatus = 'idle';
 let recorder: Recorder | undefined;
+/** The tab a toolbar recording captures; adapter events from other tabs are not its events. */
+let recordedTabId: number | undefined;
+/** Tabs whose speaker or roster events reached the current recording (the picker path). */
+const contributingTabs = new Set<number>();
+const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 let starting = false;
 let ticker: number | undefined;
 
+/**
+ * `status` is the recorder's state and what `query-status` answers, so a toolbar click can still
+ * start a recording while a transcription runs. The pill and the badge show that transcription
+ * when nothing is being recorded.
+ */
 function setStatus(next: AppStatus): void {
   status = next;
+  refreshStatus();
+}
+
+function refreshStatus(): void {
+  const shown: AppStatus = status === 'idle' && isPipelineBusy() ? 'transcribing' : status;
   const pill = $<HTMLSpanElement>('#status');
-  pill.textContent = next;
-  pill.className = `pill ${next === 'recording' ? 'recording' : next === 'transcribing' ? 'processing' : ''}`;
-  $<HTMLButtonElement>('#stop').disabled = next !== 'recording';
-  $<HTMLButtonElement>('#record-screen').disabled = next !== 'idle';
+  pill.textContent = shown;
+  pill.className = `pill ${shown === 'recording' ? 'recording' : shown === 'transcribing' ? 'processing' : ''}`;
+  $<HTMLButtonElement>('#stop').disabled = status !== 'recording';
+  $<HTMLButtonElement>('#record-screen').disabled = status !== 'idle';
   void send({
     type: 'badge',
-    state: next === 'recording' ? 'recording' : next === 'transcribing' ? 'processing' : 'idle',
+    state: shown === 'recording' ? 'recording' : shown === 'transcribing' ? 'processing' : 'idle',
   });
 }
 
@@ -50,7 +73,7 @@ function note(text: string, isError = false): void {
 // Registered by main() only in the tab that owns the recorder; a duplicate tab never listens.
 function onMessage(
   msg: Message,
-  _sender: chrome.runtime.MessageSender,
+  sender: chrome.runtime.MessageSender,
   sendResponse: (res: AppStatus) => void,
 ): boolean {
   switch (msg.type) {
@@ -62,16 +85,39 @@ function onMessage(
       return false;
     case 'speaker':
     case 'roster':
-    case 'adapter-diagnostic':
-      console.info('[rescribe] adapter', msg);
+    case 'adapter-diagnostic': {
+      // Into events.jsonl, stamps as received, while a recording runs; the pipeline reads the
+      // file back (lib/assemble.ts). Only content scripts send these, so a message without a
+      // sender tab is not an adapter's. A toolbar recording captures one tab, so a Meet call
+      // idling in another tab is not its evidence. A picker recording (a window, the screen)
+      // cannot tell which tab it shows and takes every tab's speaker and roster events, but a
+      // diagnostic only from a tab that has already contributed events to this recording: a
+      // Meet tab left open elsewhere reports "no tiles" after 60 s, and that is not this
+      // recording's problem.
+      const from = sender.tab?.id;
+      const accepted =
+        recorder !== undefined &&
+        status === 'recording' &&
+        from !== undefined &&
+        (recordedTabId !== undefined
+          ? from === recordedTabId
+          : msg.type !== 'adapter-diagnostic' || contributingTabs.has(from));
+      if (!accepted || !recorder || from === undefined) {
+        console.info('[rescribe] adapter message not for this recording', msg);
+        return false;
+      }
+      contributingTabs.add(from);
+      recorder.appendEvent(msg);
+      if (msg.type === 'adapter-diagnostic') recorder.addNote(`Meet adapter: ${msg.message}`);
       return false;
+    }
     default:
       return false;
   }
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (status !== 'idle') e.preventDefault();
+  if (status !== 'idle' || isPipelineBusy()) e.preventDefault();
 });
 
 // --- Recording ----------------------------------------------------------------------------
@@ -100,7 +146,7 @@ async function onToggleRecording(
     note(`Couldn't capture that tab: ${String(err)}`, true);
     return;
   }
-  await startRecording(display, msg.tabTitle || 'Tab recording');
+  await startRecording(display, msg.tabTitle || 'Tab recording', msg.tabId);
 }
 
 /** "Record screen…": Chrome's picker, from a click in this tab. */
@@ -117,12 +163,14 @@ async function onRecordScreen(): Promise<void> {
   await startRecording(display, 'Screen recording');
 }
 
-async function startRecording(display: Captured, title: string): Promise<void> {
+async function startRecording(display: Captured, title: string, tabId?: number): Promise<void> {
   if (status !== 'idle' || starting) {
     stopAll(display.stream);
     return;
   }
   starting = true;
+  recordedTabId = tabId;
+  contributingTabs.clear();
   try {
     const settings = await loadSettings();
     const wantMic = $<HTMLInputElement>('#mic').checked;
@@ -141,6 +189,7 @@ async function startRecording(display: Captured, title: string): Promise<void> {
     );
   } catch (err) {
     note(`Couldn't start: ${err instanceof Error ? err.message : String(err)}`, true);
+    recordedTabId = undefined;
     setStatus('idle');
   } finally {
     starting = false;
@@ -168,13 +217,40 @@ function onRecorderChange(
       break;
     case 'done':
       recorder = undefined;
+      recordedTabId = undefined;
+      contributingTabs.clear();
       setStatus('idle');
       if (rec.status === 'failed') note(`Recording failed: ${rec.error ?? 'unknown error'}`, true);
       else if (rec.error) note(`Recorded, but ${rec.error}`, true);
       else note(`Saved to ${rec.exportPath ?? '?'}/`);
+      // Exported or not: the artifacts go to OPFS first and follow the video when it is saved.
+      if (rec.status === 'recorded') void autoTranscribe(rec.id);
       break;
   }
   void renderList();
+}
+
+// --- Transcription (steps 3–5 live in pipeline.ts; this is the status line around them) --------
+async function autoTranscribe(id: string): Promise<void> {
+  if ((await loadSettings()).autoTranscribe) await runPipeline(id);
+}
+
+async function runPipeline(id: string): Promise<void> {
+  const done = transcribeRecording(id);
+  refreshStatus();
+  try {
+    const rec = await done;
+    if (status !== 'idle') return;
+    if (rec.status === 'failed')
+      note(`Transcription failed: ${rec.error ?? 'unknown error'}`, true);
+    else if (rec.error) note(`Transcribed. ${rec.error}`, true);
+    else note(`Transcript saved to ${rec.exportPath ?? '?'}/`);
+  } catch (err) {
+    if (status === 'idle') note(`Transcription failed: ${String(err)}`, true);
+  } finally {
+    refreshStatus();
+    void renderList();
+  }
 }
 
 async function onStop(): Promise<void> {
@@ -225,6 +301,8 @@ function bindSettings(settings: Settings): void {
   (fields.namedItem('container') as HTMLSelectElement).value = settings.container;
   (fields.namedItem('micByDefault') as HTMLInputElement).checked = settings.micByDefault;
   (fields.namedItem('model') as HTMLSelectElement).value = settings.model;
+  (fields.namedItem('backend') as HTMLSelectElement).value = settings.backend;
+  (fields.namedItem('autoTranscribe') as HTMLInputElement).checked = settings.autoTranscribe;
   $<HTMLInputElement>('#mic').checked = settings.micByDefault;
 
   let timer: number | undefined;
@@ -238,6 +316,8 @@ function bindSettings(settings: Settings): void {
         container: data.get('container') === 'webm' ? 'webm' : 'mp4',
         micByDefault: data.get('micByDefault') === 'on',
         model: String(data.get('model') || settings.model),
+        backend: data.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',
+        autoTranscribe: data.get('autoTranscribe') === 'on',
       });
       const saved = $<HTMLElement>('#settings-saved');
       saved.textContent = 'Saved.';
@@ -268,6 +348,25 @@ async function main(): Promise<void> {
   }
   chrome.runtime.onMessage.addListener(onMessage);
   setStatus('idle');
+  // The Record section's status line follows the pipeline while nothing is being recorded. The
+  // list shows the stored record, so it is rendered again whenever the pipeline moves a
+  // recording (queued: marked `transcribing`; done) and at every phase in between.
+  const lastPhase = new Map<string, PipelinePhase>();
+  onPipelineProgress((id, p) => {
+    if (status === 'idle') note(p.message);
+    if (lastPhase.get(id) !== p.phase) {
+      lastPhase.set(id, p.phase);
+      void renderList();
+    }
+    if (p.phase === 'done') lastPhase.delete(id);
+  });
+  // For DevTools and the e2e harness: run the pipeline on a recording by id.
+  (window as unknown as { rescribe: unknown }).rescribe = {
+    transcribeRecording: async (id: string) => {
+      await runPipeline(id);
+      return getRecording(id);
+    },
+  };
   const settings = await loadSettings();
   bindSettings(settings);
   $<HTMLButtonElement>('#choose-folder').addEventListener('click', () => void chooseFolder());
@@ -284,6 +383,12 @@ async function main(): Promise<void> {
     note(`Recovered ${recovered.length} interrupted recording${recovered.length > 1 ? 's' : ''}.`);
     await renderList();
   }
+  // A transcription the last page load left unfinished starts again, once, whatever the
+  // auto-transcribe setting: it was already under way. A recovered recording follows the setting.
+  const interrupted = await recoverInterruptedTranscriptions();
+  for (const rec of interrupted) void runPipeline(rec.id);
+  for (const rec of recovered) if (rec.status === 'recorded') void autoTranscribe(rec.id);
+  if (interrupted.length > 0) await renderList();
   // Startup is complete (recovery included); the e2e harness waits for this.
   document.body.dataset['ready'] = 'owner';
 }

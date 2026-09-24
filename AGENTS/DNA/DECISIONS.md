@@ -8,6 +8,7 @@ Chrome extension, Manifest V3, loaded unpacked from `dist/`. Not a web app: only
 One full-tab app page (`app/app.html`) hosts recording, the library, settings and all processing. Not an offscreen document: the tab can show pickers, use WebGPU and be debugged. The tab warns on close while recording or processing.
 The toolbar button is the primary control: one click on a tab starts recording that tab plus the microphone; while recording, the button badge shows the state and clicking it focuses the app tab where Stop lives. Not a popup.
 A keyboard command (`toggle-recording`) mirrors the button.
+Transcription never blocks recording: `query-status` answers the recorder's state, so the toolbar button starts a new recording while the previous one transcribes and the pipeline queues it. Not a lock: a missed call costs more than a later transcript.
 Recording anything other than the current tab (a window, the whole screen) starts from the app tab, through Chrome's own picker.
 
 ## Capture
@@ -35,6 +36,7 @@ Silence gating (VAD) runs before recognition on every channel. Energy-based firs
 The only permitted network traffic is the one-time model download from huggingface.co, cached in the browser. Never a CDN for runtime code: the ONNX WASM binaries ship inside `dist/vendor/ort/`.
 No language setting. Parakeet v3 handles the language itself.
 Transcription runs after the recording stops, in a Worker, not live. Live transcription is a later feature and the PCM already streams to disk, so it will be incremental, not a rewrite.
+It starts by itself when a recording stops (Settings "Transcribe as soon as a recording stops", on by default); off, the library runs it. Recordings are transcribed one at a time, channels one after another; never two channels in the worker's queue at once, because a transcribe failure restarts the worker and fails whatever is queued behind it.
 
 ## Storage and output
 
@@ -42,7 +44,8 @@ During recording, data goes to the Origin Private File System (OPFS) through a w
 On stop, the recording is exported to the folder the human chose in Settings (File System Access API, directory handle persisted in IndexedDB). Fallback if that API misbehaves in the extension origin: `chrome.downloads` into a subfolder of Downloads.
 Output layout per recording, path template configurable in Settings, default `{date} {time} {title}/`: `recording.mp4`, `transcript.md`, `transcript.json`, `meta.json`.
 Video container: MP4 (H.264 + AAC) by default, WebM (VP9 + Opus) as an option.
-Settings live in `chrome.storage.local`. Recording metadata lives in IndexedDB. Media lives in OPFS until exported and, when the human says so, deleted.
+Transcript artifacts are written to OPFS first and exported second, and only into a directory the video already went to; a failed export leaves them in OPFS for **Save now**, which exports the video and the artifacts together. Not straight to the folder: transcription may finish long after Stop's click, when the folder's permission is gone (a restart) or no folder was ever chosen.
+Settings live in `chrome.storage.local`. Recording metadata lives in IndexedDB. Media lives in OPFS until exported and, when the human says so, deleted. Deleting media removes the video and the PCM only; the transcript artifacts and the per-channel segments cache stay, so a transcript can still be exported and re-assembled. Not the whole directory: the audio is the expensive part, the transcript is what the human keeps.
 
 ## Stack
 

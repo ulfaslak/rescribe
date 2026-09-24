@@ -89,13 +89,37 @@ DECISIONS promised a one-time download; `getParakeetModel` fetched the Hub tree 
 
 The client's docstring promised the PCM buffer was transferred at call time; the transfer actually happened when the queued job ran, so a caller reusing the buffer meanwhile would have had the display audio transcribed as the mic channel, silently. Found by the adversarial review; jobs are now posted at call time and `transcriber.test.ts` asserts both buffers are detached before either job finishes.
 
+
+### 2026-09-24 · #2 part 2 · absence of input read as success `[learned]`
+
+The first pipeline runner skipped a channel whose PCM file was missing and went on to `done`, so a recording whose OPFS directory had been deleted (or never received audio because the media was wiped mid-transcription) would have ended `done` with an empty transcript, indistinguishable from a silent call. A missing input is not an empty input. Found on the paper walk of the edge list (storage states); codified in ARCHITECTURE § Pipeline step 3 (no channel and no cache: `done` only when the video is still there, `failed` otherwise) and pinned by `e2e/pipeline.spec.ts` "an interrupted transcription whose media is gone fails".
+
+### 2026-09-24 · #20 · prose promised a path no code had `[learned]`
+
+ARCHITECTURE, DECISIONS, INVARIANTS and PRODUCT all said Save now exports the video and the artifacts together, while the row offered Save now only on `recorded` without an export path and `saveNow` called only `finalize`; a `done` recording whose transcript stayed in OPFS had no way out. The prose was written for the design, not read back against the code. Found by the adversarial review. Codified in `app.ts` (`canSaveNow`, `saveNow`: `finalize` then `exportArtifacts`) and pinned by `e2e/pipeline.spec.ts` "no export folder" (Save now on the `done` row).
+
+### 2026-09-24 · #20 · a list rendered from a read that raced the write `[learned]`
+
+`onRecorderChange('done')` started the pipeline and re-read the list in the same tick; the read landed before the pipeline marked the record, and nothing re-rendered until it finished, so the row showed `recorded` and Save now for the whole transcription, and a click wrote `recorded` over `transcribing` from a stale record. Found by the adversarial review. Codified by the `queued` and `done` pipeline phases with the list re-rendered on every phase change, `saveNow` working from the stored record and refusing while `isTranscribing`, and pinned by the `rowState` poll in "no export folder".
+
+### 2026-09-24 · #20 · queue state in memory, status on disk `[learned]`
+
+`transcribeRecording` kept its queue in a `Map` and wrote `transcribing` only when a recording's turn came, so a queued recording read `recorded` on disk and a library action keyed on the stored status would have pulled its media from under it. Found by the adversarial review. Codified in ARCHITECTURE § Pipeline (marked at enqueue) and pinned by "recording while transcribing" (the queued recording reads `transcribing` at once).
+
+### 2026-09-24 · #20 · a snapshot carried across minutes of work `[learned]`
+
+`run()` used the record as read at its start for the title, the export path and the export decision, and `exportArtifacts` created the directory it was given; a folder chosen mid-transcription got a directory with only the transcript, no error, and a rename mid-transcription left the old title in the files. Found by the adversarial review. Codified by the fresh re-read before assembly and by `findExportDirectory` (never creates, needs the video), pinned by "the export folder changes mid-transcription".
+
+### 2026-09-24 · #20 · a re-run erased the failure it was retrying `[learned]`
+
+Marking a `failed` recording `transcribing` cleared its `error`, so the recorder's reason ("Video chunk lost: …") was gone whatever the re-run did, and a re-run without an export path could end `done` with no error at all. Found by the adversarial review. Codified in `pipeline.ts` (the earlier error moves to the note; `done` without an export path always carries a "Not exported: …" reason; no media keeps the earlier text in front) and pinned by "re-running a failed recording".
 ### 2026-09-24 · #4 · two-step confirm defeated by a double-click `[learned]`
 
 The library's in-page two-step button armed on the first click and ran on the second, so a double-click on **Delete**, the most ordinary accidental gesture on a button, deleted the recording in one go. The confirm was designed against a single stray click and never walked as a gesture. Found on the paper walk of the edge list before the e2e ran. Codified by `ARM_GUARD_MS` in `src/app/library.ts` (a confirm sooner than 350 ms after arming is ignored) and pinned by the `dblclick` case in `e2e/library.spec.ts`.
 
 ### 2026-09-24 · #4 · action target captured at render time `[learned]`
 
-Each row's buttons and the bulk "Delete media for exported recordings" closed over the record and the target list as rendered; a recording the pipeline moved to `transcribing` between render and confirm would have had its PCM deleted under the running transcription. The list is a snapshot, the store is the truth, and a destructive action must re-read the store inside the click. Found on the paper walk. Codified by `claim()` in `src/app/library.ts` (every action re-reads the record and refuses a `recording` or `transcribing` one) and the bulk action re-computing its targets, both pinned by the status-flip cases in `e2e/library.spec.ts`.
+Each row's buttons and the bulk "Delete media for exported recordings" closed over the record and the target list as rendered; a recording the pipeline moved to `transcribing` between render and confirm would have had its PCM deleted under the running transcription. The list is a snapshot, the store is the truth, and a destructive action must re-read the store inside the click. Found on the paper walk. Codified by `claim()` in `src/app/library.ts` (every action re-reads the record and refuses one that is `recording`, `transcribing`, or queued or running in the pipeline per `isTranscribing`, whose in-memory answer is ahead of the status on disk) and the bulk action re-computing its targets, both pinned by the status-flip and queued-pipeline cases in `e2e/library.spec.ts`.
 
 ### 2026-09-24 · #19 · trusting a path field over the file it names `[learned]`
 
@@ -120,3 +144,7 @@ The pencil was rendered on `recording` and `transcribing` rows, so a rename race
 ### 2026-09-24 · #19 · a render started beside the deletion it announces `[learned]`
 
 To show a row as busy at once, `runAction` began a render (which walks `recordings/` in OPFS) and then ran the action; when the action was "delete recording", the walk could reach that directory after `removeEntry`, `entries()` threw NotFoundError, the render rejected unhandled and the list was never rebuilt, so the deleted row stayed on screen. Found by a negative-control run that failed at the wrong assertion (twice, on a change that could not have caused it), then the trace's `pageerror`. Codified in `src/storage/opfs.ts` (a directory or file removed mid-walk is skipped; the walk is a snapshot, deletion is the truth) and `renderList` in `src/app/library.ts` (never rejects; a failed refresh is reported), pinned by the slowed-`entries()` case in `e2e/library.spec.ts`.
+
+### 2026-09-24 · #19 · a confirm button whose target set was its visibility `[learned]`
+
+The bulk "Delete media for exported recordings" was rendered only while its target set was non-empty, and the pipeline's enqueue re-renders the list, so the moment a candidate was queued the armed button vanished under the human's second click (and Playwright's). A two-step button must stay where it is once armed; what it may act on is decided when it runs. Found by the queued-pipeline e2e in Phase B. Codified in `src/app/library.ts`: `exportedWithMedia` lists candidates by status only, and `removeExportedMedia` leaves held ones alone and says so.

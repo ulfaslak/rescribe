@@ -15,28 +15,23 @@ export function pcmFileName(channel: ChannelId): string {
   return `${channel}.pcm`;
 }
 
-/** Raw media: the video and the PCM channels. What "Delete media" removes; the events log and the
- * artifacts are everything else in the directory. */
+/** The video or a PCM channel: what "Delete media" removes. */
 export function isMediaFile(name: string): boolean {
-  return /^video\.(mp4|webm)$/.test(name) || /^(mic|display)\.pcm$/.test(name);
+  return /^video\.(mp4|webm)$/.test(name) || name.endsWith('.pcm');
 }
 
-/** The pipeline's per-channel recogniser cache (`segments.<channel>.json`): local only, never exported. */
-export function isSegmentsCache(name: string): boolean {
-  return /^segments\.(mic|display)\.json$/.test(name);
-}
-
-/** Chromium's swap file while a `createWritable()` stream is open (`<name>.crswap`): it is listed
- * by `entries()` until the stream closes and must never be treated as an artifact. */
-export function isSwapFile(name: string): boolean {
-  return /\.crswap$/.test(name);
-}
-
-/** An artifact the export folder gets (transcript.md, transcript.json, meta.json): everything in
- * the directory that is neither raw media, nor the events log, nor the segments cache, nor a
- * swap file of a write in progress. */
+/**
+ * A file in `recordings/<id>/` that belongs next to the video in the export folder: not media,
+ * not the event log, not the per-channel segments cache (`segments.<channel>.json`), not a
+ * browser swap file (`*.crswap`, left by an interrupted `createWritable`).
+ */
 export function isExportableArtifact(name: string): boolean {
-  return !isMediaFile(name) && name !== EVENTS_FILE && !isSegmentsCache(name) && !isSwapFile(name);
+  return (
+    !isMediaFile(name) &&
+    name !== EVENTS_FILE &&
+    !/^segments\.[a-z]+\.json$/.test(name) &&
+    !name.endsWith('.crswap')
+  );
 }
 
 export async function recordingsRoot(
