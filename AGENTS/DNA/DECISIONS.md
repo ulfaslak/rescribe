@@ -45,7 +45,7 @@ On stop, the recording is exported to the folder the human chose in Settings (Fi
 Output layout per recording, path template configurable in Settings, default `{date} {time} {title}/`: `recording.mp4`, `transcript.md`, `transcript.json`, `meta.json`.
 Video container: MP4 (H.264 + AAC) by default, WebM (VP9 + Opus) as an option.
 Transcript artifacts are written to OPFS first and exported second, and only into a directory the video already went to; a failed export leaves them in OPFS for **Save now**, which exports the video and the artifacts together. Not straight to the folder: transcription may finish long after Stop's click, when the folder's permission is gone (a restart) or no folder was ever chosen.
-Settings live in `chrome.storage.local`. Recording metadata lives in IndexedDB. Media lives in OPFS until exported and, when the human says so, deleted.
+Settings live in `chrome.storage.local`. Recording metadata lives in IndexedDB. Media lives in OPFS until exported and, when the human says so, deleted. Deleting media removes the video and the PCM only; the transcript artifacts and the per-channel segments cache stay, so a transcript can still be exported and re-assembled. Not the whole directory: the audio is the expensive part, the transcript is what the human keeps.
 
 ## Stack
 

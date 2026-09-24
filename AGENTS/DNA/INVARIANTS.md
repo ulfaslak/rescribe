@@ -37,7 +37,7 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ### A transcript exists in OPFS before its export is attempted
 
-**Mechanism:** `app/pipeline.ts` writes `transcript.md`, `transcript.json` and `meta.json` with `writeArtifact` and only then calls `exportArtifacts`, and only when the video is already exported; an export failure leaves the recording `done` with `error` set, never `failed`, and **Save now** exports what is in OPFS. `e2e/pipeline.spec.ts` "no export folder" records with no folder chosen and asserts the three files in `recordings/<id>/` and the recording at `done`.
+**Mechanism:** `app/pipeline.ts` writes `transcript.md`, `transcript.json` and `meta.json` with `writeArtifact` and only then calls `exportArtifacts`, which never creates a directory and needs the exported video in it; an export failure leaves the recording `done` with `error` set, never `failed`, and **Save now** (`app.ts` `saveNow`: `finalize` then `exportArtifacts`) exports what is in OPFS. `e2e/pipeline.spec.ts` "no export folder" records with no folder chosen, asserts the three files in `recordings/<id>/` and the recording at `done`, then chooses a folder and asserts Save now puts all four files there; "the export folder changes mid-transcription" asserts nothing is written under the new folder until Save now.
 **Incident:** none. Seeded 2026-09-24: transcription may finish long after Stop's click, when the folder's permission is gone (after a browser restart) or no folder was chosen; a transcript that took minutes of GPU or CPU time must not depend on either.
 
 ### Every speaking start has a matching stop, and both are stamped at the change, not at its detection

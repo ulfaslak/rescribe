@@ -20,7 +20,7 @@ Remove an entry in the PR that resolves it.
 
 ### Adapter events on the picker path are not tied to a tab
 
-**What**: a toolbar recording captures one tab, and `app.ts` drops adapter messages from any other tab. A picker recording (a window, the whole screen) has no tab id, so a Meet call speaking in another tab lands in its `events.jsonl` and names its display turns.
+**What**: a toolbar recording captures one tab, and `app.ts` drops adapter messages from any other tab. A picker recording (a window, the whole screen) has no tab id, so a Meet call speaking in another tab lands in its `events.jsonl` and names its display turns (its diagnostics are dropped unless that tab already contributed events).
 **Why deferred**: the picker path cannot know which tab the shared window belongs to; the only Meet-while-recording-something-else case is unusual.
 **Trigger**: a narrated screen recording gets Meet names in its transcript. Then: a per-recording switch ("use Meet events") in the Record section, or match the shared window's title to a Meet tab.
 
