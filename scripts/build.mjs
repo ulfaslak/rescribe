@@ -2,7 +2,15 @@
 // assets plus the onnxruntime-web WASM binaries. No framework, no transpile-only step: esbuild
 // does bundling; `npm run check` (tsc --noEmit) does type checking.
 import * as esbuild from 'esbuild';
-import { cpSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  copyFileSync,
+  existsSync,
+  globSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 const watch = process.argv.includes('--watch');
@@ -49,13 +57,18 @@ const common = {
   outbase: 'src',
 };
 
-// Extension pages, workers and the service worker are ES modules.
+// Extension pages, workers, AudioWorklet processors and the service worker are ES modules.
+// Every file in src/workers/ is its own bundle (spawned with `new Worker(url, { type: 'module' })`),
+// as is every `*.worklet.ts` (loaded with `audioWorklet.addModule(url)`). Each bundle carries its
+// own copy of whatever it imports from src/lib/; there is no code splitting.
 const esm = await esbuild.context({
   ...common,
   format: 'esm',
   entryPoints: [
     'src/background.ts',
     'src/app/app.ts',
+    ...globSync('src/workers/*.ts').filter((f) => !f.endsWith('.test.ts')),
+    ...globSync('src/**/*.worklet.ts'),
     ...readdirSync('spikes', { withFileTypes: true })
       .filter((d) => d.isDirectory() && existsSync(join('spikes', d.name, 'spike.ts')))
       .map((d) => ({

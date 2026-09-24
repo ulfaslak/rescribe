@@ -1,5 +1,6 @@
-// Every message that crosses an execution context (service worker, app tab, content scripts,
-// workers) is a member of this union. It is the single roster of message types.
+// Every message that crosses chrome.runtime (service worker, app tab, content scripts) is a
+// member of this union. It is the single roster of those message types. Workers speak
+// postMessage, and each worker's protocol is typed in its own file under src/workers/.
 import type { RecordingStatus } from './types.ts';
 
 export type BadgeState = 'idle' | 'recording' | 'processing';

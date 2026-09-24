@@ -6,11 +6,17 @@ Remove an entry in the PR that resolves it.
 
 ---
 
-### Delete `spikes/` once its answers live in `src/`
+### Delete `spikes/capture` once the recorder exists
 
-**What**: `spikes/capture` and `spikes/parakeet` are throwaway pages built into `dist/spikes/` and driven by `e2e/spikes/*.spec.ts`. They are not product code.
-**Why deferred**: their answers (recorded in `spikes/README.md` and the DNA) are still the only executable proof of the capture and ASR assumptions until the real recorder and transcribe worker exist.
-**Trigger**: the vertical slice PR (recorder + OPFS + export) for `capture`; the transcription PR for `parakeet`. Delete the spike, its e2e spec and the build-script glue in the same PR.
+**What**: `spikes/capture` is a throwaway page built into `dist/spikes/` and driven by `e2e/spikes/capture.spec.ts`. Not product code.
+**Why deferred**: its answer (recorded in `spikes/README.md` and the DNA) is the only executable proof of the capture assumptions until the real recorder and storage worker exist.
+**Trigger**: the vertical slice PR (recorder + OPFS + export). Delete the spike directory and its e2e spec in that PR. Whichever spike PR merges last also removes `spikes/README.md`, the spike glue in `scripts/build.mjs` (it throws on a missing `spikes/`) and the `spikes/**` globs in `package.json`.
+
+### Delete `spikes/parakeet` once the transcribe worker exists
+
+**What**: `spikes/parakeet` is a throwaway page built into `dist/spikes/` and driven by `e2e/spikes/parakeet.spec.ts`. Not product code.
+**Why deferred**: its answer is the only executable proof of the ASR assumptions until the real transcribe worker exists.
+**Trigger**: the transcription PR. Delete the spike directory and its e2e spec in that PR; see the entry above for what the last spike PR also removes.
 
 ### Extension icons
 
