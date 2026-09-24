@@ -43,6 +43,34 @@ export async function ensureExportPermission(): Promise<PermissionState | 'none'
   }
 }
 
+export type ExportedFileState = 'present' | 'missing' | 'no-folder' | 'permission';
+
+/**
+ * Whether `<exportPath>/<name>` exists in the export folder right now. `missing` covers the file
+ * and every directory on the way, including the root itself when it was deleted or moved on disk
+ * (the persisted handle then throws NotFoundError). A folder that cannot be looked at because none
+ * is chosen or its permission is not granted is reported as that, never as `missing`, so a caller
+ * about to delete the local copy can refuse instead of guessing.
+ */
+export async function exportedFileState(
+  exportPath: string,
+  name: string,
+): Promise<ExportedFileState> {
+  const root = await getExportRoot();
+  if (!root) return 'no-folder';
+  if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted') return 'permission';
+  try {
+    let dir = root;
+    for (const seg of exportPath.split('/')) dir = await dir.getDirectoryHandle(seg);
+    await dir.getFileHandle(name);
+    return 'present';
+  } catch (err) {
+    const n = (err as DOMException).name;
+    if (n === 'NotFoundError' || n === 'TypeMismatchError') return 'missing';
+    throw wrap(err);
+  }
+}
+
 async function exists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
   try {
     await dir.getDirectoryHandle(name);

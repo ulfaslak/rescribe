@@ -96,3 +96,23 @@ The library's in-page two-step button armed on the first click and ran on the se
 ### 2026-09-24 · #4 · action target captured at render time `[learned]`
 
 Each row's buttons and the bulk "Delete media for exported recordings" closed over the record and the target list as rendered; a recording the pipeline moved to `transcribing` between render and confirm would have had its PCM deleted under the running transcription. The list is a snapshot, the store is the truth, and a destructive action must re-read the store inside the click. Found on the paper walk. Codified by `claim()` in `src/app/library.ts` (every action re-reads the record and refuses a `recording` or `transcribing` one) and the bulk action re-computing its targets, both pinned by the status-flip cases in `e2e/library.spec.ts`.
+
+### 2026-09-24 · #19 · trusting a path field over the file it names `[learned]`
+
+"Delete media for exported recordings" took `exportPath` as proof the exported video existed, while the LIVE_CHECKS entry in the same PR asks the human to delete that very file in Finder: the confirm would have removed the only copy. A stored path says where a file went, not that it is still there. Found by the adversarial review. Codified by `exportedFileState` in `src/storage/export.ts`, consulted per target by the row and bulk deletes (a missing file is kept and named; no folder or no permission refuses the run), pinned by the missing-video and no-folder cases in `e2e/library.spec.ts`.
+
+### 2026-09-24 · #19 · capability gated on status instead of on what is on disk `[learned]`
+
+The Re-export button required status `recorded` or `done`, so a `failed` recording with ninety minutes of playable video and both PCM files in OPFS (a chunk lost late in a call) could only be deleted; my own e2e pinned "offers only Delete". The row already had the inventory; the gate should have read it. Found by the adversarial review. Codified by `exportable = inv.video || inv.artifacts.length > 0` in `src/app/library.ts` (a failed recording keeps its status and failure reason when saved), pinned by the failed-with-video case in `e2e/library.spec.ts`.
+
+### 2026-09-24 · #19 · an input removed from the DOM fires blur, and blur meant "save" `[learned]`
+
+The rename form saved on blur, and any wholesale re-render (a live refresh, a recorder phase change) replaced the row, removing the focused input; Chromium fires `blur` on removal, so a half-typed title was saved without an Enter. A save on blur is only safe when the input leaves the DOM on the human's terms. Found by the adversarial review, who verified the blur-on-removal behaviour I had not. Codified by the `editing` guard in `src/app/library.ts` (`renderList` defers while a title is being edited; the edit's finish renders), pinned by the deferral case in `e2e/library.spec.ts`.
+
+### 2026-09-24 · #19 · an editor offered while another writer holds the record `[learned]`
+
+The pencil was rendered on `recording` and `transcribing` rows, so a rename raced the recorder's stop (`updateRecording` was a get-then-put in two IndexedDB transactions: a rename interleaving with `finalize` could rewrite `status: 'recording'` without an export path) and the pipeline's `rec` held from its start (transcript and meta with the old title). Found by the adversarial review. Codified twice: no pencil on live rows in `src/app/library.ts` (pinned by the live-row case in `e2e/library.spec.ts`), and `idb.update` in `src/lib/idb.ts`, a read-modify-write in one readwrite transaction, now behind `updateRecording` (ARCHITECTURE § Storage). The atomicity has no deterministic e2e: with the pencil gone the UI has no concurrent writer pair left to race.
+
+### 2026-09-24 · #19 · a disabled button that a re-render re-enables `[learned]`
+
+`runAction` disabled the row's buttons for the action's duration, but a re-render meanwhile rebuilt the row from the store with everything enabled; a confirmed Delete media during a multi-GB Re-export removed `video.mp4` under the stream, which failed with `TypeError: network error` blamed on the folder. DOM state is not a lock; the in-flight fact has to live where the render reads from. Found by the adversarial review. Codified by the `inflight` map in `src/app/library.ts` (a row in it renders the action's label and no buttons, `runAction` refuses a second action on the id, the bulk filter skips it), pinned by the slowed-export case in `e2e/library.spec.ts`.

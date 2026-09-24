@@ -29,12 +29,16 @@ export function putRecording(rec: Recording): Promise<void> {
   return idb.set('recordings', rec.id, rec);
 }
 
-/** Merge `patch` into the stored record. Throws when the recording does not exist. */
+/**
+ * Merge `patch` into the stored record, atomically (`idb.update`: one readwrite transaction), so
+ * a rename from the library, the recorder's stop and the pipeline's status changes can interleave
+ * without one overwriting another's fields. Throws when the recording does not exist.
+ */
 export async function updateRecording(id: string, patch: Partial<Recording>): Promise<Recording> {
-  const current = await getRecording(id);
-  if (!current) throw new Error(`recording ${id} not found`);
-  const next = { ...current, ...patch, id };
-  await putRecording(next);
+  const next = await idb.update<Recording>('recordings', id, (current) =>
+    current ? { ...current, ...patch, id } : undefined,
+  );
+  if (!next) throw new Error(`recording ${id} not found`);
   return next;
 }
 

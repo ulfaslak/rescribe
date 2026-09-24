@@ -305,6 +305,7 @@ test('rename persists across reload and never renames the folder; a recording ro
   const live = page.locator('.recording-item[data-status="recording"]');
   await expect(live).toHaveCount(1);
   await expect(live.locator('.actions')).toHaveCount(0);
+  await expect(live.locator('button.rename')).toHaveCount(0);
   const t0 = await live.locator('.duration').textContent();
   await page.waitForTimeout(2200);
   const t1 = await live.locator('.duration').textContent();
@@ -314,6 +315,21 @@ test('rename persists across reload and never renames the folder; a recording ro
   await expect(page.locator('.recording-item[data-status="recording"]')).toHaveCount(0);
   await expect(page.locator('.recording-item')).toHaveCount(3);
   await expectStorageMatchesWalk(page);
+
+  // Two renames back to back: the second lands on the first's result and no other field is lost.
+  for (const name of ['One', 'Two']) {
+    await row(page, a!.id).locator('button.rename').click();
+    await row(page, a!.id).locator('input.title-input').fill(name);
+    await row(page, a!.id).locator('input.title-input').press('Enter');
+    await expect(row(page, a!.id).locator('.title')).toHaveText(name);
+  }
+  expect(await recording(page, a!.id)).toMatchObject({
+    title: 'Two',
+    status: a!.status,
+    exportPath: a!.exportPath,
+    endedAt: a!.endedAt,
+    levels: a!.levels,
+  });
   await page.locator('.recording-item').first().locator('button.delete').click();
   await page.screenshot({ path: 'screenshots/library.png', fullPage: true });
 });
@@ -377,8 +393,11 @@ test('delete media keeps the record, the events log and the export; delete recor
   await page.reload();
   await ready(page);
 
-  // Delete media on A.
-  await clickTwice(ra.locator('button.delete-media'));
+  // Delete media on A: a recorded row says what is lost, then goes through.
+  await ra.locator('button.delete-media').click();
+  await expect(ra.locator('button.delete-media')).toHaveText(/cannot be transcribed/);
+  await page.waitForTimeout(400);
+  await ra.locator('button.delete-media').click();
   await expect(page.locator('#library-status')).toContainText(`Deleted `);
   await expect(page.locator('#library-status')).toContainText(`${a!.exportPath}/ is untouched`);
   for (const name of ['video.mp4', 'mic.pcm', 'display.pcm'])
@@ -411,18 +430,54 @@ test('delete media keeps the record, the events log and the export; delete recor
   const afterDelete = await expectStorageMatchesWalk(page);
   expect(afterDelete).toBeLessThan(afterMedia);
 
-  // Bulk: only C still has media and is exported. Armed, then C is taken by the pipeline: the
-  // target set is re-read at confirm time and C's media stays.
+  // Bulk: a recorded row is never a target (its audio is what a transcript is made from); a done
+  // one is.
+  await expect(page.locator('#storage-actions button')).toHaveCount(0);
+  await setStatus(page, c!, 'done');
+  await page.reload();
+  await ready(page);
   const bulk = page.locator('#storage-actions button.delete-exported-media');
   await expect(bulk).toBeVisible();
+
+  // C's exported video is gone (deleted in Finder, folder moved): the row refuses, the bulk keeps
+  // C and names it, and nothing local is touched.
+  const cVideo = [EXPORT_DIR, ...c!.exportPath!.split('/'), 'recording.mp4'];
+  await opfsRemove(page, cVideo);
+  await clickTwice(row(page, c!.id).locator('button.delete-media'));
+  await expect(page.locator('#library-status')).toContainText('Media kept');
+  await expect(page.locator('#library-status')).toContainText('not in the export folder');
+  expect(await opfsSize(page, ['recordings', c!.id, 'video.mp4'])).toBeGreaterThan(10_000);
+  await clickTwice(bulk);
+  await expect(page.locator('#library-status')).toContainText('Nothing deleted');
+  await expect(page.locator('#library-status')).toContainText(`${c!.exportPath}/`);
+  expect(await opfsSize(page, ['recordings', c!.id, 'video.mp4'])).toBeGreaterThan(10_000);
+  expect(await opfsSize(page, ['recordings', c!.id, 'mic.pcm'])).toBeGreaterThan(0);
+  expect((await recording(page, c!.id))!.mediaDeleted).toBeUndefined();
+  // Re-export puts the video back.
+  await row(page, c!.id).locator('button.re-export').click();
+  await expect(page.locator('#library-status')).toHaveText(
+    `Saved recording.mp4 to ${c!.exportPath}/.`,
+    { timeout: 15_000 },
+  );
+  expect(await opfsSize(page, cVideo)).toBeGreaterThan(10_000);
+
+  // No export folder at all: the bulk refuses outright.
+  await idbWrite(page, 'handles', 'delete', ['export']);
+  await clickTwice(bulk);
+  await expect(page.locator('#library-status')).toContainText('no export folder chosen');
+  expect(await opfsSize(page, ['recordings', c!.id, 'video.mp4'])).toBeGreaterThan(10_000);
+  await seedExportFolder(page);
+
+  // Armed, then C is taken by the pipeline: the target set is re-read at confirm time and C's
+  // media stays.
   await bulk.click();
   await expect(bulk).toHaveText(/Free .* from 1 exported recording\?/);
-  await setStatus(page, c!, 'transcribing');
+  await setStatus(page, (await recording(page, c!.id))!, 'transcribing');
   await page.waitForTimeout(400);
   await bulk.click();
   await expect(page.locator('#library-status')).toContainText('Nothing to delete');
   expect(await opfsSize(page, ['recordings', c!.id, 'video.mp4'])).toBeGreaterThan(10_000);
-  await setStatus(page, c!, c!.status);
+  await setStatus(page, (await recording(page, c!.id))!, 'done');
   await page.reload();
   await ready(page);
   await clickTwice(page.locator('#storage-actions button.delete-exported-media'));
@@ -543,4 +598,114 @@ test('a failed recording shows its error and offers only Delete', async ({
   await expect(r).toHaveCount(0);
   expect(await recording(page, failed.id)).toBeUndefined();
   await expect(page.locator('#recordings-empty')).toBeVisible();
+
+  // A failed recording whose video did reach disk (a chunk lost late in a long call): Save now
+  // exports what is there; the status and the failure reason stay.
+  const [v] = await seed(page, 1);
+  const { exportPath: _dropped, ...rest } = (await recording(page, v!.id))!;
+  const broken: Recording = {
+    ...rest,
+    status: 'failed',
+    error: 'Video chunk lost: synthetic arrayBuffer failure',
+  };
+  await idbWrite(page, 'recordings', 'put', [broken, broken.id]);
+  await page.reload();
+  await ready(page);
+  const rv = row(page, v!.id);
+  await expect(rv).toHaveAttribute('data-status', 'failed');
+  await expect(rv.locator('button.save-now')).toBeVisible();
+  await expect(rv.locator('button.delete-media')).toBeVisible();
+  await expect(rv.locator('button.rerun')).toBeDisabled();
+  await rv.locator('button.save-now').click();
+  await expect(page.locator('#library-status')).toHaveText(
+    /^Saved recording\.mp4 to .*Screen recording.*\/\.$/,
+    { timeout: 15_000 },
+  );
+  const saved = (await recording(page, v!.id))!;
+  expect(saved.status).toBe('failed');
+  expect(saved.error).toBe(broken.error);
+  expect(saved.exportPath).toBeDefined();
+  expect(
+    await opfsSize(page, [EXPORT_DIR, ...saved.exportPath!.split('/'), 'recording.mp4']),
+  ).toBeGreaterThan(10_000);
+  await expect(rv.locator('button.re-export')).toBeVisible();
+  await expect(rv.locator('.hint.error')).toHaveText(broken.error!);
+});
+
+test('a re-render while a title is being edited neither saves the half-typed title nor closes the input; Escape cancels', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a, b] = await seed(page, 2);
+  // B "transcribing" keeps the live refresh running.
+  await setStatus(page, b!, 'transcribing');
+  await page.reload();
+  await ready(page);
+  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'transcribing');
+  const ra = row(page, a!.id);
+  await ra.locator('button.rename').click();
+  const input = ra.locator('input.title-input');
+  await input.fill('half typed');
+  // B finishes: the live refresh sees the change and wants to rebuild the list.
+  await setStatus(page, b!, 'recorded');
+  await page.waitForTimeout(2500);
+  await expect(input).toBeVisible();
+  await expect(input).toHaveValue('half typed');
+  expect((await recording(page, a!.id))!.title).toBe(a!.title);
+  // The rebuild waited: B's row still shows the old status.
+  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'transcribing');
+  await input.press('Escape');
+  await expect(ra.locator('.title')).toHaveText(a!.title);
+  expect((await recording(page, a!.id))!.title).toBe(a!.title);
+  // …and the deferred rebuild ran.
+  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'recorded');
+  // Enter and blur still save.
+  await ra.locator('button.rename').click();
+  await ra.locator('input.title-input').fill('Final name');
+  await ra.locator('input.title-input').press('Enter');
+  await expect(ra.locator('.title')).toHaveText('Final name');
+  await ra.locator('button.rename').click();
+  await ra.locator('input.title-input').fill('Blurred name');
+  await page.locator('#recordings h2').click();
+  await expect(ra.locator('.title')).toHaveText('Blurred name');
+  expect((await recording(page, a!.id))!.title).toBe('Blurred name');
+});
+
+test('a row with an action in progress shows it and offers nothing, whatever re-render happens meanwhile', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a, b] = await seed(page, 2);
+  await setStatus(page, b!, 'transcribing');
+  // Every export write waits, so the action is long enough to watch.
+  await page.addInitScript(() => {
+    const orig = FileSystemFileHandle.prototype.createWritable;
+    FileSystemFileHandle.prototype.createWritable = async function (
+      this: FileSystemFileHandle,
+      opts?: FileSystemCreateWritableOptions,
+    ) {
+      await new Promise((r) => setTimeout(r, 2500));
+      return orig.call(this, opts);
+    };
+  });
+  await page.reload();
+  await ready(page);
+  const ra = row(page, a!.id);
+  await ra.locator('button.re-export').click();
+  await expect(ra.locator('.busy')).toHaveText('Exporting…');
+  await expect(ra.locator('button')).toHaveCount(0);
+  // B finishes meanwhile: the list is rebuilt; A's row must still show the action and no buttons.
+  await setStatus(page, b!, 'recorded');
+  await expect(row(page, b!.id)).toHaveAttribute('data-status', 'recorded', { timeout: 5000 });
+  await expect(ra.locator('.busy')).toHaveText('Exporting…');
+  await expect(ra.locator('button')).toHaveCount(0);
+  await expect(page.locator('#library-status')).toHaveText(
+    `Saved recording.mp4 to ${a!.exportPath}/.`,
+    { timeout: 15_000 },
+  );
+  await expect(ra.locator('.busy')).toHaveCount(0);
+  await expect(ra.locator('button.re-export')).toBeVisible();
+  await expect(ra.locator('button.delete')).toBeVisible();
 });

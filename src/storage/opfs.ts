@@ -26,10 +26,17 @@ export function isSegmentsCache(name: string): boolean {
   return /^segments\.(mic|display)\.json$/.test(name);
 }
 
+/** Chromium's swap file while a `createWritable()` stream is open (`<name>.crswap`): it is listed
+ * by `entries()` until the stream closes and must never be treated as an artifact. */
+export function isSwapFile(name: string): boolean {
+  return /\.crswap$/.test(name);
+}
+
 /** An artifact the export folder gets (transcript.md, transcript.json, meta.json): everything in
- * the directory that is neither raw media, nor the events log, nor the segments cache. */
+ * the directory that is neither raw media, nor the events log, nor the segments cache, nor a
+ * swap file of a write in progress. */
 export function isExportableArtifact(name: string): boolean {
-  return !isMediaFile(name) && name !== EVENTS_FILE && !isSegmentsCache(name);
+  return !isMediaFile(name) && name !== EVENTS_FILE && !isSegmentsCache(name) && !isSwapFile(name);
 }
 
 export async function recordingsRoot(

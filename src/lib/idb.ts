@@ -52,4 +52,40 @@ export const idb = {
   all<T>(store: StoreName): Promise<T[]> {
     return request<T[]>(store, 'readonly', (s) => s.getAll() as IDBRequest<T[]>);
   },
+  /**
+   * Read-modify-write inside one readwrite transaction: IndexedDB serialises readwrite
+   * transactions on a store, so two concurrent updates of the same key never lose each other's
+   * fields (a get-then-put in two transactions can). `fn` runs synchronously inside the
+   * transaction with the current value (undefined when absent) and returns the value to store, or
+   * undefined to store nothing. Resolves with what was stored.
+   */
+  update<T>(
+    store: StoreName,
+    key: string,
+    fn: (current: T | undefined) => T | undefined,
+  ): Promise<T | undefined> {
+    return open().then(
+      (db) =>
+        new Promise<T | undefined>((resolve, reject) => {
+          const tx = db.transaction(store, 'readwrite');
+          const s = tx.objectStore(store);
+          const get = s.get(key) as IDBRequest<T | undefined>;
+          let next: T | undefined;
+          let failure: unknown;
+          get.onsuccess = () => {
+            try {
+              next = fn(get.result);
+              if (next !== undefined) s.put(next, key);
+            } catch (err) {
+              failure = err;
+              tx.abort();
+            }
+          };
+          get.onerror = () => reject(get.error);
+          tx.oncomplete = () => resolve(next);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(failure ?? tx.error);
+        }),
+    );
+  },
 };

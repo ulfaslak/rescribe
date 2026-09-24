@@ -12,8 +12,11 @@ import { exportVideoName } from '../recorder/recorder.ts';
 import {
   ensureExportPermission,
   ExportError,
+  exportedFileState,
   getExportDirectory,
+  getExportRoot,
   writeExportFile,
+  type ExportedFileState,
 } from '../storage/export.ts';
 import { isExportableArtifact, isMediaFile, pcmFileName, videoFileName } from '../storage/opfs.ts';
 import {
@@ -104,13 +107,19 @@ function inventory(rec: Recording, usage: StorageUsage): Inventory {
   };
 }
 
-/** The bulk target: exported, finished with (`done`) or at least saved (`recorded`), media present. */
+/**
+ * The bulk target: `done` (video and transcript both exported), with an export path and media
+ * present, and no action running on it. A `recorded` row is never a bulk target: its audio is
+ * what a transcript would be made from. Whether the exported video actually exists is checked
+ * per target at click time (`removeExportedMedia`), not here.
+ */
 function exportedWithMedia(recs: Recording[], usage: StorageUsage): Recording[] {
   return recs.filter(
     (r) =>
       r.exportPath !== undefined &&
-      (r.status === 'done' || r.status === 'recorded') &&
-      inventory(r, usage).mediaBytes > 0,
+      r.status === 'done' &&
+      inventory(r, usage).mediaBytes > 0 &&
+      !inflight.has(r.id),
   );
 }
 
@@ -130,29 +139,56 @@ function onProgress(id: string, p: { message: string }): void {
   else void renderList(); // the status flipped to `transcribing` under us
 }
 
-async function rerun(id: string): Promise<string | undefined> {
-  const rec = await getRecording(id);
-  if (!rec) return 'That recording no longer exists.';
+async function rerun(id: string): Promise<Outcome> {
+  const rec = await claim(id, 'run it again');
+  if (typeof rec === 'string') return rec;
   // TODO(#2): `await transcribeRecording(id); return undefined;` (the row shows the outcome).
   return `Transcription is not available yet (#2); "${rec.title}" was left as is.`;
 }
 
 // --- Actions ------------------------------------------------------------------------------------
+/** What an action reports: a line for the status readout (a string is not an error), or nothing. */
+type Outcome = string | { text: string; isError?: boolean } | undefined;
+
+const fail = (text: string): Outcome => ({ text, isError: true });
+
 function libraryNote(text: string, isError = false): void {
   const el = $<HTMLElement>('#library-status');
   el.textContent = text;
   el.className = `hint${isError ? ' error' : ''}`;
 }
 
-/** Run an action with the row's buttons disabled, report, then re-render. */
-async function runAction(scope: Element, fn: () => Promise<string | undefined>): Promise<void> {
+/**
+ * Recording ids with an action in progress, and what it is. A row in here renders the label and
+ * no buttons, whatever re-render happens meanwhile (a Re-export streams a multi-GB video for
+ * minutes, and a rebuilt row with a live Delete button would pull the file out from under the
+ * stream); `runAction` refuses a second action on the same id, and the bulk filter skips it.
+ */
+const inflight = new Map<string, string>();
+
+/** Run an action: mark its ids in flight (the rows show `label`), report, unmark, re-render. */
+async function runAction(
+  ids: string[],
+  label: string,
+  scope: Element,
+  fn: () => Promise<Outcome>,
+): Promise<void> {
+  const busy = ids.find((id) => inflight.has(id));
+  if (busy) {
+    libraryNote(`${inflight.get(busy) ?? 'An action'} is still running on that recording.`, true);
+    return;
+  }
   for (const b of scope.querySelectorAll('button')) b.disabled = true;
+  for (const id of ids) inflight.set(id, label);
+  void renderList();
   try {
-    const text = await fn();
-    if (text) libraryNote(text);
+    const out = await fn();
+    if (typeof out === 'string') libraryNote(out);
+    else if (out) libraryNote(out.text, out.isError);
   } catch (err) {
     libraryNote(err instanceof Error ? err.message : String(err), true);
   } finally {
+    for (const id of ids) inflight.delete(id);
     await renderList();
   }
 }
@@ -161,12 +197,14 @@ async function runAction(scope: Element, fn: () => Promise<string | undefined>):
  * Write everything the recording still has in OPFS into its export directory: the video (unless
  * the media was deleted) and every artifact (transcript.md, transcript.json, meta.json: any file
  * in recordings/<id>/ that is neither raw media nor the events log). Reuses `exportPath` when set,
- * so a folder the human deleted is recreated at the same path; a `recorded` recording without one
- * gets a path from the template, as `finalize` does on stop. The status never changes: `done`
- * stays `done`. Also "Save now" for a recording whose export failed on stop (no folder, or the
- * folder permission was not granted because finalize ran outside a click).
+ * so a folder the human deleted is recreated at the same path; a recording without one gets a
+ * path from the template, as `finalize` does on stop. The status never changes: `done` stays
+ * `done`, and a `failed` recording with a playable video (a chunk lost late in a long call) is
+ * saved as `failed`, keeping its failure reason. Also "Save now" for a recording whose export
+ * failed on stop (no folder, or the folder permission was not granted because finalize ran
+ * outside a click).
  */
-async function reExport(id: string): Promise<string | undefined> {
+async function reExport(id: string): Promise<Outcome> {
   // First thing inside the click: after a browser restart the persisted folder handle is
   // `prompt`, and requestPermission only prompts from a user gesture.
   await ensureExportPermission().catch(() => undefined);
@@ -192,11 +230,16 @@ async function reExport(id: string): Promise<string | undefined> {
       await writeExportFile(dir, name, file.stream());
       written.push(name);
     }
-    await updateRecording(rec.id, { exportPath: path, error: undefined });
+    // A failed recording's `error` is why it failed; only a non-failed one carries an export error.
+    await updateRecording(rec.id, {
+      exportPath: path,
+      ...(rec.status === 'failed' ? {} : { error: undefined }),
+    });
     return `Saved ${written.join(', ')} to ${path}/.`;
   } catch (err) {
-    const msg = err instanceof ExportError ? err.message : String(err);
-    await updateRecording(rec.id, { error: `Not exported: ${msg}` });
+    const msg = `Not exported: ${err instanceof ExportError ? err.message : String(err)}`;
+    if (rec.status === 'failed') return fail(msg);
+    await updateRecording(rec.id, { error: msg });
     return undefined; // the row shows the error
   }
 }
@@ -215,15 +258,38 @@ async function claim(id: string, what: string): Promise<Recording | string> {
   return rec;
 }
 
-async function removeMedia(id: string): Promise<string> {
+/** Why the exported video could not be confirmed, for a refusal line. */
+function explainExport(state: Exclude<ExportedFileState, 'present'>, rec: Recording): string {
+  switch (state) {
+    case 'missing':
+      return `${rec.exportPath}/${exportVideoName(rec.container)} is not in the export folder (deleted, or the folder was moved). Re-export first.`;
+    case 'no-folder':
+      return 'No export folder chosen in Settings.';
+    case 'permission':
+      return 'Rescribe may not read the export folder; allow it and try again.';
+  }
+}
+
+/**
+ * Delete the local media of one recording. When the record says it was exported, the exported
+ * video must be present right now (deleted in Finder, folder moved, permission not granted after
+ * a restart: any of these would make this the only copy); a recording never exported was warned
+ * about in the confirm.
+ */
+async function removeMedia(id: string): Promise<Outcome> {
+  await ensureExportPermission().catch(() => undefined); // inside the click, for the prompt
   const rec = await claim(id, 'delete its media');
   if (typeof rec === 'string') return rec;
+  if (rec.exportPath) {
+    const state = await exportedFileState(rec.exportPath, exportVideoName(rec.container));
+    if (state !== 'present') return fail(`Media kept: ${explainExport(state, rec)}`);
+  }
   const freed = await deleteMedia(id);
   const kept = rec.exportPath ? `; ${rec.exportPath}/ is untouched` : '';
   return `Deleted ${formatBytes(freed)} of media for "${rec.title}"${kept}.`;
 }
 
-async function remove(id: string): Promise<string> {
+async function remove(id: string): Promise<Outcome> {
   const rec = await claim(id, 'delete it');
   if (typeof rec === 'string') return rec;
   await deleteRecording(id);
@@ -231,14 +297,48 @@ async function remove(id: string): Promise<string> {
   return `Deleted "${rec.title}" from Rescribe${kept}.`;
 }
 
-/** The bulk target is re-computed from the store at click time, never from the rendered list. */
-async function removeExportedMedia(): Promise<string> {
+let bulkRunning = false;
+
+/**
+ * The bulk target set is re-computed from the store at click time, never from the rendered list,
+ * and each target's exported video is looked up before its media goes: a missing one is kept
+ * and named. No folder, or no permission to look, refuses the whole run.
+ */
+async function removeExportedMedia(): Promise<Outcome> {
+  await ensureExportPermission().catch(() => undefined);
   const [recs, usage] = await Promise.all([listRecordings(), storageUsage()]);
   const targets = exportedWithMedia(recs, usage);
   if (targets.length === 0) return 'Nothing to delete: no exported recording has media left.';
-  let freed = 0;
-  for (const rec of targets) freed += await deleteMedia(rec.id);
-  return `Freed ${formatBytes(freed)}: media deleted for ${plural(targets.length, 'exported recording')}; the exported files remain.`;
+  const root = await getExportRoot();
+  if (!root) return fail('Nothing deleted: no export folder chosen in Settings.');
+  if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted')
+    return fail(
+      'Nothing deleted: Rescribe may not read the export folder; allow it and try again.',
+    );
+  bulkRunning = true;
+  for (const rec of targets) inflight.set(rec.id, 'Deleting media…');
+  try {
+    let freed = 0;
+    let deleted = 0;
+    const kept: string[] = [];
+    for (const rec of targets) {
+      const state = await exportedFileState(rec.exportPath!, exportVideoName(rec.container));
+      if (state !== 'present') {
+        kept.push(`${rec.exportPath}/`);
+        continue;
+      }
+      freed += await deleteMedia(rec.id);
+      deleted++;
+    }
+    const keptText = kept.length
+      ? ` Kept the media of ${plural(kept.length, 'recording')} whose exported video is missing: ${kept.join(', ')}. Re-export first.`
+      : '';
+    if (deleted === 0) return fail(`Nothing deleted.${keptText}`);
+    return `Freed ${formatBytes(freed)}: media deleted for ${plural(deleted, 'exported recording')}; the exported files remain.${keptText}`;
+  } finally {
+    for (const rec of targets) inflight.delete(rec.id);
+    bulkRunning = false;
+  }
 }
 
 // --- Widgets ------------------------------------------------------------------------------------
@@ -284,9 +384,14 @@ function confirmButton(
   return b;
 }
 
+/** The id whose title is being edited. While set, `renderList` defers: a wholesale re-render would
+ * remove the focused input, Chromium fires `blur` on removal, and blur saves a half-typed title. */
+let editing: string | undefined;
+
 function editTitle(row: HTMLLIElement, rec: Recording): void {
   const titleRow = row.querySelector('.title-row');
-  if (!titleRow) return;
+  if (!titleRow || editing) return;
+  editing = rec.id;
   const form = document.createElement('form');
   form.className = 'title-edit';
   const input = document.createElement('input');
@@ -305,6 +410,7 @@ function editTitle(row: HTMLLIElement, rec: Recording): void {
   const finish = async (save: boolean): Promise<void> => {
     if (finished) return;
     finished = true;
+    editing = undefined;
     const value = input.value.trim();
     if (save && value && value !== rec.title) await updateRecording(rec.id, { title: value });
     await renderList();
@@ -341,17 +447,22 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
   li.dataset['id'] = rec.id;
   li.dataset['status'] = rec.status;
 
+  const busy = inflight.get(rec.id);
   const titleRow = document.createElement('div');
   titleRow.className = 'title-row';
-  const title = span('title', rec.title);
-  const rename = document.createElement('button');
-  rename.className = 'rename';
-  rename.type = 'button';
-  rename.textContent = '✎';
-  rename.title = 'Rename';
-  rename.setAttribute('aria-label', 'Rename');
-  rename.addEventListener('click', () => editTitle(li, rec));
-  titleRow.append(title, rename);
+  titleRow.append(span('title', rec.title));
+  // No pencil while the recorder or the pipeline holds the record (their writers carry the title
+  // from their start), nor while an action of ours runs on it.
+  if (!live(rec) && !busy) {
+    const rename = document.createElement('button');
+    rename.className = 'rename';
+    rename.type = 'button';
+    rename.textContent = '✎';
+    rename.title = 'Rename';
+    rename.setAttribute('aria-label', 'Rename');
+    rename.addEventListener('click', () => editTitle(li, rec));
+    titleRow.append(rename);
+  }
 
   const meta = document.createElement('div');
   meta.className = 'meta';
@@ -376,12 +487,16 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
       div('hint media-deleted', 'Media deleted from local storage; the exported files remain.'),
     );
 
-  if (rec.status === 'recording' || rec.status === 'transcribing') return li;
+  if (live(rec)) return li;
+  if (busy) {
+    li.append(div('progress busy', busy));
+    return li;
+  }
 
   const actions = document.createElement('div');
   actions.className = 'actions';
-  const exportable =
-    (rec.status === 'recorded' || rec.status === 'done') && (inv.video || inv.artifacts.length > 0);
+  // Whatever is on disk can be saved, a failed recording's playable video included.
+  const exportable = inv.video || inv.artifacts.length > 0;
   if (exportable) {
     // "Save now" is the same action, named for the row that never got a folder (record.spec.ts).
     const b = document.createElement('button');
@@ -390,7 +505,10 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
     b.title = rec.exportPath
       ? `Write ${[inv.video ? exportVideoName(rec.container) : '', ...inv.artifacts].filter(Boolean).join(', ')} into ${rec.exportPath}/ again`
       : 'Save the recording into the export folder';
-    b.addEventListener('click', () => void runAction(li, () => reExport(rec.id)));
+    b.addEventListener(
+      'click',
+      () => void runAction([rec.id], 'Exporting…', li, () => reExport(rec.id)),
+    );
     actions.append(b);
   }
   if (inv.pcm) {
@@ -401,16 +519,23 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
       b.disabled = true;
       b.title = 'Transcription lands with #2.';
     }
-    b.addEventListener('click', () => void runAction(li, () => rerun(rec.id)));
+    b.addEventListener(
+      'click',
+      () => void runAction([rec.id], 'Transcribing…', li, () => rerun(rec.id)),
+    );
     actions.append(b);
   }
   if (inv.mediaBytes > 0) {
+    // A recording without a transcript loses the audio a transcript would be made from.
+    const consequence =
+      (rec.status === 'done' ? '' : ' Without the audio it cannot be transcribed.') +
+      (rec.exportPath ? '' : ' It was never exported.');
     actions.append(
       confirmButton(
         'Delete media',
-        `Delete ${formatBytes(inv.mediaBytes)} of media?${rec.exportPath ? '' : ' It was never exported.'}`,
+        `Delete ${formatBytes(inv.mediaBytes)} of media?${consequence}`,
         'delete-media',
-        () => void runAction(li, () => removeMedia(rec.id)),
+        () => void runAction([rec.id], 'Deleting media…', li, () => removeMedia(rec.id)),
       ),
     );
   }
@@ -419,7 +544,7 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
       'Delete',
       `Delete "${rec.title}"?${rec.exportPath ? ' The exported files stay.' : ''}`,
       'delete',
-      () => void runAction(li, () => remove(rec.id)),
+      () => void runAction([rec.id], 'Deleting…', li, () => remove(rec.id)),
     ),
   );
   li.append(actions);
@@ -436,6 +561,10 @@ function renderStorage(recs: Recording[], usage: StorageUsage): void {
       ? ` (${formatBytes(orphanBytes)} in ${plural(orphans.length, 'directory')} without a recording)`
       : '');
   const actions = $<HTMLElement>('#storage-actions');
+  if (bulkRunning) {
+    actions.replaceChildren(span('progress busy', 'Deleting media…'));
+    return;
+  }
   const targets = exportedWithMedia(recs, usage);
   if (targets.length === 0) {
     actions.replaceChildren();
@@ -446,10 +575,10 @@ function renderStorage(recs: Recording[], usage: StorageUsage): void {
     'Delete media for exported recordings',
     `Free ${formatBytes(bytes)} from ${plural(targets.length, 'exported recording')}?`,
     'delete-exported-media',
-    () => void runAction(actions, removeExportedMedia),
+    () => void runAction([], 'Deleting media…', actions, removeExportedMedia),
   );
   button.title =
-    'Deletes the video and audio in local storage of every recording whose files are in the export folder.';
+    'Deletes the video and audio kept in the browser for every recording whose video and transcript are in the export folder.';
   actions.replaceChildren(button);
 }
 
@@ -484,8 +613,12 @@ async function render(): Promise<void> {
   setLive(recs.some((r) => r.status === 'recording' || r.status === 'transcribing'));
 }
 
-/** Re-read everything and rebuild the list. Concurrent calls coalesce into one more render. */
+/**
+ * Re-read everything and rebuild the list. Concurrent calls coalesce into one more render. While
+ * a title is being edited nothing is rebuilt (see `editing`); the edit's finish renders.
+ */
 export function renderList(): Promise<void> {
+  if (editing) return Promise.resolve();
   if (rendering) {
     dirty = true;
     return rendering;
