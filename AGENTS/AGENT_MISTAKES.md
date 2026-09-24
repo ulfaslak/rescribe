@@ -23,3 +23,11 @@ The adapter's header stated that Meet's page scripts cannot read a CustomEvent's
 ### 2026-09-24 · #12 · TypeScript syntax that Node's type stripping rejects `[learned]`
 
 A constructor parameter property in `src/lib/activity.ts` compiled under `tsc` and esbuild but made the test file fail to load under `node --test`. Codified in DEVELOPMENT § Commands (`npm test` row).
+
+### 2026-09-24 · #2 part 1 · float seconds where the unit was frames `[learned]`
+
+The VAD merged two regions when their gap was *under* 500 ms, but computed the gap in float seconds derived from frame indices, so an exact 500 ms gap came out as 0.4999… and merged. Caught by the unit test that pins both sides of the boundary (`vad.test.ts`, "bursts with a gap under the merge gap become one region; over it, two"); fixed by doing pad, merge, drop and split in integer frames and converting to seconds once at the end.
+
+### 2026-09-24 · #2 part 1 · state registered before the fallible call `[not codified]`
+
+`Transcriber.run` set the active job and then called `worker.postMessage(..., [buffer])`; a detached or shared buffer makes that throw, which rejected the job but left it registered as active, so the next job's messages would have been filtered out and that job would hang forever. Found on the paper walk of the edge list (storage and buffer states), not by a test: the client is not exercised by any e2e until part 2 wires it. What would codify it: a unit test of `Transcriber` against a fake `Worker`, or the part 2 e2e driving the client instead of the worker.
