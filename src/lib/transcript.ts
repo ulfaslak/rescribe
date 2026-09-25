@@ -1,5 +1,5 @@
 // Labelled segments → turns → transcript.md / transcript.json content. Pure.
-import { formatDate } from './pathtemplate.ts';
+import { formatDate, formatTime as formatClock } from './pathtemplate.ts';
 import type { LabelledSegment, Turn } from './types.ts';
 
 export interface TurnOptions {
@@ -55,12 +55,14 @@ export interface TranscriptMeta {
   participants?: string[];
 }
 
-const pad = (n: number): string => String(n).padStart(2, '0');
-
-/** `YYYY-MM-DD HH:MM` in the local time zone: the clock the export folder's name uses. */
+/**
+ * `YYYY-MM-DD HH:MM` in the machine's zone at render time, the formatter the export folder's name
+ * uses (DECISIONS § Storage and output). The folder is named at Save and the header at
+ * transcription, so a machine moved between zones in between shows the two apart.
+ */
 export function formatLocalDateTime(ms: number): string {
   const d = new Date(ms);
-  return `${formatDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${formatDate(d)} ${formatClock(d, ':')}`;
 }
 
 export function renderMarkdown(turns: Turn[], meta: TranscriptMeta): string {

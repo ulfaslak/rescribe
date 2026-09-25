@@ -61,11 +61,20 @@ test('renderMarkdown produces a heading, participants and timestamped turns', ()
 });
 
 test('the header shows the local clock the export folder name uses, not UTC', () => {
-  // 2026-09-25 09:19 CEST = 07:19 UTC: the header must agree with the folder, whatever the zone.
+  // 2026-09-25 07:19:36 UTC. In a zone with offset 0 the UTC header would be indistinguishable
+  // from the local one, so the test pins a zone with an offset and asserts the literal.
   const startedAt = 1790320776839;
-  const md = renderMarkdown([], { title: 'T', startedAt, participants: [] });
-  const [dir] = renderPathTemplate('{date} {time} {title}', { startedAt, title: 'T' });
-  const [date, time] = dir!.split(' ');
-  assert.match(md, new RegExp(`^# T\\n\\n${date} ${time!.replace('-', ':')}\\n`));
-  assert.equal(formatLocalDateTime(startedAt), `${date} ${time!.replace('-', ':')}`);
+  const tz = process.env.TZ;
+  process.env.TZ = 'Europe/Copenhagen';
+  try {
+    assert.equal(new Date(startedAt).getTimezoneOffset(), -120);
+    assert.equal(formatLocalDateTime(startedAt), '2026-09-25 09:19');
+    const md = renderMarkdown([], { title: 'T', startedAt, participants: [] });
+    assert.match(md, /^# T\n\n2026-09-25 09:19\n/);
+    const [dir] = renderPathTemplate('{date} {time} {title}', { startedAt, title: 'T' });
+    assert.equal(dir, '2026-09-25 09-19 T');
+  } finally {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
 });
