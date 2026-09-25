@@ -130,8 +130,10 @@ export const SELF_MIN_SECONDS = 5;
 export const MIN_PRESENCE_SECONDS = 10;
 /**
  * Tile labels that are a status, not a person: Meet's tile for the human's own shared screen
- * ("You are presenting", 2026-09-25). English; extend on observation. A remote's share is
- * "Name (Presentation)", caught by `isPresentationOf`.
+ * ("You are presenting", 2026-09-25). Its intervals are dropped (what it carries is the human's
+ * share, not a voice) and it is never a participant. English; extend on observation. A remote's
+ * share is "Name (Presentation)", caught by `isPresentationOf`: not a participant, but its
+ * intervals keep the label, since the audio is that person's share.
  */
 export const PRESENTATION_LABELS: ReadonlySet<string> = new Set(['You are presenting']);
 
@@ -154,7 +156,7 @@ export interface PlatformEvidence {
    * participant" is counted on.
    */
   remotes: string[];
-  /** Whether the log holds a roster at all; without one nobody's presence is known. */
+  /** Whether the log holds a non-empty roster inside the recording; without one nobody's presence is known. */
   rosterSeen: boolean;
 }
 
@@ -290,36 +292,41 @@ export function eventsToEvidence(
     if (cleanIntervals(list, cleaning).length > 0) spokeIds.add(id);
   }
 
-  // Self by microphone: per id, how much of its speaking coincides with mic speech. Exactly one
-  // tile may qualify: two that do (a colleague in the same room, on their own laptop, whom the
-  // microphone hears through the air) are both kept, and the label rule alone applies.
+  // Self by microphone: per id, how much of its speaking coincides with mic speech. Ids under
+  // one display name are one person (a rejoin brings a new id). Exactly one person may qualify:
+  // two that do (a colleague in the same room, on their own laptop, whom the microphone hears
+  // through the air) are both kept, and the label rule alone applies.
   const selfIds = new Set<string>();
   let self: SelfTile | undefined;
   if (opts.micSpeech) {
-    const candidates: Array<{ id: string; tile: SelfTile }> = [];
+    const candidates = new Map<string, { ids: string[]; seconds: number; overlap: number }>();
     for (const [id, list] of byId) {
       const seconds = secondsById.get(id) ?? 0;
       if (seconds < SELF_MIN_SECONDS - EPSILON) continue;
-      const share = overlapSeconds(list, opts.micSpeech) / seconds;
-      if (share < SELF_MIC_SHARE - EPSILON) continue;
-      candidates.push({
-        id,
-        tile: {
-          name: nameOf.get(id) ?? unresolvedLabel,
-          micShare: round3(Math.min(1, share)),
-          seconds: round3(seconds),
-        },
-      });
+      const overlap = overlapSeconds(list, opts.micSpeech);
+      if (overlap / seconds < SELF_MIC_SHARE - EPSILON) continue;
+      const key = nameOf.get(id) ?? id;
+      const c = candidates.get(key) ?? { ids: [], seconds: 0, overlap: 0 };
+      c.ids.push(id);
+      c.seconds += seconds;
+      c.overlap += overlap;
+      candidates.set(key, c);
     }
-    if (candidates.length === 1) {
-      selfIds.add(candidates[0]!.id);
-      self = candidates[0]!.tile;
+    if (candidates.size === 1) {
+      const [key, c] = [...candidates][0]!;
+      for (const id of c.ids) selfIds.add(id);
+      self = {
+        name: nameOf.get(c.ids[0]!) ?? (key === c.ids[0] ? unresolvedLabel : key),
+        micShare: round3(Math.min(1, c.overlap / c.seconds)),
+        seconds: round3(c.seconds),
+      };
     }
   }
   const isSelfId = (id: string): boolean => selfIds.has(id) || selfNames.has(nameOf.get(id) ?? '');
 
   const raw = clipped
     .filter((iv) => !isSelfId(iv.speaker))
+    .filter((iv) => !PRESENTATION_LABELS.has(nameOf.get(iv.speaker) ?? ''))
     .map((iv) => ({ ...iv, speaker: nameOf.get(iv.speaker) ?? unresolvedLabel }))
     .filter((iv) => iv.end > iv.start);
 
@@ -400,7 +407,7 @@ export function eventsToEvidence(
     }
   }
 
-  const rosterSeen = rosters.length > 0;
+  const rosterSeen = rosters.some((r) => r.names.length > 0 && r.t >= 0 && r.t <= duration);
   return self === undefined
     ? { intervals, participants, remotes, rosterSeen }
     : { intervals, participants, self, remotes, rosterSeen };

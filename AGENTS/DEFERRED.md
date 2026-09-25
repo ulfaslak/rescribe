@@ -30,6 +30,12 @@ Remove an entry in the PR that resolves it.
 **Why deferred**: every recording so far had a microphone, and a no-mic call is a recording of other people only, which the human has not asked for.
 **Trigger**: a transcript of a no-mic recording shows the human's Meet name on display turns, or the calibration mode reports which attribute marks the self tile.
 
+### The roster carries names, not ids
+
+**What**: `roster` messages list display names (`src/content/meet.ts` `poll()` dedupes them), so two remote participants with the same display name are one roster entry, and `eventsToEvidence` folds a roster name onto the speaking id of that name: a silent namesake is neither a participant nor a second remote, and with one other person the one-remote rule labels the namesake's words with the shared name. Fix: the roster carries `{ id, name }` pairs and participants are counted by id.
+**Why deferred**: two people with the same display name in one call has not happened; the change touches the message type, the adapter, the e2e harness's injected rosters and the evidence layer.
+**Trigger**: a call with two participants of the same display name.
+
 ### Anchor platform stamps to the audio clock
 
 **What**: segment times will come from the 16 kHz sample count (the audio clock) while platform events are stamped with `Date.now()` (the wall clock). `src/lib/clock.ts` converts with one `startedAt` anchor, so any drift between the two clocks grows through the call: 30 ppm over 3 h is 0.32 s, the whole 0.2–0.4 s safe band of `MEET_LEAD`. Fix: the recorder logs `(Date.now(), sampleIndex)` anchors periodically and `clock.ts` interpolates between them.

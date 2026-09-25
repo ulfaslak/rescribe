@@ -712,3 +712,61 @@ test('the presenting status tile is never a participant, however long it stays',
   assert.deepEqual(out.participants, ['Ulf', 'Anna']);
   assert.deepEqual(out.remotes, ['Anna']);
 });
+
+test('a self tile that rejoined under a new id is one person', () => {
+  const events = [
+    sp(1000, 'me1', 'Ulf Aslak', true),
+    sp(7000, 'me1', 'Ulf Aslak', false),
+    sp(10_000, 'me2', 'Ulf Aslak', true),
+    sp(16_000, 'me2', 'Ulf Aslak', false),
+    sp(8000, 'p1', 'Anna', true),
+    sp(9000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [
+      { start: 1, end: 7 },
+      { start: 10, end: 16 },
+    ],
+  });
+  assert.deepEqual(spans(out.intervals), [['Anna', 8, 9]]);
+  assert.deepEqual(out.self, { name: 'Ulf Aslak', micShare: 1, seconds: 12 });
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.remotes, ['Anna']);
+});
+
+test('an empty roster, or one outside the recording, does not count as seen', () => {
+  const events = [sp(1000, 'p1', 'Anna', true), sp(3000, 'p1', 'Anna', false)];
+  assert.equal(
+    eventsToEvidence([roster(9000, []), ...events], T0, T0 + 10_000, noLead).rosterSeen,
+    false,
+  );
+  assert.equal(
+    eventsToEvidence([roster(-5000, ['Anna']), ...events], T0, T0 + 10_000, noLead).rosterSeen,
+    false,
+  );
+  assert.equal(
+    eventsToEvidence([roster(0, ['Anna']), ...events], T0, T0 + 10_000, noLead).rosterSeen,
+    true,
+  );
+});
+
+test("the presenting status tile's intervals are dropped, a remote's presentation keeps its label", () => {
+  const events = [
+    roster(0, ['You', 'Anna']),
+    sp(1000, 'x', 'You are presenting', true),
+    sp(3000, 'x', 'You are presenting', false),
+    sp(4000, 'ap', 'Anna (Presentation)', true),
+    sp(6000, 'ap', 'Anna (Presentation)', false),
+    sp(7000, 'p1', 'Anna', true),
+    sp(8000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(spans(out.intervals), [
+    ['Anna (Presentation)', 4, 6],
+    ['Anna', 7, 8],
+  ]);
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.remotes, ['Anna']);
+});

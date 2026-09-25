@@ -155,10 +155,13 @@ function start(id: string, tile: HTMLElement, at: number): void {
   send({ type: 'speaker', platform: PLATFORM, at, id, name, speaking: true });
 }
 
-function stop(id: string, at: number): void {
-  const name = speaking.get(id);
-  if (name === undefined) return;
+/** The stop carries the tile's name as resolved by now (a name span absent at the start, present
+ * later, still names the id: the evidence layer keeps the last name that is not the id). */
+function stop(id: string, at: number, tile?: HTMLElement): void {
+  const started = speaking.get(id);
+  if (started === undefined) return;
   speaking.delete(id);
+  const name = (tile && tileName(tile)) ?? started;
   send({ type: 'speaker', platform: PLATFORM, at, id, name, speaking: false });
 }
 
@@ -203,7 +206,7 @@ function poll(): void {
       stop(id, now);
       activity.forget(id);
     } else if (!activity.isActive(id, now)) {
-      stop(id, activity.activeUntil(id) ?? now);
+      stop(id, activity.activeUntil(id) ?? now, tile);
     }
   }
   for (const id of [...speaking.keys()]) if (!present.has(id)) speaking.delete(id);
