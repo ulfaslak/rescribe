@@ -5,9 +5,9 @@
 // folder handle, stored under `export:<id>` for the app tab (storage/handles.ts), and its one
 // prompt is the folder permission, requested inside its own click because the app tab, hidden
 // behind the call, cannot prompt. Closing the window decides nothing: a live recording goes on.
-// A save hands over to the processing tab (progress/): the decision is sent, the service worker
-// is asked for the tab, and this window closes without waiting for the answer. Discard is
-// answered here.
+// A save also opens the processing tab (progress/) at once, which follows the export and the
+// transcription; this window stays until the export answers, says where the video went, and
+// closes.
 import { formatDuration } from '../lib/format.ts';
 import type { DecideResult, Decision, Message, PendingInfo } from '../lib/messages.ts';
 import { send as post } from '../lib/messages.ts';
@@ -113,19 +113,12 @@ async function send(action: Decision): Promise<void> {
   if (!info || finished) return;
   finished = true;
   setEnabled(false);
-  if (action !== 'discard') {
-    // The processing tab takes over (the export may take a while, the transcription longer):
-    // the decision goes out, the tab is asked for, and this window closes without waiting for
-    // the answer; the tab shows the outcome, whatever it is. The decision is dispatched before
-    // the round trip for the tab returns, and a closed sender loses nothing: the app tab acts on
-    // the message, not on the answer.
-    status('Saving…');
-    void askApp({ type: 'decide', id: info.id, action });
-    await post({ type: 'open-progress', id: info.id });
-    await close();
-    return;
-  }
-  status('Discarding…');
+  status(action === 'discard' ? 'Discarding…' : 'Saving…');
+  // A save: the processing tab opens now and follows the export and the transcription; this
+  // window waits for the export's answer like a discard does, then closes. Not closed at once:
+  // tearing the window down within milliseconds of Save as… storing its folder handle crashes
+  // Chrome for Testing (ENVIRONMENT_NOTES), and the answer is worth its line here anyway.
+  if (action !== 'discard') void post({ type: 'open-progress', id: info.id });
   const res = await askApp<DecideResult>({ type: 'decide', id: info.id, action });
   if (!res) status('The Rescribe tab did not answer; it holds the recording.', true);
   else status(res.message, !res.ok);

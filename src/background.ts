@@ -195,9 +195,10 @@ async function openStartDialog(target: chrome.tabs.Tab): Promise<void> {
 
 /**
  * The processing tab for one recording, in the browser window the human is in, in front; an
- * open one is focused instead. The stop dialog that asked for it closes itself: a window removed
- * from here while its page is still busy trips Chromium's dangling-pointer check in the e2e
- * harness (Chrome for Testing), and the page knows better when it is done.
+ * open one is focused instead. The stop dialog that asked for it closes itself once the export
+ * answers; removing its window from here, or at once, crashed Chrome for Testing
+ * (ENVIRONMENT_NOTES § "Chrome for Testing crashes when a popup window is removed right after
+ * Save as…").
  */
 async function openProgressTab(id: string): Promise<void> {
   const url = `${PROGRESS_URL}?id=${encodeURIComponent(id)}`;

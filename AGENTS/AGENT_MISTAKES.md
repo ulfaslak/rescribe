@@ -8,9 +8,9 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
-### 2026-09-25 · #26 · a window torn down from another context while its page still had work in flight `[learned]`
+### 2026-09-25 · #26 · a window torn down while its page still had work in flight `[learned]`
 
-The service worker closed the stop dialog's window the moment it opened the processing tab, while the dialog page still had its `decide` message pending and, in the harness, Playwright's post-click work on it; Chrome for Testing crashed on a dangling pointer (ENVIRONMENT_NOTES § "Chrome for Testing crashes when the service worker removes a window under a page Playwright is driving"). The page knew when it was done; the worker did not. The hand-off now lives in the page: send the decision, ask for the tab, close itself (ARCHITECTURE § Runtime topology, the stop dialog row).
+To hand over to the processing tab at once, the stop dialog's window was closed the moment the decision was sent (first by the service worker, then by the page itself), with the page's `decide` message pending and, after Save as…, its folder handle just written; Chrome for Testing crashed on a dangling pointer, three runs in a row (ENVIRONMENT_NOTES § "Chrome for Testing crashes when a popup window is removed right after Save as…"). The second attempt moved the teardown to the page and changed nothing, which is what showed the timing, not the caller, was the problem. The window now closes on the decision's answer, as in #24, and the tab opens beside it (ARCHITECTURE § Runtime topology, the stop dialog row).
 
 ### 2026-09-25 · #26 · a page that stopped watching once it was pleased `[learned]`
 

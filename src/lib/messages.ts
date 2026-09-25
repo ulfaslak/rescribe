@@ -84,8 +84,7 @@ export type Message =
    * still runs and exports it to the folder from Settings; `save-as` the same into the folder
    * whose handle the sender stored under `export:<id>` first (handles cannot travel in a
    * message); `discard` stops it and deletes it. Answered with a DecideResult once the export (or
-   * the deletion) is done; the dialog reads the answer for a discard and closes at once for a
-   * save (the processing tab shows that outcome).
+   * the deletion) is done.
    */
   | { type: 'decide'; id: string; action: Decision }
   /**
