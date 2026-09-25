@@ -580,7 +580,7 @@ test('recording while transcribing: query-status stays idle for the toolbar, bot
   const progress = await waitForProgressPage(context, extensionId);
   expect(progress.url()).toBe(`${progressUrl(extensionId)}?id=${a!.id}`);
   await expect(progress.locator('#headline')).toHaveText(
-    /Transcribing|Downloading|Loading|Waiting/,
+    /Waiting to transcribe|Downloading the speech model|Loading the speech model|Transcribing (Ulf’s microphone|the call)|Working out who said what|Writing the transcript files/,
   );
   await progress.close();
   await escape(dialog);
@@ -645,6 +645,8 @@ test('an interrupted transcription whose media is gone fails instead of producin
   expect(after.error).toMatch(/no longer in Rescribe's storage/);
   expect(after.note).toContain('interrupted by a reload');
   await expect(page.locator('#record-status')).toContainText('Transcription failed');
+  // The failure names the channel in the human's words, never by its id (issue #31).
+  await expect(page.locator('#record-status')).not.toHaveText(/\b(mic|display|regions?)\b/);
   finish(net);
 });
 

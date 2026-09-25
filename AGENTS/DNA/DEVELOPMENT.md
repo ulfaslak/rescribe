@@ -13,12 +13,12 @@ Load `dist/` once in the human's browser (Brave): `brave://extensions` → Devel
 
 ## Commands
 
-| Command | What |
-|---|---|
-| `npm run check` | `tsc --noEmit`, strict. Must be clean. |
-| `npm test` | Node's test runner over `src/**/*.test.ts`. Runs TypeScript directly (Node 25 type stripping), which is why source imports use the `.ts` extension, and why `src/lib/` uses no TypeScript-only *runtime* syntax: no parameter properties, no `enum`, no `namespace`, no `import x = require()`. A file that uses them fails to load in `npm test` while `tsc` and esbuild stay green. |
-| `npm run e2e` | Builds, then Playwright drives the real extension in Chromium. See below. |
-| `npm run format` / `format:check` | Prettier. A PostToolUse hook runs `--check` on files you edit. |
+| Command                           | What                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run check`                   | `tsc --noEmit`, strict. Must be clean.                                                                                                                                                                                                                                                                                                                                                |
+| `npm test`                        | Node's test runner over `src/**/*.test.ts`. Runs TypeScript directly (Node 25 type stripping), which is why source imports use the `.ts` extension, and why `src/lib/` uses no TypeScript-only _runtime_ syntax: no parameter properties, no `enum`, no `namespace`, no `import x = require()`. A file that uses them fails to load in `npm test` while `tsc` and esbuild stay green. |
+| `npm run e2e`                     | Builds, then Playwright drives the real extension in Chromium. See below.                                                                                                                                                                                                                                                                                                             |
+| `npm run format` / `format:check` | Prettier. A PostToolUse hook runs `--check` on files you edit.                                                                                                                                                                                                                                                                                                                        |
 
 ## The e2e harness (`e2e/`)
 

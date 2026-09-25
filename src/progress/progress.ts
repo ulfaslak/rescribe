@@ -4,14 +4,15 @@
 // background. A view: the record from IndexedDB once a second (the truth on disk, readable with
 // the app tab closed) plus the app tab's live line for it (`query-progress`). Closing this tab
 // stops nothing; a closed app tab does, and this page says so and offers to open it.
-import type { PipelinePhase } from '../app/pipeline.ts';
 import type { ProgressInfo } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
+import { stepOf, type PipelineProgress } from '../lib/progress.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { rootFor } from '../storage/export.ts';
 import { getRecording } from '../storage/store.ts';
 import { appTab, askApp } from '../ui/apptab.ts';
+import { renderSteps } from '../ui/steps.ts';
 
 const REFRESH_MS = 1000;
 
@@ -29,18 +30,9 @@ interface View {
   headline: string;
   detail: string;
   kind: Kind;
-  /** 0–1 for a bar; `busy` without one shows an indeterminate bar. */
-  fraction?: number;
+  /** The pipeline's steps (ui/steps.ts) once it has a plan; `busy` without one shows a bar. */
+  progress?: PipelineProgress;
 }
-
-const PHASE_HEADLINE: Record<Exclude<PipelinePhase, 'done'>, string> = {
-  queued: 'Waiting to transcribe…',
-  download: 'Downloading the speech model (once)…',
-  load: 'Loading the speech model…',
-  transcribe: 'Transcribing…',
-  attribute: 'Attributing speakers…',
-  export: 'Saving the transcript…',
-};
 
 const PAUSED: View = {
   headline: 'Paused',
@@ -58,13 +50,18 @@ function view(
   if (!rec)
     return { headline: 'Gone', detail: 'This recording was discarded or deleted.', kind: 'error' };
   if (live?.saving) return { headline: 'Saving the video…', detail: '', kind: 'busy' };
-  if (live?.phase && live.phase !== 'done')
+  if (live?.progress && live.progress.phase !== 'done') {
+    const p = live.progress;
+    const at = stepOf(p);
     return {
-      headline: PHASE_HEADLINE[live.phase as Exclude<PipelinePhase, 'done'>] ?? 'Working…',
-      detail: live.message ?? '',
+      headline: p.message,
+      detail: at
+        ? `Step ${at.index} of ${at.count} · ${Math.round(p.overall * 100)}% of the whole job`
+        : '',
       kind: 'busy',
-      fraction: live.fraction,
+      ...(p.steps.length ? { progress: p } : {}),
     };
+  }
   switch (rec.status) {
     case 'recording':
       return { headline: 'Recording…', detail: 'Stop it from the toolbar button.', kind: 'busy' };
@@ -130,11 +127,14 @@ function render(rec: Recording | undefined, v: View, dest: string): void {
   const detail = $<HTMLElement>('#detail');
   detail.textContent = v.detail;
   detail.className = `detail${v.kind === 'error' ? ' error' : ''}`;
+  // The steps once the pipeline has a plan; an indeterminate bar for the export and the queue.
+  const steps = $<HTMLElement>('#steps');
+  steps.hidden = !v.progress;
+  if (v.progress) renderSteps(steps, v.progress, { vertical: true });
+  else steps.replaceChildren();
   const bar = $<HTMLElement>('#bar');
-  bar.hidden = v.kind !== 'busy';
-  bar.classList.toggle('indeterminate', v.fraction === undefined);
-  $<HTMLElement>('#bar-fill').style.width =
-    v.fraction === undefined ? '' : `${Math.round(v.fraction * 100)}%`;
+  bar.hidden = v.kind !== 'busy' || !!v.progress;
+  bar.classList.add('indeterminate');
   $<HTMLElement>('#destination').textContent = dest;
   document.body.dataset['kind'] = v.kind;
 }

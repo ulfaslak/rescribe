@@ -163,3 +163,24 @@ test('a postMessage that throws fails that job only and registers nothing', asyn
   assert.deepEqual(await p3, []);
   transcriber.dispose();
 });
+
+test('holdsModel: false before a result, true after one with these options, false after a restart or other options', async () => {
+  const { workers, transcriber, opts } = setup();
+  assert.equal(transcriber.holdsModel(opts), false);
+  const a = transcriber.transcribeChannel(pcm(), 'mic', opts);
+  assert.equal(transcriber.holdsModel(opts), false, 'a job posted is not a model loaded');
+  workers[0]!.reply({ type: 'result', jobId: 'job-1', segments: [], backend: 'wasm' });
+  await a;
+  assert.equal(transcriber.holdsModel(opts), true);
+  assert.equal(transcriber.holdsModel({ model: 'm', backend: 'webgpu' }), false);
+  // Another model ran: that is what the worker holds now.
+  const other = { model: 'n', backend: 'wasm' as const };
+  const b = transcriber.transcribeChannel(pcm(), 'display', other);
+  workers[0]!.reply({ type: 'result', jobId: 'job-2', segments: [], backend: 'wasm' });
+  await b;
+  assert.equal(transcriber.holdsModel(opts), false);
+  assert.equal(transcriber.holdsModel(other), true);
+  // The worker died while idle: whatever it held is gone with it.
+  workers[0]!.crash('gone');
+  assert.equal(transcriber.holdsModel(other), false);
+});

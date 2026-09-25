@@ -1,0 +1,148 @@
+/* The transcription progress widget (ui/steps.ts): the steps, one segmented bar, a foot line.
+   Colours come from the page's variables (--fg, --muted, --line, --accent, --card). */
+.steps {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.steps-headline {
+  color: var(--fg);
+}
+.steps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.step-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  display: inline-grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.step.done .step-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.step.running {
+  color: var(--accent);
+  font-weight: 600;
+}
+.step.running .step-mark {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: step-pulse 1.6s ease-in-out infinite;
+}
+.step-note {
+  font-weight: 400;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.steps-bar {
+  display: flex;
+  gap: 3px;
+  height: 6px;
+}
+.seg {
+  flex: 1 1 0;
+  min-width: 4px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.seg.done {
+  background: var(--accent);
+}
+.seg-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+.seg.indeterminate .seg-fill {
+  width: 30%;
+  animation: seg-slide 1.4s infinite ease-in-out;
+}
+.steps-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.steps-foot > span + span::before {
+  content: '·';
+  margin: 0 7px;
+}
+.steps-foot .steps-headline {
+  color: var(--fg);
+}
+
+/* The processing tab: the steps as a column, larger. */
+.steps.vertical {
+  gap: 12px;
+  font-size: 15px;
+}
+.steps.vertical .steps-list {
+  flex-direction: column;
+  gap: 8px;
+}
+.steps.vertical .step {
+  white-space: normal;
+  gap: 10px;
+}
+.steps.vertical .step-mark {
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+}
+.steps.vertical .steps-bar {
+  height: 8px;
+}
+.steps.vertical .steps-foot {
+  font-size: 14px;
+}
+
+@keyframes step-pulse {
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+@keyframes seg-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .step.running .step-mark,
+  .seg.indeterminate .seg-fill {
+    animation: none;
+  }
+  .seg.indeterminate .seg-fill {
+    width: 100%;
+    opacity: 0.4;
+  }
+}
