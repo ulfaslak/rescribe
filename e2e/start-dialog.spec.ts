@@ -23,6 +23,7 @@ import {
   seedExportFolder,
   serviceWorker,
   setSettings,
+  startDialogs,
   startDialogUrl,
   startRecording,
   toolbarClick,
@@ -254,4 +255,107 @@ test('the dialog for a tab that closed meanwhile offers nothing; a discarded rec
   await del.click();
   await expect(progress.locator('#headline')).toHaveText('Gone', { timeout: 10_000 });
   await progress.close();
+});
+
+test('on a web page the dialog is an overlay at the top right of that page, no window and no backdrop; the button toggles it, Escape closes it, Change… brings the Rescribe tab forward, and a Start after it closed is cancelled', async ({
+  context,
+  extensionId,
+}) => {
+  const { page } = await setUp(context, extensionId);
+  const worker = await serviceWorker(context);
+  // A web page with a strict CSP (no frames of its own, no scripts): the overlay still shows.
+  const SITE = 'https://rescribe.test/call';
+  await context.route('https://rescribe.test/**', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      headers: { 'content-security-policy': "default-src 'none'; frame-src 'none'" },
+      body: '<!doctype html><title>A web page</title><style>body{margin:0;height:3000px;background:#abc}</style><h1>page</h1>',
+    }),
+  );
+  const site = await context.newPage();
+  await site.setViewportSize({ width: 1200, height: 800 });
+  await site.goto(SITE);
+  const siteId = await worker.evaluate(
+    async (url) => (await chrome.tabs.query({ url }))[0]!.id!,
+    SITE,
+  );
+  const overlayFrame = () =>
+    site.frames().find((f) => f.url().startsWith(startDialogUrl(extensionId)));
+  const hostBox = () =>
+    site.evaluate(() => {
+      const el = document.getElementById('rescribe-start-overlay');
+      if (!el) return undefined;
+      const r = el.getBoundingClientRect();
+      return { top: r.top, right: r.right, width: r.width, height: r.height };
+    });
+
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(() => !!overlayFrame(), { timeout: 10_000 }).toBe(true);
+  const frame = overlayFrame()!;
+  expect(frame.url()).toBe(`${startDialogUrl(extensionId)}?tab=${siteId}`);
+  await expect(frame.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
+  await expect(frame.locator('#target-title')).toHaveText('A web page');
+  await expect(frame.locator('#target-host')).toHaveText('rescribe.test');
+  await expect(frame.locator('#folder')).toHaveText(EXPORT_DIR);
+  await expect(frame.locator('#start')).toBeEnabled();
+  expect((await frame.locator('#mic option').allTextContents()).at(-1)).toBe('No microphone');
+  // No window of its own, and nothing over the rest of the page: a box at the top right, as tall
+  // as the dialog.
+  expect(startDialogs(context, extensionId)).toHaveLength(0);
+  const box = (await hostBox())!;
+  expect(box.top).toBe(12);
+  expect(box.right).toBe(1200 - 12);
+  expect(box.width).toBeLessThan(400);
+  const mainHeight = await frame.evaluate(
+    () => document.querySelector('main')!.getBoundingClientRect().height,
+  );
+  await expect.poll(async () => Math.abs((await hostBox())!.height - mainHeight)).toBeLessThan(2);
+  await expect(site.locator('h1')).toBeVisible();
+  await site.screenshot({ path: 'screenshots/start-overlay.png' });
+
+  // The button again closes it; once more opens it; Escape closes it.
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(hostBox).toBeUndefined();
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(() => !!overlayFrame(), { timeout: 10_000 }).toBe(true);
+  await expect(overlayFrame()!.locator('body')).toHaveAttribute('data-ready', 'true');
+  await overlayFrame()!.locator('#start').focus();
+  await site.keyboard.press('Escape');
+  await expect.poll(hostBox).toBeUndefined();
+
+  // Change…: the picker is refused to a frame in another site's page; the Rescribe tab comes
+  // forward instead, and the overlay stays.
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(() => !!overlayFrame(), { timeout: 10_000 }).toBe(true);
+  const again = overlayFrame()!;
+  await expect(again.locator('body')).toHaveAttribute('data-ready', 'true');
+  await again.click('#change-folder');
+  await expect(again.locator('#status')).toContainText('Rescribe tab');
+  const appUrl = `chrome-extension://${extensionId}/app/app.html`;
+  await expect
+    .poll(() =>
+      worker.evaluate(async (url) => (await chrome.tabs.query({ url }))[0]!.active, appUrl),
+    )
+    .toBe(true);
+  expect(await hostBox()).toBeDefined();
+
+  // Start from the overlay reaches the capture (which a faked click cannot grant: the refusal
+  // shows in the overlay, not "Cancelled"); with the overlay closed, a Start is cancelled.
+  await again.click('#start');
+  await expect(again.locator('#status')).toContainText("Couldn't capture", { timeout: 15_000 });
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(hostBox).toBeUndefined();
+  const res = await worker.evaluate(
+    (tabId) =>
+      (
+        globalThis as unknown as {
+          rescribe: { startCapture: (m: object) => Promise<{ ok: boolean; error?: string }> };
+        }
+      ).rescribe.startCapture({ type: 'start-capture', tabId, mic: false }),
+    siteId,
+  );
+  expect(res.error).toContain('Cancelled');
+  await expect(page.locator('#status')).toHaveText('idle');
+  expect(await recordings(page)).toHaveLength(0);
+  await site.close();
 });

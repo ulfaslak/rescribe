@@ -33,6 +33,12 @@ body {
   background: var(--bg);
   color: var(--fg);
 }
+/* In a page as an overlay: as tall as the dialog, which tells its page how tall that is. */
+html.embedded,
+html.embedded body {
+  height: auto;
+  overflow: hidden;
+}
 main {
   display: grid;
   gap: 10px;

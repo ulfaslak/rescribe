@@ -3,6 +3,7 @@
 // See ARCHITECTURE § Runtime topology.
 import type { AppStatus, BadgeState, Message, StartResult } from './lib/messages.ts';
 import { platformOf } from './lib/platform.ts';
+import { mountStartOverlay, OVERLAY_ID, unmountStartOverlay } from './start/overlay.ts';
 
 const APP_URL = chrome.runtime.getURL('app/app.html');
 const STOP_URL = chrome.runtime.getURL('stop/stop.html');
@@ -10,7 +11,10 @@ const START_URL = chrome.runtime.getURL('start/start.html');
 const PROGRESS_URL = chrome.runtime.getURL('progress/progress.html');
 const READY_TIMEOUT_MS = 5000;
 const RELOAD_TIMEOUT_MS = 8000;
-/** The dialog windows (stop/stop.html, start/start.html): small, near the top right of the browser window. */
+/**
+ * The dialog windows (stop/stop.html, and start/start.html where a page cannot host it): small,
+ * near the top right of the browser window.
+ */
 const STOP_WIDTH = 420;
 const STOP_HEIGHT = 300;
 const START_WIDTH = 400;
@@ -176,6 +180,39 @@ async function closeDialogs(url: string): Promise<string[]> {
 const startUrlFor = (tabId: number): string => `${START_URL}?tab=${tabId}`;
 
 /**
+ * The start dialogs open right now, wherever they are: an overlay's iframe in a page (`frameId`
+ * above 0) or the fallback popup window's page (`frameId` 0). Asked of Chrome, since chrome.tabs
+ * does not list frames and this worker forgets between events.
+ */
+async function startDialogs(): Promise<chrome.runtime.ExtensionContext[]> {
+  const contexts = await chrome.runtime
+    .getContexts({ contextTypes: [chrome.runtime.ContextType.TAB] })
+    .catch(() => []);
+  return contexts.filter((c) => c.documentUrl?.startsWith(START_URL));
+}
+
+/**
+ * Close every start dialog: an overlay is taken out of its page, a fallback window as in
+ * `closeDialogs`. Returns the closed dialogs' URLs.
+ */
+async function closeStartDialogs(): Promise<string[]> {
+  const closed: string[] = [];
+  for (const c of await startDialogs()) {
+    if (c.frameId > 0 && c.tabId >= 0)
+      await chrome.scripting
+        .executeScript({
+          target: { tabId: c.tabId },
+          func: unmountStartOverlay,
+          args: [OVERLAY_ID],
+        })
+        .catch(() => undefined);
+    if (c.documentUrl) closed.push(c.documentUrl);
+  }
+  closed.push(...(await closeDialogs(START_URL)));
+  return [...new Set(closed)];
+}
+
+/**
  * The stop dialog. Opened on a toolbar click while `recording` or `stopped`, and on the app
  * tab's `ask-to-save` (the call ended, the share ended). One at a time: an open one is focused
  * instead.
@@ -194,12 +231,25 @@ async function openStopDialog(): Promise<void> {
 }
 
 /**
- * The start dialog, for the tab the button was clicked on (the dialog reads the tab by id). One
- * at a time: `onToggle` closes an open one before it gets here. The app tab is opened, or left,
- * in the background meanwhile: Start needs it, and its cold start takes a moment.
+ * The start dialog, for the tab the button was clicked on (the dialog reads the tab by id): an
+ * overlay at the top right of that very page (start/overlay.ts), injected on the click's
+ * activeTab grant. A page that cannot host it (the browser's own pages, the Web Store, file://
+ * without file access, another extension's page) gets the popup window instead. One at a time:
+ * `onToggle` closes an open one before it gets here. The app tab is opened, or left, in the
+ * background meanwhile: Start needs it, and its cold start takes a moment.
  */
 async function openStartDialog(target: chrome.tabs.Tab): Promise<void> {
-  await openDialogWindow(startUrlFor(target.id!), START_WIDTH, START_HEIGHT);
+  const url = startUrlFor(target.id!);
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: target.id! },
+      func: mountStartOverlay,
+      args: [url, OVERLAY_ID],
+    });
+  } catch (err) {
+    console.info('[rescribe] no overlay on this page; the start window instead', err);
+    await openDialogWindow(url, START_WIDTH, START_HEIGHT);
+  }
   void ensureAppTab(false);
 }
 
@@ -269,7 +319,7 @@ async function setBadge(state: BadgeState): Promise<void> {
  */
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
   const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
-  const closed = await closeDialogs(START_URL);
+  const closed = await closeStartDialogs();
   const status = await queryStatus();
   if (status === 'recording' || (status === 'stopped' && !target)) {
     await openStopDialog();
@@ -329,8 +379,9 @@ async function startCapture(
   const app = await ensureAppTab(false);
   if (app?.id === undefined)
     return { ok: false, error: 'The Rescribe tab did not answer. Reload it, then try again.' };
-  if (!(await pagesAt(startUrlFor(target.id))).length)
-    return { ok: false, error: 'Cancelled: the start window was closed.' };
+  const url = startUrlFor(target.id);
+  if (!(await startDialogs()).some((c) => c.documentUrl === url))
+    return { ok: false, error: 'Cancelled: the start dialog was closed.' };
   let streamId: string;
   try {
     streamId = await chrome.tabCapture.getMediaStreamId({

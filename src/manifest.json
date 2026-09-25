@@ -22,7 +22,13 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["storage", "tabs", "tabCapture", "unlimitedStorage"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "tabCapture", "unlimitedStorage"],
+  "web_accessible_resources": [
+    {
+      "resources": ["start/start.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],

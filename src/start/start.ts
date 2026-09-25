@@ -1,10 +1,14 @@
-// The start dialog: a small popup window the service worker opens on a toolbar click while
-// nothing is being recorded (background.ts `onToggle`). What will be recorded (the tab the
+// The start dialog: an overlay at the top right of the page the toolbar button was clicked on
+// (an iframe the service worker injects, start/overlay.ts), or a small popup window where a page
+// cannot host one; the service worker opens it on a toolbar click while nothing is being
+// recorded (background.ts `onToggle`). What will be recorded (the tab the
 // button was clicked on), which microphone, where it will be saved, and one Start Capture
 // button. It starts nothing by itself: Start sends `start-capture` to the service worker, which
 // holds the tab-capture grant from the click, and the window closes on its answer. The toolbar
 // button again, or Escape, closes it and starts nothing. Its writes: the microphone choice into
-// Settings, and the Settings folder handle from Change… (a picker inside its own click).
+// Settings, and the Settings folder handle from Change… (a picker inside its own click; in the
+// overlay Chrome refuses pickers to a frame inside another site's page, so Change… there brings
+// the Rescribe tab forward, whose Settings pick the folder).
 import type { Message, PendingInfo, ProgressInfo, StartResult } from '../lib/messages.ts';
 import { stepOf } from '../lib/progress.ts';
 import { send } from '../lib/messages.ts';
@@ -24,6 +28,26 @@ const $ = <T extends Element>(sel: string): T => {
 const tabId = Number(new URLSearchParams(location.search).get('tab'));
 const BACKGROUND_MS = 1000;
 let starting = false;
+/** In a page as an overlay (an iframe), not a window of its own. */
+const embedded = window.top !== window;
+
+/** Close the dialog: the overlay asks its page to take it out; the window closes itself. */
+async function closeDialog(): Promise<void> {
+  if (embedded) window.parent.postMessage({ rescribe: 'close' }, '*');
+  else await closeThisWindow();
+}
+
+/** The overlay's iframe is as tall as the dialog: its page is told on every change. */
+function reportSize(): void {
+  const main = $<HTMLElement>('main');
+  const post = (): void =>
+    window.parent.postMessage(
+      { rescribe: 'size', height: main.getBoundingClientRect().height },
+      '*',
+    );
+  new ResizeObserver(post).observe(main);
+  post();
+}
 
 function status(text: string, isError = false): void {
   const el = $<HTMLElement>('#status');
@@ -60,8 +84,17 @@ async function describeFolder(): Promise<void> {
   $<HTMLElement>('#folder').title = root ? root.name : 'Save asks for one when the recording ends';
 }
 
-/** Change…: the Settings folder, picked here (the app tab, hidden, cannot); the app tab is told. */
+/**
+ * Change…: the Settings folder, picked here (the app tab, hidden, cannot); the app tab is told.
+ * In the overlay the picker is refused, so the Rescribe tab comes forward to pick it in Settings;
+ * the folder line follows when the human is back on this page (`visibilitychange`).
+ */
 async function changeFolder(): Promise<void> {
+  if (embedded) {
+    status('Choose the folder under Settings in the Rescribe tab, then come back here.');
+    void send({ type: 'focus-app' });
+    return;
+  }
   try {
     const handle = await window.showDirectoryPicker({ id: 'rescribe-export', mode: 'readwrite' });
     await setExportRoot(handle);
@@ -136,7 +169,7 @@ async function onStart(): Promise<void> {
     micDeviceId: choice.micDeviceId,
   } satisfies Message)) as StartResult | undefined;
   if (res?.ok) {
-    await closeThisWindow();
+    await closeDialog();
     return;
   }
   status(res?.error ?? 'Rescribe did not answer; try again.', true);
@@ -149,8 +182,15 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>('#change-folder').addEventListener('click', () => void changeFolder());
   $<HTMLSelectElement>('#mic').addEventListener('change', () => void onMicChange());
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') void closeThisWindow();
+    if (e.key === 'Escape') void closeDialog();
   });
+  if (embedded) {
+    document.documentElement.classList.add('embedded');
+    reportSize();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void describeFolder();
+    });
+  }
   navigator.mediaDevices.addEventListener('devicechange', () => void fillMics());
   const ok = await describeTarget();
   await Promise.all([fillMics(), describeFolder()]);
