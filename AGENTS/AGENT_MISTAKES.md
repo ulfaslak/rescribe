@@ -8,6 +8,14 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · in-page start dialog · a web-accessible page trusted by its URL `[learned]`
+
+Making `start/start.html` web-accessible for the overlay also let any site frame it, and the service worker judged "is the dialog still open" by the URL of any frame it could see, so a site's own frame could start a capture of a tab whose click grant was still alive. The author tested only frames Rescribe itself injected; the adversarial review caught it. Fixed with a one-time key per dialog (INVARIANTS § "Only a start dialog the service worker opened can start a capture").
+
+### 2026-09-25 · in-page start dialog · a probe run under the test's permissions, read as the product's `[learned]`
+
+The storage probe for the overlay's iframe (IndexedDB not partitioned by the host page) ran with `host_permissions: <all_urls>`, which the shipping manifest does not have, and the note claimed the result without saying so; the fixture comment also claimed file:// stayed out of reach, which the first full e2e run disproved. The review caught the first, the suite the second. The overlay now takes its folder and microphones from the app tab, and ENVIRONMENT_NOTES § "An extension iframe inside a web page" names the probe's permissions.
+
 ### 2026-09-25 · #31 · a time left built on a number the job had not measured `[learned]`
 
 The first estimate of the time left charged each waiting channel with the running channel's voiced seconds, so during the human's microphone (a few minutes of speech on a call) the widget promised "under a minute left" for a job with the whole call still to go. Found by the adversarial review. Codified in `src/lib/progress.ts` `remaining` (the estimate covers the running channel alone while another waits, and says so: "on this step"; the whole job only once the last channel runs), pinned by `progress.test.ts`. Rule: an estimate may only extend over what has been measured; a guess for the rest is a wrong number with a bar under it.

@@ -62,11 +62,12 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 **Steps**:
 
 1. On an ordinary site (a news page), click the toolbar button. A Rescribe panel appears inside the page, 12 px from its top right, the page not dimmed and still scrollable beside it; no separate window. The button again closes it; again, then Escape, closes it.
-2. In a Meet call (or its lobby), click the button: the same panel over Meet's top right, with the call's title, your microphones by name, and **Start Capture**. Start: the panel goes, the badge shows `REC`.
+2. In a Meet call (or its lobby), click the button: the same panel over Meet's top right, with the call's title, **Save to** showing your folder from Settings (not "No folder chosen yet"), your microphones by name with the one you last picked selected, and **Start Capture**. Pick a microphone that is not the system default, Start: the panel goes, the badge shows `REC`. Record 10 s, Save.
+   Then: the recording's row names the microphone you picked as its mic source, and the first second of the saved video does not show the panel.
 3. Open it on `brave://extensions` (or a new tab page): the small window opens instead, as before.
 4. In the panel click **Change…**: the Rescribe tab comes forward; pick a folder under Settings, go back to the page: the panel shows the new folder.
    **Success criteria**: every step as described.
-   **On failure**: the window instead of the panel on an ordinary site: the injection failed; the service worker's console (`brave://extensions` → service worker) logs `no overlay on this page` with the reason; file it. A blank or refused panel on Meet: Meet's page blocked the frame; file the console error from the Meet tab.
+   **On failure**: the row naming the system default instead of the picked microphone: the app tab's device ids and the panel's differ; file it with both names. The panel in the video's first frames: the `hide` before Start did not land before the capture; file it. The window instead of the panel on an ordinary site: the injection failed; the service worker's console (`brave://extensions` → service worker) logs `no overlay on this page` with the reason; file it. A blank or refused panel on Meet: Meet's page blocked the frame; file the console error from the Meet tab.
 
 ### The start dialog and the processing tab in Brave
 

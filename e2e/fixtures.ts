@@ -20,9 +20,10 @@ export const CAPTURE_TARGET_TITLE = 'Rescribe Capture Target';
  * page. A real toolbar click grants activeTab on the clicked tab, which the start dialog's overlay
  * is injected on; the click the harness fakes through the service worker grants nothing, so
  * without this every page would get the fallback window (ENVIRONMENT_NOTES § "The faked toolbar
- * click has no activeTab grant"). file:// stays out of reach (Chrome's file access is off), so a
- * click on the file:// capture target still opens the window: both paths are exercised. The
- * path is fixed, so the extension id (and the model cache under it) survives between runs.
+ * click has no activeTab grant"). It reaches the file:// capture target too (an extension loaded
+ * with --load-extension has file access), so a test that wants the fallback window clicks on a
+ * chrome:// tab. The path is fixed, so the extension id (and the model cache under it) survives
+ * between runs.
  */
 function testBuild(): string {
   const dist = path.resolve('dist');
