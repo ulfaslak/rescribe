@@ -307,38 +307,88 @@ export async function endDisplayTrack(page: Page): Promise<void> {
   });
 }
 
-// --- The service worker and the stop dialog -----------------------------------------------------
+// --- The service worker, the dialog windows and the processing tab ---------------------------
 export async function serviceWorker(context: BrowserContext): Promise<Worker> {
   return context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
 }
 
 export const stopDialogUrl = (extensionId: string): string =>
   `chrome-extension://${extensionId}/stop/stop.html`;
+export const startDialogUrl = (extensionId: string): string =>
+  `chrome-extension://${extensionId}/start/start.html`;
+export const progressUrl = (extensionId: string): string =>
+  `chrome-extension://${extensionId}/progress/progress.html`;
 
-/** The stop dialog pages open right now (the popup window's page, in the same context). */
-export function stopDialogs(context: BrowserContext, extensionId: string): Page[] {
-  return context.pages().filter((p) => p.url() === stopDialogUrl(extensionId));
+/** The pages open right now under `url` (a dialog window's page, a processing tab), query aside. */
+export function pagesAt(context: BrowserContext, url: string): Page[] {
+  return context.pages().filter((p) => p.url().startsWith(url));
 }
+export const stopDialogs = (context: BrowserContext, extensionId: string): Page[] =>
+  pagesAt(context, stopDialogUrl(extensionId));
+export const startDialogs = (context: BrowserContext, extensionId: string): Page[] =>
+  pagesAt(context, startDialogUrl(extensionId));
+export const progressPages = (context: BrowserContext, extensionId: string): Page[] =>
+  pagesAt(context, progressUrl(extensionId));
 
-/** The next stop dialog to open, or one already open. */
-export async function waitForStopDialog(
+/** The next page to open under `url`, or one already open, loaded. */
+export async function waitForPageAt(
   context: BrowserContext,
-  extensionId: string,
+  url: string,
   timeout = 10_000,
 ): Promise<Page> {
-  const open = stopDialogs(context, extensionId)[0];
+  const open = pagesAt(context, url)[0];
   if (open) return open;
   const page = await context.waitForEvent('page', {
-    predicate: (p) => p.url() === stopDialogUrl(extensionId),
+    predicate: (p) => p.url().startsWith(url),
     timeout,
   });
   await page.waitForLoadState();
   return page;
 }
 
+/** The next stop dialog to open, or one already open. */
+export const waitForStopDialog = (
+  context: BrowserContext,
+  extensionId: string,
+  timeout?: number,
+): Promise<Page> => waitForPageAt(context, stopDialogUrl(extensionId), timeout);
+
+/** The next start dialog to open, or one already open, with its target, microphones and folder shown. */
+export async function waitForStartDialog(
+  context: BrowserContext,
+  extensionId: string,
+  timeout?: number,
+): Promise<Page> {
+  const page = await waitForPageAt(context, startDialogUrl(extensionId), timeout);
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
+  return page;
+}
+
+/** The next processing tab to open, or one already open. */
+export const waitForProgressPage = (
+  context: BrowserContext,
+  extensionId: string,
+  timeout?: number,
+): Promise<Page> => waitForPageAt(context, progressUrl(extensionId), timeout);
+
+/** Where a tab sits: its window and whether it is the active one there. */
+export function tabPlacement(
+  worker: Worker,
+  url: string,
+): Promise<{ active: boolean; windowId: number } | undefined> {
+  return worker.evaluate(async (url) => {
+    const t = (await chrome.tabs.query({})).find((t) => t.url === url);
+    return t ? { active: t.active, windowId: t.windowId } : undefined;
+  }, url);
+}
+
+export function windowOfTab(worker: Worker, tabId: number): Promise<number> {
+  return worker.evaluate(async (id) => (await chrome.tabs.get(id)).windowId, tabId);
+}
+
 /**
- * Escape in the stop dialog closes its window from the keydown, so the press itself can report
- * a closed target; that it closed is what the caller asserts afterwards.
+ * Escape in a dialog closes its window from the keydown, so the press itself can report a
+ * closed target; that it closed is what the caller asserts afterwards.
  */
 export async function escape(dialog: Page): Promise<void> {
   await dialog.keyboard.press('Escape').catch(() => undefined);
@@ -346,9 +396,10 @@ export async function escape(dialog: Page): Promise<void> {
 }
 
 /**
- * The toolbar click, through the service worker's hook, with a Tab-shaped object. Without a
- * real click `getMediaStreamId` refuses the target, so a start fails; the routing (open the app
- * tab, focus it, open the stop dialog) is what this exercises.
+ * The toolbar click, through the service worker's hook, with a Tab-shaped object. It opens the
+ * start dialog (or the stop dialog while recording); a Start from that dialog then fails, since
+ * without a real click `getMediaStreamId` refuses the target. The routing (which dialog, where
+ * the app tab lands) is what this exercises.
  */
 export async function toolbarClick(
   worker: Worker,

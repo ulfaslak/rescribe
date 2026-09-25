@@ -7,7 +7,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
-import { escape, stopDialogs, waitForStopDialog } from './helpers.ts';
+import {
+  escape,
+  startDialogs,
+  stopDialogs,
+  waitForStartDialog,
+  waitForStopDialog,
+  windowOfTab,
+} from './helpers.ts';
 import { SETTINGS_VERSION, type Recording } from '../src/lib/types.ts';
 import { exportVideoName } from '../src/recorder/recorder.ts';
 
@@ -653,15 +660,15 @@ test('a lost video chunk fails the recording at once and releases everything', a
   expect(next!.status).toBe('recorded');
 });
 
-test('toolbar click: a Meet tab keeps the app tab in the background, any other tab and a failed start bring it forward', async ({
+test('toolbar click: the start dialog opens for the clicked tab and the app tab is opened pinned in the background, on a Meet tab and on any other; Start without the real click fails in the dialog; the button and Escape close it; while recording the click opens the stop dialog', async ({
   context,
   extensionId,
 }) => {
   // The real toolbar click cannot be made here, and without it getMediaStreamId refuses the
-  // target ("not been invoked"), so every start below fails after the routing decision. What is
-  // exercised: the service worker's routing (`onToggle` with a Tab-shaped object) and the app
-  // tab's answer to a start it cannot honour. A successful start staying in the background is
-  // the live check.
+  // target ("not been invoked"), so every Start below fails after the routing decision. What is
+  // exercised: the service worker's routing (`onToggle` with a Tab-shaped object), where the app
+  // tab lands, and the dialog's answer to a Start it cannot honour. A successful start staying
+  // in the background is the live check.
   const target = await openTarget(context);
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
   const appUrl = `chrome-extension://${extensionId}/app/app.html`;
@@ -680,7 +687,7 @@ test('toolbar click: a Meet tab keeps the app tab in the background, any other t
     );
     return (await chrome.tabs.query({ title }))[0]!.id!;
   }, CAPTURE_TARGET_TITLE);
-  // The app tabs created (the stop dialog's popup window has a tab of its own, not counted).
+  // The app tabs created (a dialog's popup window has a tab of its own, not counted).
   const created = async () =>
     (await worker.evaluate(() => (globalThis as unknown as Hooked).__created)).filter(
       (t) => t.url === appUrl,
@@ -694,48 +701,80 @@ test('toolbar click: a Meet tab keeps the app tab in the background, any other t
   const activeTab = (id: number) =>
     worker.evaluate(async (id) => (await chrome.tabs.get(id)).active, id);
   const nextAppPage = () => context.waitForEvent('page', { predicate: (p) => p.url() === appUrl });
+  const browserWindow = await windowOfTab(worker, targetId);
 
-  // A Meet tab: the app tab is created pinned in the background...
+  // A Meet tab: the start dialog opens for it, the app tab is created pinned in the background,
+  // in the browser window (not the dialog's)...
   let appPage = nextAppPage();
   await toggle('https://meet.google.com/abc-defg-hij');
+  const dialog = await waitForStartDialog(context, extensionId);
+  await expect(dialog.locator('#target-title')).toHaveText(CAPTURE_TARGET_TITLE);
+  await expect(dialog.locator('#start')).toBeEnabled();
   let app = await appPage;
   await expect(app.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await setSettings(app, { autoTranscribe: false });
   let made = await created();
   expect(made).toHaveLength(1);
   expect(made[0]).toMatchObject({ active: false, pinned: true });
-  // ...and the start that could not get a stream id brings it forward, with the reason.
-  await expect(app.locator('#record-status')).toContainText("Couldn't capture that tab (");
-  await expect.poll(() => activeTab(made[0]!.id), { timeout: 5000 }).toBe(true);
+  expect(await windowOfTab(worker, made[0]!.id)).toBe(browserWindow);
+  // ...and a Start that could not get a stream id says so in the dialog and leaves the app tab
+  // where it is.
+  await dialog.click('#start');
+  await expect(dialog.locator('#status')).toContainText("Couldn't capture that tab (", {
+    timeout: 15_000,
+  });
+  await expect(dialog.locator('#start')).toBeEnabled();
+  expect(dialog.isClosed()).toBe(false);
+  expect(await activeTab(made[0]!.id)).toBe(false);
   await expect(app.locator('#status')).toHaveText('idle');
   const before = (await recordings(app)).length;
   expect(await app.evaluate(() => chrome.action.getBadgeText({}))).toBe('');
+  // The button again closes the dialog and opens nothing; the next click opens it again; Escape
+  // closes it.
+  await toggle('https://meet.google.com/abc-defg-hij');
+  await expect.poll(() => dialog.isClosed(), { timeout: 5000 }).toBe(true);
+  await app.waitForTimeout(500);
+  expect(startDialogs(context, extensionId)).toHaveLength(0);
+  expect(stopDialogs(context, extensionId)).toHaveLength(0);
+  await toggle('https://meet.google.com/abc-defg-hij');
+  await escape(await waitForStartDialog(context, extensionId));
+  expect(await created()).toHaveLength(1);
 
-  // Any other tab: the app tab comes forward at once (created active here).
+  // Any other tab: the same; the app tab stays in the background there too (the dialog is the
+  // interface).
   await worker.evaluate((id) => chrome.tabs.remove(id), made[0]!.id);
+  await expect
+    .poll(() => worker.evaluate(async (url) => (await chrome.tabs.query({ url })).length, appUrl), {
+      timeout: 5000,
+    })
+    .toBe(0);
   appPage = nextAppPage();
   await toggle('https://www.youtube.com/watch?v=x');
+  const again = await waitForStartDialog(context, extensionId);
   app = await appPage;
   await expect(app.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   made = await created();
   expect(made).toHaveLength(2);
-  expect(made[1]).toMatchObject({ active: true, pinned: true });
-  await expect(app.locator('#record-status')).toContainText("Couldn't capture that tab (");
+  expect(made[1]).toMatchObject({ active: false, pinned: true });
+  expect(await windowOfTab(worker, made[1]!.id)).toBe(browserWindow);
+  await escape(again);
   expect(await recordings(app)).toHaveLength(before);
 
-  // While recording, a click on any tab opens the stop dialog, leaves the app tab where it is
-  // and starts nothing; closing the dialog keeps recording (e2e/stop-dialog.spec.ts has the rest).
+  // While recording, a click on any tab opens the stop dialog, not the start dialog, leaves the
+  // app tab where it is and starts nothing; closing the dialog keeps recording
+  // (e2e/stop-dialog.spec.ts has the rest).
   await app.click('#record-screen');
   await expect(app.locator('#status')).toHaveText('recording', { timeout: 15_000 });
   await worker.evaluate((id) => chrome.tabs.update(id, { active: true }), targetId);
   expect(await activeTab(made[1]!.id)).toBe(false);
   await toggle('https://meet.google.com/abc-defg-hij');
-  const dialog = await waitForStopDialog(context, extensionId);
-  await expect(dialog.locator('#state')).toHaveText('recording');
+  const stop = await waitForStopDialog(context, extensionId);
+  await expect(stop.locator('#state')).toHaveText('recording');
+  expect(startDialogs(context, extensionId)).toHaveLength(0);
   expect(await activeTab(made[1]!.id)).toBe(false);
   await expect(app.locator('#status')).toHaveText('recording');
   expect(await created()).toHaveLength(2);
-  await escape(dialog);
+  await escape(stop);
   await expect(app.locator('#status')).toHaveText('recording');
   await app.click('#stop');
   await expect(app.locator('#status')).toHaveText('idle', { timeout: 30_000 });

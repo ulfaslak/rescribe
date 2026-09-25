@@ -8,6 +8,14 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #26 · a window torn down while its page still had work in flight `[learned]`
+
+To hand over to the processing tab at once, the stop dialog's window was closed the moment the decision was sent (first by the service worker, then by the page itself), with the page's `decide` message pending and, after Save as…, its folder handle just written; Chrome for Testing crashed on a dangling pointer, three runs in a row (ENVIRONMENT_NOTES § "Chrome for Testing crashes when a popup window is removed right after Save as…"). The second attempt moved the teardown to the page and changed nothing, which is what showed the timing, not the caller, was the problem. The window now closes on the decision's answer, as in #24, and the tab opens beside it (ARCHITECTURE § Runtime topology, the stop dialog row).
+
+### 2026-09-25 · #26 · a page that stopped watching once it was pleased `[learned]`
+
+The processing tab stopped polling as soon as it showed `Saved` or `Done`, so a delete or a Save now made in Rescribe afterwards never reached it: the first e2e run found it still saying `Saved` for a recording that was gone. A terminal state of the pipeline was taken for a terminal state of the record. Fixed by polling until the record itself is gone (ARCHITECTURE § Runtime topology, the processing tab row: "polled until the record is gone"); e2e/start-dialog.spec.ts "a discarded recording shows as gone in its processing tab" pins it.
+
 ### 2026-09-25 · #25 · a negative control supplied by the environment, not by the test `[learned]`
 
 The header test derived its expected string from the path template in the runner's zone, so on a UTC machine the UTC bug and the fix print the same header and the test passes either way; the negative control was run under `TZ=Europe/Copenhagen` on the author's machine and taken as proof. Found by the adversarial review. Codified in `src/lib/transcript.test.ts` (the test sets `process.env.TZ` itself and asserts the literal), with the PR's test plan running the suite in four zones. Rule: a negative control counts only when the condition that makes the bug visible is set inside the test; an expectation computed from the same inputs as the code under test proves nothing where the two coincide.

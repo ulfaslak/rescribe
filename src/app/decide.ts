@@ -38,6 +38,11 @@ export function isDeciding(id: string): boolean {
   return deciding.has(id);
 }
 
+/** The recordings with a decision in progress, in the order they started. */
+export function decidingIds(): string[] {
+  return [...deciding];
+}
+
 function emit(ev: DecisionEvent): void {
   for (const l of listeners) {
     try {

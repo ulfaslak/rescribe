@@ -72,22 +72,42 @@ export async function captureDisplay(frameRate: FrameRate): Promise<Captured> {
   };
 }
 
-/** The microphone, or undefined when denied or absent (the recording goes on without it). */
-export async function captureMic(): Promise<Captured | undefined> {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+/**
+ * The microphone, or undefined when denied or absent (the recording goes on without it). With a
+ * `deviceId` (Settings, chosen in the start dialog) that device; when it is gone (unplugged since
+ * it was chosen), the default device rather than none: the recording's source label says which
+ * one it got.
+ */
+export async function captureMic(deviceId?: string): Promise<Captured | undefined> {
+  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  const open = (id?: string): Promise<MediaStream> =>
+    navigator.mediaDevices.getUserMedia({
+      audio: id ? { ...audio, deviceId: { exact: id } } : audio,
     });
-    const track = stream.getAudioTracks()[0];
-    return {
-      stream,
-      source: { channel: 'mic', kind: 'microphone', label: track?.label || undefined },
-      needsPlayback: false,
-    };
+  let stream: MediaStream;
+  try {
+    stream = await open(deviceId || undefined);
   } catch (err) {
-    console.warn('[rescribe] microphone unavailable', err);
-    return undefined;
+    // Only a device that is gone falls back; a denied prompt must not prompt a second time.
+    const name = (err as DOMException).name;
+    if (!deviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) {
+      console.warn('[rescribe] microphone unavailable', err);
+      return undefined;
+    }
+    console.warn('[rescribe] the chosen microphone is gone; the default one instead', err);
+    try {
+      stream = await open();
+    } catch (err2) {
+      console.warn('[rescribe] microphone unavailable', err2);
+      return undefined;
+    }
   }
+  const track = stream.getAudioTracks()[0];
+  return {
+    stream,
+    source: { channel: 'mic', kind: 'microphone', label: track?.label || undefined },
+    needsPlayback: false,
+  };
 }
 
 export function stopAll(stream: MediaStream): void {

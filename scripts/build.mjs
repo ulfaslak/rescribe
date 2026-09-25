@@ -21,8 +21,9 @@ mkdirSync(OUT, { recursive: true });
 
 // --- Static files -------------------------------------------------------------------------
 copyFileSync('src/manifest.json', join(OUT, 'manifest.json'));
-// The extension's pages: the app tab and the stop dialog, each a directory of html/css + one bundle.
-for (const page of ['app', 'stop']) {
+// The extension's pages: the app tab, the two dialogs and the processing tab, each a directory of
+// html/css + one bundle.
+for (const page of ['app', 'stop', 'start', 'progress']) {
   mkdirSync(join(OUT, page), { recursive: true });
   for (const f of readdirSync(join('src', page)).filter((f) => /\.(html|css|svg|png)$/.test(f))) {
     copyFileSync(join('src', page, f), join(OUT, page, f));
@@ -61,6 +62,8 @@ const esm = await esbuild.context({
     'src/background.ts',
     'src/app/app.ts',
     'src/stop/stop.ts',
+    'src/start/start.ts',
+    'src/progress/progress.ts',
     ...globSync('src/workers/*.ts').filter((f) => !f.endsWith('.test.ts')),
     ...globSync('src/**/*.worklet.ts'),
   ],
