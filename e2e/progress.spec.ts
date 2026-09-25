@@ -126,23 +126,24 @@ test("the three views show the job as steps in the human's words, in order, with
   while (Date.now() < deadline) {
     const current = (await recordings(page)).find((r) => r.id === id);
     status = current?.status ?? 'gone';
-    const [rowText, line, tabHeadline, tabDetail, tabSteps] = await Promise.all([
-      text(page, widgetSel),
-      text(page, '#record-status'),
+    // The row and the line in one read, so a screenshot's name says what it shows.
+    const { rowText, line, rowStep, phase } = await page.evaluate((sel) => {
+      const w = document.querySelector(`${sel} .steps`) as HTMLElement | null;
+      const inner = (el: Element | null) => (el as HTMLElement | null)?.innerText ?? '';
+      return {
+        rowText: inner(document.querySelector(sel)),
+        line: inner(document.querySelector('#record-status')),
+        rowStep: w?.querySelector('.step.running .step-label')?.textContent ?? '',
+        phase: w?.dataset['phase'] ?? '',
+      };
+    }, widgetSel);
+    const [tabHeadline, tabDetail, tabSteps] = await Promise.all([
       text(tab, '#headline'),
       text(tab, '#detail'),
       text(tab, '#steps'),
     ]);
     for (const t of [rowText, line, tabHeadline, tabDetail, tabSteps])
       expect(t, `implementation word in: ${t}`).not.toMatch(FORBIDDEN);
-    // The row's state in one read, so a phase and a step never come from two events.
-    const { rowStep, phase } = await page.evaluate((id) => {
-      const w = document.querySelector(`.recording-item[data-id="${id}"] .progress .steps`);
-      return {
-        rowStep: w?.querySelector('.step.running .step-label')?.textContent ?? '',
-        phase: (w as HTMLElement | null)?.dataset['phase'] ?? '',
-      };
-    }, id);
     const rowCount = (rowText.match(/step \d+ of (\d+)/) ?? [])[1] ?? '';
     const tabStep = await text(tab, '#steps .step.running .step-label');
     // A state is a phase and a running step; a download's bytes or a share ticking are not one.
