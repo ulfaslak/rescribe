@@ -23,7 +23,10 @@ import {
   seedExportFolder,
   serviceWorker,
   setSettings,
-  startDialogs,
+  dialogClosed,
+  dialogTab,
+  isOverlay,
+  startDialogWindows,
   startDialogUrl,
   startRecording,
   toolbarClick,
@@ -66,11 +69,11 @@ async function setUp(
   return { page, targetId };
 }
 
-test('the dialog shows the clicked tab, the microphones and the folder; the microphone choice and a changed folder persist and reach the app tab; the folder change survives Escape', async ({
+test('the dialog shows the clicked tab, the microphones and the folder; the microphone choice and a changed folder persist and reach the app tab; a page that cannot host the overlay gets the window, where Change… picks; the button on another tab moves the dialog there', async ({
   context,
   extensionId,
 }) => {
-  // The picker cannot be driven: in the dialog it answers with another OPFS directory.
+  // The picker cannot be driven: in the window it answers with another OPFS directory.
   await context.addInitScript((other) => {
     if (!location.pathname.endsWith('/start/start.html')) return;
     window.showDirectoryPicker = async () =>
@@ -80,14 +83,16 @@ test('the dialog shows the clicked tab, the microphones and the folder; the micr
   const worker = await serviceWorker(context);
   await toolbarClick(worker, { id: targetId, url: MEET_URL, title: 'Meet' });
   const dialog = await waitForStartDialog(context, extensionId);
-  expect(dialog.url()).toBe(`${startDialogUrl(extensionId)}?tab=${targetId}`);
+  expect(isOverlay(dialog)).toBe(true);
+  expect(dialogTab(dialog)).toBe(targetId);
   await expect(dialog.locator('#target-title')).toHaveText(CAPTURE_TARGET_TITLE);
   await expect(dialog.locator('#folder')).toHaveText(EXPORT_DIR);
   await expect(dialog.locator('#start')).toBeEnabled();
   await expect(dialog.locator('#background')).toBeHidden();
 
-  // The microphones: the fake devices (by label once the origin holds the permission, which the
-  // first recording grants; the default device before), and "No microphone".
+  // The microphones, as the app tab lists them: the fake devices (by label once the origin holds
+  // the permission, which the first recording grants; the default device before), and "No
+  // microphone".
   const mic = dialog.locator('#mic');
   await expect(mic).toBeEnabled();
   const options = await mic.locator('option').allTextContents();
@@ -99,38 +104,48 @@ test('the dialog shows the clicked tab, the microphones and the folder; the micr
   await expect.poll(() => getSettings(page).then((s) => s['micByDefault'])).toBe(false);
   await expect(page.locator('#mic')).not.toBeChecked();
   await expect(page.locator('input[name=micByDefault]')).not.toBeChecked();
-  // A device: on again, with its id when it is a labelled device.
+  // A device: on again, with its id when it is a labelled device; the id is the app tab's own.
   const first = (await mic.locator('option').first().getAttribute('value'))!;
   await mic.selectOption(first);
   await expect.poll(() => getSettings(page).then((s) => s['micByDefault'])).toBe(true);
   expect((await getSettings(page))['micDeviceId']).toBe(first || undefined);
   await expect(page.locator('#mic')).toBeChecked();
-
-  // Change…: the Settings folder, shown in the dialog and in the app tab at once.
-  await dialog.click('#change-folder');
-  await expect(dialog.locator('#folder')).toHaveText(OTHER_EXPORT_DIR);
-  await expect(page.locator('#folder-name')).toHaveText(OTHER_EXPORT_DIR);
+  const appIds = await page.evaluate(async () =>
+    (await navigator.mediaDevices.enumerateDevices())
+      .filter((d) => d.kind === 'audioinput' && d.label)
+      .map((d) => d.deviceId),
+  );
+  if (first) expect(appIds).toContain(first);
   await escape(dialog);
+
+  // A page that cannot host the overlay (the browser's own): the window, where Change… picks the
+  // Settings folder, shown in the window and in the app tab at once.
+  const other = await context.newPage();
+  await other.goto('chrome://version');
+  const otherId = await worker.evaluate(
+    async () =>
+      (await chrome.tabs.query({})).find((t) => t.url?.startsWith('chrome://version'))!.id!,
+  );
+  await toolbarClick(worker, { id: otherId, url: 'chrome://version/' });
+  const windowed = await waitForStartDialog(context, extensionId);
+  expect(isOverlay(windowed)).toBe(false);
+  expect(dialogTab(windowed)).toBe(otherId);
+  await windowed.click('#change-folder');
+  await expect(windowed.locator('#folder')).toHaveText(OTHER_EXPORT_DIR);
+  await expect(page.locator('#folder-name')).toHaveText(OTHER_EXPORT_DIR);
+  await escape(windowed);
   // The next dialog opens on the changed folder and the chosen microphone.
   await toolbarClick(worker, { id: targetId, url: MEET_URL, title: 'Meet' });
   const again = await waitForStartDialog(context, extensionId);
   await expect(again.locator('#folder')).toHaveText(OTHER_EXPORT_DIR);
   await expect(again.locator('#mic')).toHaveValue(first);
-  await escape(again);
 
   // The button on another tab moves the dialog there instead of merely closing it; and Escape in
-  // a dialog that sits as a tab in the browser window ("Show as tab") closes only that tab.
-  await toolbarClick(worker, { id: targetId, url: MEET_URL, title: 'Meet' });
-  const forTarget = await waitForStartDialog(context, extensionId);
-  const other = await context.newPage();
-  await other.goto('about:blank');
-  const otherId = await worker.evaluate(
-    async () => (await chrome.tabs.query({})).find((t) => t.url === 'about:blank')!.id!,
-  );
-  await toolbarClick(worker, { id: otherId, url: 'https://example.com/' });
-  await expect.poll(() => forTarget.isClosed(), { timeout: 5000 }).toBe(true);
+  // a window that sits as a tab in the browser window ("Show as tab") closes only that tab.
+  await toolbarClick(worker, { id: otherId, url: 'chrome://version/' });
+  await expect.poll(() => dialogClosed(again), { timeout: 5000 }).toBe(true);
   const moved = await waitForStartDialog(context, extensionId);
-  expect(moved.url()).toBe(`${startDialogUrl(extensionId)}?tab=${otherId}`);
+  expect(dialogTab(moved)).toBe(otherId);
   const browserWindow = await windowOfTab(worker, targetId);
   await worker.evaluate(
     async ({ url, windowId }) => {
@@ -292,7 +307,7 @@ test('on a web page the dialog is an overlay at the top right of that page, no w
   await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
   await expect.poll(() => !!overlayFrame(), { timeout: 10_000 }).toBe(true);
   const frame = overlayFrame()!;
-  expect(frame.url()).toBe(`${startDialogUrl(extensionId)}?tab=${siteId}`);
+  expect(dialogTab(frame)).toBe(siteId);
   await expect(frame.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
   await expect(frame.locator('#target-title')).toHaveText('A web page');
   await expect(frame.locator('#target-host')).toHaveText('rescribe.test');
@@ -301,7 +316,7 @@ test('on a web page the dialog is an overlay at the top right of that page, no w
   expect((await frame.locator('#mic option').allTextContents()).at(-1)).toBe('No microphone');
   // No window of its own, and nothing over the rest of the page: a box at the top right, as tall
   // as the dialog.
-  expect(startDialogs(context, extensionId)).toHaveLength(0);
+  expect(startDialogWindows(context, extensionId)).toHaveLength(0);
   const box = (await hostBox())!;
   expect(box.top).toBe(12);
   expect(box.right).toBe(1200 - 12);
@@ -370,6 +385,37 @@ test('on a web page the dialog is an overlay at the top right of that page, no w
   );
   expect(res.error).toContain('Cancelled');
   await expect(page.locator('#status')).toHaveText('idle');
+
+  // A site that frames the dialog page itself (it is web-accessible, for the overlay) gets a blank
+  // one without the key: it asks nothing of the app tab, starts nothing, and does not count as an
+  // open dialog, so the toolbar still opens the real one on that tab.
+  const EVIL = 'https://evil.test/';
+  await context.route('https://evil.test/**', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: `<!doctype html><title>Evil</title><iframe src="${startDialogUrl(extensionId)}?tab=${siteId}&k=guess"></iframe>`,
+    }),
+  );
+  const evil = await context.newPage();
+  await evil.goto(EVIL);
+  const planted = () => evil.frames().find((f) => f.url().startsWith(startDialogUrl(extensionId)));
+  await expect.poll(() => !!planted()).toBe(true);
+  await expect(planted()!.locator('main')).toHaveText('Click the Rescribe button again.');
+  const guessed = await worker.evaluate(
+    (tabId) =>
+      (
+        globalThis as unknown as {
+          rescribe: { startCapture: (m: object) => Promise<{ ok: boolean; error?: string }> };
+        }
+      ).rescribe.startCapture({ type: 'start-capture', tabId, key: 'guess', mic: false }),
+    siteId,
+  );
+  expect(guessed.error).toContain('Cancelled');
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(() => !!overlayFrame(), { timeout: 10_000 }).toBe(true);
+  await expect(overlayFrame()!.locator('body')).toHaveAttribute('data-ready', 'true');
+  await escape(overlayFrame()!);
   expect(await recordings(page)).toHaveLength(0);
+  await evil.close();
   await site.close();
 });

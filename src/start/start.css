@@ -37,7 +37,7 @@ body {
 html.embedded,
 html.embedded body {
   height: auto;
-  overflow: hidden;
+  overflow-x: hidden;
 }
 main {
   display: grid;
