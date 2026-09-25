@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserContext, Page, Worker } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect } from './fixtures.ts';
-import type { Recording } from '../src/lib/types.ts';
+import { SETTINGS_VERSION, type Recording } from '../src/lib/types.ts';
 
 /** The export "folder": a directory in OPFS, a real FileSystemDirectoryHandle. */
 export const EXPORT_DIR = 'export-test';
@@ -73,11 +73,15 @@ export const seedExportFolder = (page: Page, dirName = EXPORT_DIR): Promise<void
   idbHandles(page, 'put', dirName);
 export const clearExportFolder = (page: Page): Promise<void> => idbHandles(page, 'delete');
 
+/** Write settings as the form would: stamped with the current version, unless the patch says otherwise. */
 export async function setSettings(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (patch) => {
-    const cur = ((await chrome.storage.local.get('settings'))['settings'] ?? {}) as object;
-    await chrome.storage.local.set({ settings: { ...cur, ...patch } });
-  }, patch);
+  await page.evaluate(
+    async ({ patch, version }) => {
+      const cur = ((await chrome.storage.local.get('settings'))['settings'] ?? {}) as object;
+      await chrome.storage.local.set({ settings: { settingsVersion: version, ...cur, ...patch } });
+    },
+    { patch, version: SETTINGS_VERSION },
+  );
 }
 
 export async function getSettings(page: Page): Promise<Record<string, unknown>> {

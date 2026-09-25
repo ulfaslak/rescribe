@@ -40,7 +40,7 @@ Extension pages are opened by URL: `chrome-extension://<id>/app/app.html`, where
 ## Self-testing: pick the method that produces signal
 
 - **Pure logic** (`src/lib/`): unit tests. Write the failing case first when fixing a bug.
-- **The record-to-transcript path**: an e2e run. Assert on files (OPFS length, exported file size, ffprobe on the MP4 via `ffprobe` from Homebrew), not on UI text.
+- **The record-to-transcript path**: an e2e run. Assert on files (OPFS length, exported file size, ffprobe on the exported video via `ffprobe` from Homebrew), not on UI text.
 - **UI glue** (settings form, library list): a Playwright walk of the app page with screenshots into `screenshots/` (gitignored).
 - **Anything the fake devices cannot exercise**: real Meet behaviour, the real folder picker, QuickTime playback. Write a [[LIVE_CHECKS]] entry with trigger, steps and success criteria, and tell the human in the PR.
 

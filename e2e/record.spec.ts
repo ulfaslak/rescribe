@@ -8,7 +8,7 @@ import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
 import { escape, stopDialogs, waitForStopDialog } from './helpers.ts';
-import type { Recording } from '../src/lib/types.ts';
+import { SETTINGS_VERSION, type Recording } from '../src/lib/types.ts';
 import { exportVideoName } from '../src/recorder/recorder.ts';
 
 /** The export "folder" is a directory in OPFS: an OPFS handle is a FileSystemDirectoryHandle, so
@@ -66,11 +66,15 @@ async function seedExportFolder(page: Page): Promise<void> {
   }, EXPORT_DIR);
 }
 
+/** Write settings as the form would: stamped with the current version, unless the patch says otherwise. */
 async function setSettings(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (patch) => {
-    const cur = ((await chrome.storage.local.get('settings'))['settings'] ?? {}) as object;
-    await chrome.storage.local.set({ settings: { ...cur, ...patch } });
-  }, patch);
+  await page.evaluate(
+    async ({ patch, version }) => {
+      const cur = ((await chrome.storage.local.get('settings'))['settings'] ?? {}) as object;
+      await chrome.storage.local.set({ settings: { settingsVersion: version, ...cur, ...patch } });
+    },
+    { patch, version: SETTINGS_VERSION },
+  );
 }
 
 async function clearRecordings(page: Page): Promise<void> {

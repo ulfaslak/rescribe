@@ -6,11 +6,11 @@ Remove an entry in the PR that resolves it.
 
 ---
 
-### WebM exports carry no duration header
+### The exported WebM's duration is the record's, not the media's
 
-**What**: a MediaRecorder WebM is a live stream: the header has no `Duration` element, so `ffprobe` reports none and players show an unknown length until they parse the whole file. The MP4 path is unaffected (fragmented MP4 with `mfra`; see the QuickTime live check).
-**Why deferred**: WebM is the non-default container; remuxing on export means shipping a muxer.
-**Trigger**: the human uses WebM and a player refuses to seek, or a downstream tool needs the duration.
+**What**: `exportVideoData` writes `endedAt − startedAt` into the header. `startedAt` is taken before `MediaRecorder.start()` and the first frame follows it by some hundreds of milliseconds, so the header says up to about a second more than the clusters hold; a recovered recording takes `endedAt` from the PCM length, which is closer. The exact figure is the last cluster's timecode plus its last block's duration, a walk over the whole file.
+**Why deferred**: players show the header figure to the second and seek by the clusters, so nothing visible depends on the difference.
+**Trigger**: a tool compares the header duration with the packets and complains, or a player's scrubber stops short of the end.
 
 ### The loaded model stays in memory for the life of the app tab
 
