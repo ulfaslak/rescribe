@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #26 · a window torn down from another context while its page still had work in flight `[learned]`
+
+The service worker closed the stop dialog's window the moment it opened the processing tab, while the dialog page still had its `decide` message pending and, in the harness, Playwright's post-click work on it; Chrome for Testing crashed on a dangling pointer (ENVIRONMENT_NOTES § "Chrome for Testing crashes when the service worker removes a window under a page Playwright is driving"). The page knew when it was done; the worker did not. The hand-off now lives in the page: send the decision, ask for the tab, close itself (ARCHITECTURE § Runtime topology, the stop dialog row).
+
 ### 2026-09-25 · #26 · a page that stopped watching once it was pleased `[learned]`
 
 The processing tab stopped polling as soon as it showed `Saved` or `Done`, so a delete or a Save now made in Rescribe afterwards never reached it: the first e2e run found it still saying `Saved` for a recording that was gone. A terminal state of the pipeline was taken for a terminal state of the record. Fixed by polling until the record itself is gone (ARCHITECTURE § Runtime topology, the processing tab row: "polled until the record is gone"); e2e/start-dialog.spec.ts "a discarded recording shows as gone in its processing tab" pins it.
