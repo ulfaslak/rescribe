@@ -36,8 +36,16 @@ const slug = (s: string): string =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
 
-async function text(loc: Locator): Promise<string> {
-  return (await loc.count()) ? ((await loc.first().innerText()) ?? '') : '';
+/**
+ * The visible text of `selector`, or '' when it is not there. A plain read: a locator's text
+ * waits for the element to appear, and this project sets no action timeout, so a widget that
+ * vanished between two reads (the list is rebuilt at every phase) would hang the poll.
+ */
+async function text(page: Page, selector: string): Promise<string> {
+  return page.evaluate(
+    (sel) => (document.querySelector(sel) as HTMLElement | null)?.innerText ?? '',
+    selector,
+  );
 }
 
 /** An element screenshot, again when the list was rebuilt under it (a phase change re-renders). */
@@ -101,6 +109,7 @@ test("the three views show the job as steps in the human's words, in order, with
 
   const row = page.locator(`.recording-item[data-id="${id}"]`);
   const widget = row.locator('.progress');
+  const widgetSel = `.recording-item[data-id="${id}"] .progress`;
   await page.evaluate(
     (id) =>
       void (
@@ -118,11 +127,11 @@ test("the three views show the job as steps in the human's words, in order, with
     const current = (await recordings(page)).find((r) => r.id === id);
     status = current?.status ?? 'gone';
     const [rowText, line, tabHeadline, tabDetail, tabSteps] = await Promise.all([
-      text(widget),
-      text(page.locator('#record-status')),
-      text(tab.locator('#headline')),
-      text(tab.locator('#detail')),
-      text(tab.locator('#steps')),
+      text(page, widgetSel),
+      text(page, '#record-status'),
+      text(tab, '#headline'),
+      text(tab, '#detail'),
+      text(tab, '#steps'),
     ]);
     for (const t of [rowText, line, tabHeadline, tabDetail, tabSteps])
       expect(t, `implementation word in: ${t}`).not.toMatch(FORBIDDEN);
@@ -135,7 +144,7 @@ test("the three views show the job as steps in the human's words, in order, with
       };
     }, id);
     const rowCount = (rowText.match(/step \d+ of (\d+)/) ?? [])[1] ?? '';
-    const tabStep = await text(tab.locator('#steps .step.running .step-label'));
+    const tabStep = await text(tab, '#steps .step.running .step-label');
     // A state is a phase and a running step; a download's bytes or a share ticking are not one.
     const key = `${phase}|${rowStep}|${rowStep ? '' : line}`;
     if (rowStep) states.push(rowStep);
