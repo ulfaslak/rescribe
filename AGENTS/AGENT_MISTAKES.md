@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #25 · a negative control supplied by the environment, not by the test `[learned]`
+
+The header test derived its expected string from the path template in the runner's zone, so on a UTC machine the UTC bug and the fix print the same header and the test passes either way; the negative control was run under `TZ=Europe/Copenhagen` on the author's machine and taken as proof. Found by the adversarial review. Codified in `src/lib/transcript.test.ts` (the test sets `process.env.TZ` itself and asserts the literal), with the PR's test plan running the suite in four zones. Rule: a negative control counts only when the condition that makes the bug visible is set inside the test; an expectation computed from the same inputs as the code under test proves nothing where the two coincide.
+
 ### 2026-09-25 · #24 · a cleanup shipped without checking it matched anything `[learned]`
 
 The e2e fixture got a glob to delete the profile's session-restore files, written with a brace pattern that Node's `globSync` does not expand; it matched nothing, and the routing test passing once after the "fix" was taken as proof. When the pattern was corrected the failure stayed, because session restore was not the cause either: Chrome reopens **pinned** tabs on its own, and the service worker pins the app tab. Two wrong diagnoses shipped as fixes before the tab list right at launch was looked at (one ghost app tab, present before any test code ran). Codified in `e2e/fixtures.ts` (`pinned_tabs` stripped from Preferences, one plain pattern per session file) and ENVIRONMENT_NOTES § "The reused profile reopens the last run's pinned app tab". Rule: a cleanup or a filter is verified by what it matched and by the state after it, never by the next test going green; and the first question about a ghost is where it came from, not how to delete it.
