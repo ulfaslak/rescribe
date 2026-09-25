@@ -56,6 +56,18 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
    **On failure**: no window on the click: Brave refused `chrome.windows.create` for a popup; the service worker's console (`brave://extensions` → service worker) has the error; file it. Step 3 ending in `Not exported: Rescribe needs permission…` means a grant given in the dialog window is not seen by the app tab's handle: the fallback is Save now on the row, and the fix is a `focus-app` before the export when the permission is `prompt`; file it. Step 5 without a window within 10 s: Meet's leave page still has elements matching `[data-participant-id]`, or the lobby preview has one; run `document.querySelectorAll('[data-participant-id]').length` in the Meet tab's console on the leave page and file the number. A window that opens mid-call while nobody left: a layout without tiles for over 5 s; file which layout (presentation, spotlight) with the same console count.
    **Since the start dialog (2026-09-25)**: in step 1 the first click opens the start window, Start Capture starts; after **Save** the stop window closes and a new tab with the recording's progress opens instead of `Saved to …/` in the window; step 4 (Discard) still answers in the window.
 
+### The start dialog as an overlay in the page, in Brave
+
+**Trigger**: the in-page start dialog merged and the extension reloaded at `brave://extensions` (Brave asks nothing new: `activeTab` and `scripting` carry no install warning for an unpacked extension, but check the card for an error). The e2e proves the overlay on a strict-CSP https page with a faked click and host access; only the real click proves the `activeTab` grant covers the injection, and only Meet proves its page lets the frame in.
+**Steps**:
+
+1. On an ordinary site (a news page), click the toolbar button. A Rescribe panel appears inside the page, 12 px from its top right, the page not dimmed and still scrollable beside it; no separate window. The button again closes it; again, then Escape, closes it.
+2. In a Meet call (or its lobby), click the button: the same panel over Meet's top right, with the call's title, your microphones by name, and **Start Capture**. Start: the panel goes, the badge shows `REC`.
+3. Open it on `brave://extensions` (or a new tab page): the small window opens instead, as before.
+4. In the panel click **Change…**: the Rescribe tab comes forward; pick a folder under Settings, go back to the page: the panel shows the new folder.
+   **Success criteria**: every step as described.
+   **On failure**: the window instead of the panel on an ordinary site: the injection failed; the service worker's console (`brave://extensions` → service worker) logs `no overlay on this page` with the reason; file it. A blank or refused panel on Meet: Meet's page blocked the frame; file the console error from the Meet tab.
+
 ### The start dialog and the processing tab in Brave
 
 **Trigger**: the start dialog merged and the extension reloaded at `brave://extensions`. The e2e proves the routing, the settings and the page states in headless Chromium with fake devices; only Brave settles the windows, the real microphone names, the real picker from the start window and a real tab capture from Start Capture.
