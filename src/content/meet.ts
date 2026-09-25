@@ -1,7 +1,8 @@
 // Google Meet platform adapter (content script, runs in Meet's page as an isolated world).
 //
 // Emits to the extension:
-//   roster             the participant names currently on screen (on change)
+//   roster             the participant names currently on screen (on change, and every 30 s
+//                      while there are tiles)
 //   speaker            a participant started/stopped speaking, stamped at the change itself
 //   adapter-diagnostic when the page has tiles but no usable speaking signal, or no tiles at all
 //   call-ended         the tiles went away and stayed away (the human left the call or it ended;
@@ -56,6 +57,9 @@ const NAME_EXCLUDE =
   'button, [role="button"], [role="menu"], [role="menuitem"], [role="tooltip"], [aria-hidden="true"]';
 /** Short status chips Meet renders next to a name. "You" is Meet's label for the human's own tile and stays. */
 const NAME_STOPLIST = /^(muted|unmuted|pinned|host|co-host|presenting|hd|sd|live|new)$/i;
+/** The roster is re-sent this often while tiles are on screen, so a recording started into a
+ * stable call still holds one (the app keeps only what arrives while recording). */
+const ROSTER_EVERY_MS = 30_000;
 
 const harness = document.documentElement.hasAttribute('data-rescribe-harness');
 /** The last messages this adapter emitted, so a calibration report can show its own behaviour. */
@@ -137,6 +141,7 @@ const activity = new ChangeActivity(ACTIVITY_WINDOW_MS);
 /** Participants currently reported as speaking, with the name used at the start. */
 const speaking = new Map<string, string>();
 let lastRoster = '';
+let lastRosterAt = 0;
 let signalMissingSince: number | undefined;
 let lastDiagnostic = Number.NEGATIVE_INFINITY;
 /** Tiles have been seen since the last call-ended: a call is (or was just) on. */
@@ -150,10 +155,13 @@ function start(id: string, tile: HTMLElement, at: number): void {
   send({ type: 'speaker', platform: PLATFORM, at, id, name, speaking: true });
 }
 
-function stop(id: string, at: number): void {
-  const name = speaking.get(id);
-  if (name === undefined) return;
+/** The stop carries the tile's name as resolved by now (a name span absent at the start, present
+ * later, still names the id: the evidence layer keeps the last name that is not the id). */
+function stop(id: string, at: number, tile?: HTMLElement): void {
+  const started = speaking.get(id);
+  if (started === undefined) return;
   speaking.delete(id);
+  const name = (tile && tileName(tile)) ?? started;
   send({ type: 'speaker', platform: PLATFORM, at, id, name, speaking: false });
 }
 
@@ -185,8 +193,9 @@ function poll(): void {
 
   const names = [...new Set(found.map(tileName).filter((n): n is string => !!n))];
   const rosterKey = [...names].sort().join('\u0000');
-  if (rosterKey !== lastRoster) {
+  if (rosterKey !== lastRoster || (names.length > 0 && now - lastRosterAt >= ROSTER_EVERY_MS)) {
     lastRoster = rosterKey;
+    lastRosterAt = now;
     send({ type: 'roster', platform: PLATFORM, at: now, names });
   }
 
@@ -197,7 +206,7 @@ function poll(): void {
       stop(id, now);
       activity.forget(id);
     } else if (!activity.isActive(id, now)) {
-      stop(id, activity.activeUntil(id) ?? now);
+      stop(id, activity.activeUntil(id) ?? now, tile);
     }
   }
   for (const id of [...speaking.keys()]) if (!present.has(id)) speaking.delete(id);
