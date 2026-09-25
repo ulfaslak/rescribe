@@ -151,7 +151,8 @@ async function refresh(): Promise<void> {
   const { autoTranscribe } = await loadSettings();
   const v = view(rec, live, appOpen, autoTranscribe);
   render(rec, v, await destination(rec));
-  if (!rec || v.kind === 'done' || rec.status === 'failed') window.clearInterval(timer);
+  // Still polled at done or failed: a Save now, a re-run or a delete in Rescribe shows here too.
+  if (!rec) window.clearInterval(timer);
 }
 
 function main(): void {
