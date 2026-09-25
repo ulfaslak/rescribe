@@ -126,14 +126,16 @@ test("the three views show the job as steps in the human's words, in order, with
     ]);
     for (const t of [rowText, line, tabHeadline, tabDetail, tabSteps])
       expect(t, `implementation word in: ${t}`).not.toMatch(FORBIDDEN);
-    const rowStep = await text(widget.locator('.step.running .step-label'));
+    // The row's state in one read, so a phase and a step never come from two events.
+    const { rowStep, phase } = await page.evaluate((id) => {
+      const w = document.querySelector(`.recording-item[data-id="${id}"] .progress .steps`);
+      return {
+        rowStep: w?.querySelector('.step.running .step-label')?.textContent ?? '',
+        phase: (w as HTMLElement | null)?.dataset['phase'] ?? '',
+      };
+    }, id);
     const rowCount = (rowText.match(/step \d+ of (\d+)/) ?? [])[1] ?? '';
     const tabStep = await text(tab.locator('#steps .step.running .step-label'));
-    const phase =
-      (await widget
-        .locator('.steps')
-        .getAttribute('data-phase')
-        .catch(() => null)) ?? '';
     // A state is a phase and a running step; a download's bytes or a share ticking are not one.
     const key = `${phase}|${rowStep}|${rowStep ? '' : line}`;
     if (rowStep) states.push(rowStep);
