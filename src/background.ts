@@ -195,11 +195,12 @@ async function openStartDialog(target: chrome.tabs.Tab): Promise<void> {
 
 /**
  * The processing tab for one recording, in the browser window the human is in, in front; an
- * open one is focused instead. It replaces the stop dialog, which is closed.
+ * open one is focused instead. The stop dialog that asked for it closes itself: a window removed
+ * from here while its page is still busy trips Chromium's dangling-pointer check in the e2e
+ * harness (Chrome for Testing), and the page knows better when it is done.
  */
 async function openProgressTab(id: string): Promise<void> {
   const url = `${PROGRESS_URL}?id=${encodeURIComponent(id)}`;
-  await closeDialogs(STOP_URL);
   const open = (await chrome.tabs.query({})).find((t) => t.url === url);
   if (open) {
     await focusTab(open);

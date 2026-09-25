@@ -5,10 +5,12 @@
 // folder handle, stored under `export:<id>` for the app tab (storage/handles.ts), and its one
 // prompt is the folder permission, requested inside its own click because the app tab, hidden
 // behind the call, cannot prompt. Closing the window decides nothing: a live recording goes on.
-// A save hands over to the processing tab (progress/), which the app tab has the service worker
-// open the moment it gets the decision; that closes this window. Discard is answered here.
+// A save hands over to the processing tab (progress/): the decision is sent, the service worker
+// is asked for the tab, and this window closes without waiting for the answer. Discard is
+// answered here.
 import { formatDuration } from '../lib/format.ts';
 import type { DecideResult, Decision, Message, PendingInfo } from '../lib/messages.ts';
+import { send as post } from '../lib/messages.ts';
 import { renderPathTemplate } from '../lib/pathtemplate.ts';
 import { loadSettings } from '../lib/settings.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
@@ -111,7 +113,19 @@ async function send(action: Decision): Promise<void> {
   if (!info || finished) return;
   finished = true;
   setEnabled(false);
-  status(action === 'discard' ? 'Discarding…' : 'Saving…');
+  if (action !== 'discard') {
+    // The processing tab takes over (the export may take a while, the transcription longer):
+    // the decision goes out, the tab is asked for, and this window closes without waiting for
+    // the answer; the tab shows the outcome, whatever it is. The decision is dispatched before
+    // the round trip for the tab returns, and a closed sender loses nothing: the app tab acts on
+    // the message, not on the answer.
+    status('Saving…');
+    void askApp({ type: 'decide', id: info.id, action });
+    await post({ type: 'open-progress', id: info.id });
+    await close();
+    return;
+  }
+  status('Discarding…');
   const res = await askApp<DecideResult>({ type: 'decide', id: info.id, action });
   if (!res) status('The Rescribe tab did not answer; it holds the recording.', true);
   else status(res.message, !res.ok);

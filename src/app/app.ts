@@ -186,9 +186,6 @@ function onMessage(
       void describeFolder();
       return false;
     case 'decide':
-      // A save decided in the stop dialog: the processing tab takes over from the dialog at once
-      // (the export may take a while), whatever the decision's outcome; the tab shows it.
-      if (msg.action !== 'discard') void send({ type: 'open-progress', id: msg.id });
       void applyDecision(msg.id, msg.action).then((result) => {
         try {
           sendResponse(result);

@@ -84,8 +84,8 @@ export type Message =
    * still runs and exports it to the folder from Settings; `save-as` the same into the folder
    * whose handle the sender stored under `export:<id>` first (handles cannot travel in a
    * message); `discard` stops it and deletes it. Answered with a DecideResult once the export (or
-   * the deletion) is done. For a save the app tab asks the service worker for the processing tab
-   * at once (`open-progress`), which replaces the dialog.
+   * the deletion) is done; the dialog reads the answer for a discard and closes at once for a
+   * save (the processing tab shows that outcome).
    */
   | { type: 'decide'; id: string; action: Decision }
   /**
@@ -96,9 +96,8 @@ export type Message =
    */
   | { type: 'start-capture'; tabId: number; mic: boolean; micDeviceId?: string }
   /**
-   * The owning app tab (a save decided in the stop dialog) or the start dialog → service worker:
-   * open the processing tab for this recording (one per recording; an open one is focused) and
-   * close the stop dialog, which it replaces.
+   * The stop dialog (a save) or the start dialog ("Show") → service worker: open the processing
+   * tab for this recording (one per recording; an open one is focused).
    */
   | { type: 'open-progress'; id: string }
   /**
