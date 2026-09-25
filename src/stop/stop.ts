@@ -33,9 +33,9 @@ let appTabId: number | undefined;
 
 /**
  * The app tab that owns the recorder: the one that answers `query-status` (a duplicate never
- * listens). Messages go to it by tab id, never broadcast: a broadcast also reaches the service
- * worker, whose listener answers nothing, and Chrome then settles the call with `undefined`
- * before the app tab's asynchronous answer arrives (seen in the e2e, 2026-09-25).
+ * listens). Messages go to it by tab id, as the service worker's do (background.ts
+ * `tabStatus`), not broadcast: a broadcast would also reach the service worker and any
+ * duplicate app tab, and only the owner may answer for the recording.
  */
 async function appTab(): Promise<number | undefined> {
   if (appTabId !== undefined) return appTabId;

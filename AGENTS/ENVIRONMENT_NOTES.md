@@ -38,6 +38,14 @@ Playwright empties `test-results/` at the start of every run. Anything a test wa
 
 `showDirectoryPicker` cannot be driven, so `e2e/record.spec.ts` stores an OPFS directory handle (`export-test/`) under `handles/export` in IndexedDB: it is a real `FileSystemDirectoryHandle`, the export code runs unchanged, and the test reads the exported file back through OPFS. `--auto-select-tab-capture-source-by-title` in headless mode still captures a virtual screen (`screen:-3:0`) with fake audio rather than the target tab; fine for the pipeline. That virtual screen's audio is the **same fake-device stream as the microphone** (the speech WAV), not a tone (seen 2026-09-24 in `e2e/pipeline.spec.ts`): `display.pcm` holds the fixture's speech too, so a harness transcript has an `Ulf` turn and a `Speaker` turn with the same words.
 
+### A killed run poisons the profile's session restore
+
+A Playwright run killed mid-way (`pkill`, a timeout) leaves Chromium's session-restore state in the profile (`Default/Session_*`, `Default/Tabs_*`). At the next launch Chromium restores the old tabs (they show up as `chrome-error://chromewebdata/` pages), and from then on Playwright never emits a `page` event for a tab the extension opens with `chrome.tabs.create`, although `context.pages()` lists it; every `context.waitForEvent('page')` in the suite then times out (found 2026-09-25 on the stop dialog PR: the toolbar routing test hung in the reused profile and passed in a fresh one). `e2e/fixtures.ts` deletes those files before every launch, next to the `Service Worker/` directory. If a `page` event still never comes, run once with `PW_PROFILE=<fresh dir>` to tell the profile from the code.
+
+### `chrome.windows.create` refuses bounds off the visible screen
+
+Placing a window with `left`/`top` computed from another window's bounds throws `Invalid value for bounds. Bounds must be at least 50% within visible screen space` when the result is mostly off-screen: in headless Chromium the last focused window reports bounds that put a top-right popup out of the virtual screen, and on a desktop a browser window hanging half off a display does the same. `background.ts` `openStopDialog` retries without a position (Chrome's own placement) when that happens (2026-09-25).
+
 ### A reused Playwright profile runs the old service worker
 
 Chromium keeps an installed extension's service worker script in `<profile>/Default/Service Worker/` and, when the manifest version has not changed, serves that copy at the next launch instead of re-reading `dist/background.js` (found 2026-09-24, #18: a rebuilt worker's new message handler never ran while its old handlers did). Extension pages and content scripts are not affected. `e2e/fixtures.ts` deletes that directory before every launch; the model cache lives in IndexedDB and survives. `PW_PROFILE=<dir>` points a run at another profile (a fresh one is the cleanest control when a service worker change looks ignored).

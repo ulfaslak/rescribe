@@ -214,14 +214,16 @@ async function runAction(
  * directory, then every artifact in OPFS (transcript.md, transcript.json, meta.json) through
  * `exportArtifacts`, next to it. Works from the stored record, never while the recorder or the
  * pipeline holds the recording, and re-requests the folder permission first thing in the click
- * (after a browser restart the persisted handle is `prompt`). `finalize` reuses `exportPath`, so a
+ * (after a browser restart the persisted handle is `prompt`; the recording's own folder when it
+ * was saved with Save as…). `finalize` reuses `exportPath`, so a
  * folder the human deleted comes back at the same path. `error` is cleared only when both are in
  * the folder; a `done` recording stays `done`. A `failed` recording with a playable video (a chunk
  * lost late in a long call) is saved as `failed` and keeps its reason: what went wrong on export
  * goes to the status line, not the record.
  */
 async function reExport(id: string): Promise<Outcome> {
-  await ensureExportPermission().catch(() => undefined);
+  // The recording's own folder (Save as…) or the Settings folder: whichever it is exported under.
+  await ensureExportPermission((await getRecording(id)) ?? undefined).catch(() => undefined);
   const claimed = await claim(id, 'save it');
   if (typeof claimed === 'string') return claimed;
   let rec = claimed;
@@ -352,7 +354,8 @@ function explainExport(state: Exclude<ExportedFileState, 'present'>, rec: Record
  * about in the confirm.
  */
 async function removeMedia(id: string): Promise<Outcome> {
-  await ensureExportPermission().catch(() => undefined); // inside the click, for the prompt
+  // Inside the click, for the prompt; the recording's own folder when it has one.
+  await ensureExportPermission((await getRecording(id)) ?? undefined).catch(() => undefined);
   const rec = await claim(id, 'delete its media');
   if (typeof rec === 'string') return rec;
   if (rec.exportPath) {
