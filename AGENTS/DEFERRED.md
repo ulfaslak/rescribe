@@ -6,12 +6,6 @@ Remove an entry in the PR that resolves it.
 
 ---
 
-### The exported WebM's duration is the record's, not the media's
-
-**What**: `exportVideoData` writes `endedAt − startedAt` into the header. `startedAt` is taken before `MediaRecorder.start()` and the first frame follows it by some hundreds of milliseconds, so the header says up to about a second more than the clusters hold; a recovered recording takes `endedAt` from the PCM length, which is closer. The exact figure is the last cluster's timecode plus its last block's duration, a walk over the whole file.
-**Why deferred**: players show the header figure to the second and seek by the clusters, so nothing visible depends on the difference.
-**Trigger**: a tool compares the header duration with the packets and complains, or a player's scrubber stops short of the end.
-
 ### The loaded model stays in memory for the life of the app tab
 
 **What**: `app/pipeline.ts` keeps one `Transcriber` (one worker, the model loaded) after the first transcription; ARCHITECTURE § Runtime topology says the worker lives as long as the app tab. The pinned tab lives all day, so the int8 model's working set (about 1 GB on WASM) stays resident between calls. Freeing it after an idle period costs a reload from the cache (seconds) on the next recording.

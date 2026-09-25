@@ -8,6 +8,18 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #27 · a test that compared the export's header with itself `[learned]`
+
+The crash-recovery e2e asserted the recovered WebM's length from `ffprobe`'s `format.duration`, which on this branch is the very number the export had just written into the header from the record, so a recovered file with no decodable picture would have passed. Found by the adversarial review. Codified in `e2e/record.spec.ts` (the recovery test reads the last video packet's time and the frame count, never the header); the same rule as the #25 entry below: an expectation that comes from the same source as the code under test proves nothing.
+
+### 2026-09-25 · #27 · a stored value trusted as if the form had written it `[learned]`
+
+`loadSettings` merged the stored object over the defaults and the recorder indexed its bitrate table with `settings.frameRate`; a stored rate outside the offered three (an older build, a hand edit, a test) gave `videoBitsPerSecond: undefined`, Chrome's default and the file size this PR removes, with nothing on the recording. Found by the adversarial review. Codified in `src/lib/settings.ts` `migrateSettings` (every stored value is normalised on load, pinned by `settings.test.ts`). Rule: what is read back from storage is input, validated like a form field.
+
+### 2026-09-25 · #27 · a media duration taken from the wall clock `[learned]`
+
+The exported header's duration was `endedAt − startedAt`, two `Date.now()` stamps, while MediaRecorder stamps its clusters on a monotonic clock that pauses with the machine: a lid closed mid-recording would have made the file claim minutes it does not hold. Found by the adversarial review. Codified in `src/recorder/recorder.ts` `mediaDurationMs` (the PCM length, the audio clock, which the crash recovery already used for `endedAt`) under INVARIANTS "Every timestamp in the pipeline is recording-relative": wall time is for display, media time comes from the samples.
+
 ### 2026-09-25 · #26 · a window torn down while its page still had work in flight `[learned]`
 
 To hand over to the processing tab at once, the stop dialog's window was closed the moment the decision was sent (first by the service worker, then by the page itself), with the page's `decide` message pending and, after Save as…, its folder handle just written; Chrome for Testing crashed on a dangling pointer, three runs in a row (ENVIRONMENT_NOTES § "Chrome for Testing crashes when a popup window is removed right after Save as…"). The second attempt moved the teardown to the page and changed nothing, which is what showed the timing, not the caller, was the problem. The window now closes on the decision's answer, as in #24, and the tab opens beside it (ARCHITECTURE § Runtime topology, the stop dialog row).

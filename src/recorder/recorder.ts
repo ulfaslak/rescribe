@@ -465,7 +465,11 @@ export async function finalize(
   onExporting?.(rec);
   try {
     const { dir, path } = await getExportDirectory(rec, pathTemplate);
-    await writeExportFile(dir, exportVideoName(rec.container), await exportVideoData(video, rec));
+    await writeExportFile(
+      dir,
+      exportVideoName(rec.container),
+      await exportVideoData(video, rec.container, await mediaDurationMs(rec)),
+    );
     return await updateRecording(rec.id, {
       status,
       exportPath: path,
@@ -478,6 +482,32 @@ export async function finalize(
       ...(keepError ? {} : { error: `Not exported: ${msg}` }),
     });
   }
+}
+
+/**
+ * The recording's length on the audio clock: the longest PCM channel, one sample per 1/16000 s
+ * of elapsed monotonic time (INVARIANTS "Every timestamp in the pipeline is recording-relative").
+ * 0 when no channel was recorded.
+ */
+async function recordedSeconds(id: string): Promise<number> {
+  let seconds = 0;
+  for (const channel of ['mic', 'display'] as const) {
+    const f = await getChannelFile(id, channel);
+    if (f) seconds = Math.max(seconds, pcmSeconds(f.size));
+  }
+  return seconds;
+}
+
+/**
+ * How long the media runs, for the exported header: the PCM length, since MediaRecorder stamps
+ * its clusters on the same monotonic clock (one that pauses with the machine, unlike the wall
+ * clock between `startedAt` and `endedAt`); for a recording without an audio channel, the wall
+ * clock is all there is.
+ */
+async function mediaDurationMs(rec: Recording): Promise<number> {
+  const seconds = await recordedSeconds(rec.id);
+  if (seconds > 0) return Math.round(seconds * 1000);
+  return rec.endedAt === undefined ? 0 : rec.endedAt - rec.startedAt;
 }
 
 /**
@@ -500,11 +530,7 @@ export async function recoverInterrupted(pathTemplate: string): Promise<Recordin
       );
       continue;
     }
-    let seconds = 0;
-    for (const channel of ['mic', 'display'] as const) {
-      const f = await getChannelFile(rec.id, channel);
-      if (f) seconds = Math.max(seconds, pcmSeconds(f.size));
-    }
+    const seconds = await recordedSeconds(rec.id);
     const endedAt =
       seconds > 0
         ? rec.startedAt + Math.round(seconds * 1000)

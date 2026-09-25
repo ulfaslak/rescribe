@@ -21,6 +21,13 @@ export function migrateSettings(stored: Partial<Settings>): Partial<Settings> {
     const { container: _container, ...rest } = out;
     out = rest;
   }
+  // What is read back from storage is input: a stored frame rate outside the offered ones would
+  // reach the recorder as an undefined bitrate cap (Chrome's default, the large file again).
+  if (out.frameRate !== undefined) out = { ...out, frameRate: toFrameRate(out.frameRate) };
+  if (out.container !== undefined && out.container !== 'webm' && out.container !== 'mp4') {
+    const { container: _container, ...rest } = out;
+    out = rest;
+  }
   return { ...out, settingsVersion: SETTINGS_VERSION };
 }
 

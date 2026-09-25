@@ -11,7 +11,13 @@ import type {
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
 import { loadSettings, migrateSettings, saveSettings, toFrameRate } from '../lib/settings.ts';
-import { DEFAULT_SETTINGS, type Recording, type Settings } from '../lib/types.ts';
+import {
+  DEFAULT_SETTINGS,
+  FRAME_RATES,
+  type FrameRate,
+  type Recording,
+  type Settings,
+} from '../lib/types.ts';
 import {
   captureDisplay,
   captureMic,
@@ -615,6 +621,19 @@ async function chooseFolder(): Promise<void> {
   }
 }
 
+/** One option per offered frame rate (types.ts `FRAME_RATES`), so the two cannot drift. */
+const FRAME_RATE_LABELS: Record<FrameRate, string> = {
+  5: '5 fps: calls and slides, the smallest files',
+  10: '10 fps',
+  30: '30 fps: smooth motion, the largest files',
+};
+
+function fillFrameRates(): void {
+  $<HTMLSelectElement>('select[name="frameRate"]').replaceChildren(
+    ...FRAME_RATES.map((rate) => new Option(FRAME_RATE_LABELS[rate], String(rate))),
+  );
+}
+
 /** The form and the Record section's checkbox from Settings. */
 function fillSettings(settings: Settings): void {
   const fields = $<HTMLFormElement>('#settings-form').elements;
@@ -635,6 +654,7 @@ const settingsKey = (s: Settings): string =>
 
 function bindSettings(settings: Settings): void {
   const form = $<HTMLFormElement>('#settings-form');
+  fillFrameRates();
   fillSettings(settings);
   formBound = true;
   let lastSaved = settingsKey(settings);

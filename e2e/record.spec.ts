@@ -9,6 +9,8 @@ import type { BrowserContext, Page } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
 import {
   escape,
+  removeOpfs,
+  setSettings,
   startDialogs,
   stopDialogs,
   waitForStartDialog,
@@ -71,17 +73,6 @@ async function seedExportFolder(page: Page): Promise<void> {
       };
     });
   }, EXPORT_DIR);
-}
-
-/** Write settings as the form would: stamped with the current version, unless the patch says otherwise. */
-async function setSettings(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(
-    async ({ patch, version }) => {
-      const cur = ((await chrome.storage.local.get('settings'))['settings'] ?? {}) as object;
-      await chrome.storage.local.set({ settings: { settingsVersion: version, ...cur, ...patch } });
-    },
-    { patch, version: SETTINGS_VERSION },
-  );
 }
 
 async function clearRecordings(page: Page): Promise<void> {
@@ -154,6 +145,8 @@ interface Probe {
   headerDuration: number;
   format: string;
   videoFrames: number;
+  /** The last video packet's time: how far the pictures actually go, whatever the header says. */
+  lastVideoPts: number;
   audioChannels: number;
 }
 
@@ -175,12 +168,14 @@ function ffprobe(file: string): Probe {
     duration = Math.max(0, ...packets.map((p) => Number(p.pts_time)).filter(Number.isFinite));
   }
   const audio = (probe.streams ?? []).find((s) => s.codec_type === 'audio');
+  const video = run(['-show_packets', '-select_streams', 'v:0']).packets ?? [];
   return {
     codecs: (probe.streams ?? []).map((s) => s.codec_name),
     duration,
     headerDuration,
     format: probe.format?.format_name ?? '',
-    videoFrames: (run(['-show_packets', '-select_streams', 'v:0']).packets ?? []).length,
+    videoFrames: video.length,
+    lastVideoPts: Math.max(0, ...video.map((p) => Number(p.pts_time)).filter(Number.isFinite)),
     audioChannels: audio?.channels ?? 0,
   };
 }
@@ -275,8 +270,11 @@ test('picker path: 3 s → recording.webm (av1+opus, 5 fps, with its duration), 
   expect(seconds).toBeLessThan(5);
 
   const opfs = ['recordings', rec!.id];
-  expectPcmLength(await opfsSize(page, [...opfs, 'mic.pcm']), seconds, 'mic.pcm');
-  expectPcmLength(await opfsSize(page, [...opfs, 'display.pcm']), seconds, 'display.pcm');
+  const micBytes = await opfsSize(page, [...opfs, 'mic.pcm']);
+  const displayBytes = await opfsSize(page, [...opfs, 'display.pcm']);
+  expectPcmLength(micBytes, seconds, 'mic.pcm');
+  expectPcmLength(displayBytes, seconds, 'display.pcm');
+  const pcmSeconds = Math.max(micBytes, displayBytes) / PCM_BYTES_PER_SECOND;
   // Content, not just length: the taps zero-fill when starved, so a starved tap has the right size.
   const micDb = rmsDb(await opfsBytes(page, [...opfs, 'mic.pcm']));
   const displayDb = rmsDb(await opfsBytes(page, [...opfs, 'display.pcm']));
@@ -300,10 +298,22 @@ test('picker path: 3 s → recording.webm (av1+opus, 5 fps, with its duration), 
   // player shows as the length, and what makes the exported file 11 bytes longer than the OPFS one.
   expect(probe.headerDuration).toBeGreaterThan(2);
   expect(probe.headerDuration).toBeLessThan(5);
-  expect(Math.abs(probe.headerDuration - seconds)).toBeLessThan(0.01);
+  // Its value is the PCM length (the audio clock, which the clusters follow), not the wall clock.
+  expect(Math.abs(probe.headerDuration - pcmSeconds)).toBeLessThan(0.002);
   expect(await opfsSize(page, [EXPORT_DIR, rec!.exportPath!, 'recording.webm'])).toBe(
     videoBytes + 11,
   );
+  // Re-export from the row (the exported file deleted first, else it is left alone) writes the
+  // same file again: the header patch is idempotent and the OPFS copy is untouched.
+  await removeOpfs(page, [EXPORT_DIR, rec!.exportPath!], ['recording.webm']);
+  await page.locator(`.recording-item[data-id="${rec!.id}"] button.re-export`).click();
+  await expect(page.locator('#library-status')).toContainText('Saved recording.webm', {
+    timeout: 15_000,
+  });
+  expect(await opfsSize(page, [EXPORT_DIR, rec!.exportPath!, 'recording.webm'])).toBe(
+    videoBytes + 11,
+  );
+  expect(await opfsSize(page, [...opfs, 'video.webm'])).toBe(videoBytes);
   // Captured at 5 fps (Settings default), mixed to mono.
   expect(probe.videoFrames).toBeGreaterThan(0);
   expect(probe.videoFrames).toBeLessThanOrEqual(Math.ceil(probe.duration) * 5 + 2);
@@ -419,8 +429,10 @@ for (const container of ['webm', 'mp4'] as const)
     const probe = ffprobe(await saveExport(page, rec!, `recovered.${container}`));
     console.log('ffprobe', JSON.stringify(probe));
     expect(probe.codecs).toEqual(expect.arrayContaining([container === 'webm' ? 'av1' : 'h264']));
-    // Everything up to the last chunk written before the kill decodes.
-    expect(probe.duration).toBeGreaterThan(seconds - 1.5);
+    // Everything up to the last chunk written before the kill decodes: the packets say so (the
+    // header can only repeat what the export wrote into it).
+    expect(probe.videoFrames).toBeGreaterThan(0);
+    expect(probe.lastVideoPts).toBeGreaterThan(seconds - 1.5);
     // The header says how long: the recovered WebM gets the record's duration (from the PCM
     // length) written in; a fragmented MP4 carries its own from the fragments.
     if (container === 'webm') expect(Math.abs(probe.headerDuration - seconds)).toBeLessThan(0.01);

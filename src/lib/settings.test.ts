@@ -22,6 +22,21 @@ describe('migrateSettings', () => {
   it('stamps an empty store with the version and nothing else', () => {
     assert.deepEqual(migrateSettings({}), { settingsVersion: SETTINGS_VERSION });
   });
+
+  it('normalises a stored frame rate or container that is not one of the offered values', () => {
+    const odd = { frameRate: 15, container: 'avi', settingsVersion: SETTINGS_VERSION } as unknown;
+    const out = migrateSettings(odd as Parameters<typeof migrateSettings>[0]);
+    assert.equal(out.frameRate, DEFAULT_SETTINGS.frameRate);
+    assert.equal(out.container, undefined);
+    assert.equal({ ...DEFAULT_SETTINGS, ...out }.container, 'webm');
+    const fine = migrateSettings({
+      frameRate: 30,
+      container: 'mp4',
+      settingsVersion: SETTINGS_VERSION,
+    });
+    assert.equal(fine.frameRate, 30);
+    assert.equal(fine.container, 'mp4');
+  });
 });
 
 describe('toFrameRate', () => {
