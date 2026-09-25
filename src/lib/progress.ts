@@ -46,8 +46,12 @@ export interface PipelineProgress {
   overall: number;
   /** Epoch ms when the run began; absent while queued. */
   startedAt?: number;
-  /** Rough seconds left, only once the job's own pace can be measured. */
-  remainingS?: number;
+  /**
+   * Rough seconds left, only once the job's own pace can be measured, and what they cover: the
+   * running channel step alone while another channel step waits (its speech is not measured
+   * until its turn), the whole job once the last channel runs.
+   */
+  remaining?: { seconds: number; scope: 'step' | 'job' };
 }
 
 /** What a channel's job reports: the transcribe worker's progress without its envelope. */
@@ -78,6 +82,7 @@ export interface PlanInput {
 }
 
 const CACHED_DETAIL = 'kept from the last run';
+const NO_SPEECH_DETAIL = 'no speech found';
 
 /** The usual share of a job's time; a cached channel costs nothing. */
 const WEIGHT: Record<StepKind, number> = { model: 0.3, channel: 1, attribute: 0.05, export: 0.05 };
@@ -90,7 +95,10 @@ export function stepWeight(step: PipelineStep): number {
 }
 
 /** The microphone is the human, by the name Settings gives them; the display is the call. */
-function channelPhrase(channel: ChannelId, myName: string): { label: string; inSentence: string } {
+export function channelPhrase(
+  channel: ChannelId,
+  myName: string,
+): { label: string; inSentence: string } {
   if (channel === 'display') return { label: 'The call', inSentence: 'the call' };
   const name = myName.trim();
   if (!name || name === DEFAULT_SETTINGS.myName)
@@ -169,12 +177,12 @@ export class ProgressTracker {
   readonly steps: PipelineStep[];
   readonly startedAt: number;
   private readonly myName: string;
-  /** Bytes per model file seen so far; the download is one bar over all of them. */
+  /** Bytes per model file seen so far; the download's count is one over all of them. */
   private readonly downloads = new Map<string, { loaded: number; total: number }>();
   /** When the running channel's recognition began (its first region), and where it is. */
   private pace: { startedAt: number; doneS: number; totalS: number } | undefined;
-  /** The last finished channel's pace: voiced seconds recognised per wall second, and its size. */
-  private lastPace: { rate: number; totalS: number } | undefined;
+  /** The last finished channel's pace: voiced seconds recognised per wall second. */
+  private lastRate: number | undefined;
 
   constructor(input: PlanInput, startedAt: number) {
     this.steps = planSteps(input);
@@ -218,6 +226,9 @@ export class ProgressTracker {
       model.state = 'running';
       if (step.state === 'running') step.state = 'pending';
       if (r.phase === 'download') {
+        // The files come one after another and each says its size only as it starts, so the
+        // total grows on the way: the count is honest and never falls, a share would (a 12 MB
+        // file done, then a 2.4 GB one starts). No share: the bar slides, the count says how far.
         if (r.file && r.total > 0) this.downloads.set(r.file, { loaded: r.loaded, total: r.total });
         let loaded = 0;
         let total = 0;
@@ -225,13 +236,9 @@ export class ProgressTracker {
           loaded += d.loaded;
           total += d.total;
         }
-        if (total > 0) {
-          model.fraction = Math.min(1, loaded / total);
-          model.detail = `${mb(loaded)} of ${mb(total)} MB`;
-        } else {
-          delete model.fraction;
-          delete model.detail;
-        }
+        delete model.fraction;
+        if (total > 0) model.detail = `${mb(loaded)} of ${mb(total)} MB`;
+        else delete model.detail;
       } else {
         // The bytes are all here; the share stays full so the job never moves backwards.
         model.fraction = 1;
@@ -251,7 +258,7 @@ export class ProgressTracker {
     step.state = 'running';
     if (r.total <= 0) {
       step.fraction = 1;
-      step.detail = 'no speech found';
+      step.detail = NO_SPEECH_DETAIL;
       return r.phase;
     }
     const finished = r.loaded >= r.total;
@@ -272,29 +279,38 @@ export class ProgressTracker {
     return r.phase;
   }
 
-  /** `channel`'s job finished: its step is done and its pace is kept for the ones behind it. */
+  /**
+   * `channel`'s job finished: its step is done (a silent channel keeps saying so) and its pace is
+   * kept for the channel behind it.
+   */
   finishChannel(channel: ChannelId, now: number): void {
     const step = this.stepFor(channel);
     if (!step) return;
     step.state = 'done';
     delete step.fraction;
-    delete step.detail;
+    if (step.detail !== NO_SPEECH_DETAIL) delete step.detail;
     if (this.pace) {
-      const rate = this.rate(now);
-      if (rate) this.lastPace = { rate, totalS: this.pace.totalS };
+      this.lastRate = this.rate(now) ?? this.lastRate;
       this.pace = undefined;
     }
   }
 
-  /** Steps 4 and 5: everything ahead is done, nothing behind has started. */
+  /**
+   * Steps 4 and 5: everything ahead is done, nothing behind has started. A files step the plan
+   * did not have (an export path that appeared meanwhile) is added at the end.
+   */
   begin(kind: 'attribute' | 'export'): void {
-    const at = this.steps.findIndex((s) => s.kind === kind);
-    if (at < 0) return;
+    let at = this.steps.findIndex((s) => s.kind === kind);
+    if (at < 0) {
+      if (kind !== 'export') return;
+      this.steps.push({ kind, label: 'Transcript files', state: 'pending' });
+      at = this.steps.length - 1;
+    }
     this.steps.forEach((s, i) => {
       if (i < at) {
         s.state = 'done';
         delete s.fraction;
-        if (!s.cached) delete s.detail;
+        if (!s.cached && s.detail !== NO_SPEECH_DETAIL) delete s.detail;
       } else if (i === at) s.state = 'running';
     });
   }
@@ -304,7 +320,7 @@ export class ProgressTracker {
     for (const s of this.steps) {
       s.state = 'done';
       delete s.fraction;
-      if (!s.cached) delete s.detail;
+      if (!s.cached && s.detail !== NO_SPEECH_DETAIL) delete s.detail;
     }
   }
 
@@ -317,34 +333,37 @@ export class ProgressTracker {
   }
 
   /**
-   * Seconds left, from this job's own pace: the running channel's, or the last finished one's
-   * until the running one has shown its own. Nothing before a channel has been recognised for a
-   * while (a model download says nothing about the recognition to come), and nothing for the
-   * steps after the channels (they take seconds).
+   * What is left on the running channel, from this job's own pace: the channel's, or the last
+   * finished channel's until this one has shown its own. It covers the whole job only when no
+   * other channel waits: a channel's speech is measured when its turn comes, and the human's
+   * share of a call says nothing about the others'. Nothing before a channel has been recognised
+   * for a while (a model download says nothing about the recognition to come), nothing between
+   * two channels, and nothing for the steps after them (they take seconds).
    */
-  remainingS(now: number): number | undefined {
-    const rate = this.rate(now) ?? this.lastPace?.rate;
-    const totalS = this.pace?.totalS ?? this.lastPace?.totalS;
-    if (!rate || totalS === undefined) return undefined;
-    let left = this.pace ? Math.max(0, this.pace.totalS - this.pace.doneS) : 0;
-    for (const s of this.steps) if (s.kind === 'channel' && s.state === 'pending') left += totalS;
-    return Math.round(left / rate);
+  remaining(now: number): PipelineProgress['remaining'] {
+    if (!this.pace) return undefined;
+    const rate = this.rate(now) ?? this.lastRate;
+    if (!rate) return undefined;
+    const left = Math.max(0, this.pace.totalS - this.pace.doneS);
+    const another = this.steps.some((s) => s.kind === 'channel' && s.state === 'pending');
+    return { seconds: Math.round(left / rate), scope: another ? 'step' : 'job' };
   }
 
   snapshot(phase: PipelinePhase, now: number, message?: string): PipelineProgress {
     const i = runningIndex(this.steps);
     const step = i >= 0 ? this.steps[i] : undefined;
     const channel = step?.kind === 'channel' ? step.channel : undefined;
-    const remainingS = phase === 'transcribe' ? this.remainingS(now) : undefined;
+    const remaining = phase === 'transcribe' ? this.remaining(now) : undefined;
     return {
       phase,
       ...(channel ? { channel } : {}),
       ...(step?.fraction !== undefined ? { fraction: step.fraction } : {}),
       message: message ?? headline(phase, step, this.myName),
       steps: this.steps.map((s) => ({ ...s })),
-      overall: phase === 'done' ? 1 : overallFraction(this.steps),
+      // A failed run ends where it stopped; `finish()` makes a completed one 1.
+      overall: overallFraction(this.steps),
       startedAt: this.startedAt,
-      ...(remainingS !== undefined ? { remainingS } : {}),
+      ...(remaining ? { remaining } : {}),
     };
   }
 }
@@ -355,24 +374,34 @@ export function stepOf(p: PipelineProgress): { index: number; count: number } | 
   return i >= 0 ? { index: i + 1, count: p.steps.length } : undefined;
 }
 
-/** "under a minute left", "about 3 min left", "about 1 h 20 min left". */
-export function formatRemaining(s: number): string {
-  if (s < 60) return 'under a minute left';
-  const minutes = Math.round(s / 60);
-  if (minutes < 60) return `about ${minutes} min left`;
+/**
+ * "under a minute left", "about 3 min left", "about 1 h 20 min left"; "… left on this step" while
+ * the estimate covers the running channel only.
+ */
+export function formatRemaining(seconds: number, scope: 'step' | 'job' = 'job'): string {
+  const minutes = Math.round(seconds / 60);
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return m ? `about ${h} h ${m} min left` : `about ${h} h left`;
+  const span =
+    seconds < 60
+      ? 'under a minute'
+      : minutes < 60
+        ? `about ${minutes} min`
+        : m
+          ? `about ${h} h ${m} min`
+          : `about ${h} h`;
+  return `${span} left${scope === 'step' ? ' on this step' : ''}`;
 }
 
 /**
  * One line for a status readout: the headline, the step, and how far ("Transcribing the call ·
- * step 3 of 5 · 34% overall"; a download shows its bytes instead of a share).
+ * step 3 of 5 · 34% overall"; a download shows its bytes instead of a share; the end, its
+ * message alone).
  */
 export function summaryLine(p: PipelineProgress): string {
   const parts = [p.message];
   const at = stepOf(p);
-  if (at) {
+  if (at && p.phase !== 'done') {
     parts.push(`step ${at.index} of ${at.count}`);
     const step = p.steps[at.index - 1];
     if (step?.kind === 'model' && step.detail) parts.push(step.detail);

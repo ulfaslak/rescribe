@@ -128,21 +128,36 @@ const live = (rec: Recording): boolean =>
 // --- Transcription (steps 3–5 live in src/app/pipeline.ts) --------------------------------------
 /** The pipeline's latest progress per recording id, shown on its row while it is held. */
 const progress = new Map<string, PipelineProgress>();
+/** A model download reports every chunk: the row's widget is rebuilt at most this often. */
+const PROGRESS_RENDER_MS = 100;
+const progressTimers = new Map<string, number>();
 
 /** app.ts re-renders the list on every phase change; here the widget of a row already rendered as
- * held is updated in place, and a row not yet rendered that way is rendered (coalesced). */
+ * held is updated in place (coalesced to one rebuild per PROGRESS_RENDER_MS), and a row not yet
+ * rendered that way is rendered (coalesced). */
 function onProgress(id: string, p: PipelineProgress): void {
   if (p.phase === 'done') {
     progress.delete(id);
+    window.clearTimeout(progressTimers.get(id));
+    progressTimers.delete(id);
     void renderList();
     return;
   }
   progress.set(id, p);
-  const el = document.querySelector<HTMLElement>(
-    `.recording-item[data-id="${CSS.escape(id)}"] .progress`,
+  if (progressTimers.has(id)) return;
+  progressTimers.set(
+    id,
+    window.setTimeout(() => {
+      progressTimers.delete(id);
+      const latest = progress.get(id);
+      if (!latest) return;
+      const el = document.querySelector<HTMLElement>(
+        `.recording-item[data-id="${CSS.escape(id)}"] .progress`,
+      );
+      if (el) renderSteps(el, latest, { headline: true });
+      else void renderList();
+    }, PROGRESS_RENDER_MS),
   );
-  if (el) renderSteps(el, p, { headline: true });
-  else void renderList();
 }
 
 /** Steps 3–5 again from what is on disk: the PCM, or the segments cache once the media is gone. */

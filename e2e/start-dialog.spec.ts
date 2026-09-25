@@ -167,7 +167,7 @@ test('a save in the stop dialog opens the processing tab, which follows the expo
   // The export, then the pipeline (the first run downloads the model), each step a headline in
   // the human's words (issue #31: e2e/progress.spec.ts walks the steps themselves).
   await expect(progress.locator('#headline')).toHaveText(
-    /Saving the video|Saved|Waiting to transcribe|Downloading the speech model|Loading the speech model|Transcribing (your microphone|the call)|Working out who said what|Writing the transcript files/,
+    /Saving the video|Saved|Waiting to transcribe|Downloading the speech model|Loading the speech model|Transcribing (your|.+’s) microphone|Transcribing the call|Working out who said what|Writing the transcript files/,
     { timeout: 30_000 },
   );
   await expect(progress.locator('#destination')).toContainText(`${EXPORT_DIR}/`, {
@@ -192,7 +192,7 @@ test('a save in the stop dialog opens the processing tab, which follows the expo
   const again = await waitForProgressPage(context, extensionId);
   expect(again.url()).toBe(`${progressUrl(extensionId)}?id=${second!.id}`);
   await expect(again.locator('#headline')).toHaveText(
-    /Waiting to transcribe|Downloading the speech model|Loading the speech model|Transcribing (your microphone|the call)|Working out who said what|Writing the transcript files/,
+    /Waiting to transcribe|Downloading the speech model|Loading the speech model|Transcribing (your|.+’s) microphone|Transcribing the call|Working out who said what|Writing the transcript files/,
     { timeout: 60_000 },
   );
   const appUrl = `chrome-extension://${extensionId}/app/app.html`;

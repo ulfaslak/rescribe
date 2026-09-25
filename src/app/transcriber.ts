@@ -8,7 +8,7 @@
 // every job posted behind the failed one fails too; the next job starts a fresh worker. Post the
 // channels one after another if the second should survive the first's failure.
 import type { ChannelId, Segment } from '../lib/types.ts';
-import type { Backend } from '../lib/asr/engine.ts';
+import { sameEngineOptions, type Backend, type EngineOptions } from '../lib/asr/engine.ts';
 import type { ProgressMessage, WorkerRequest, WorkerResponse } from '../workers/transcribe.ts';
 
 export interface TranscribeOptions {
@@ -36,6 +36,7 @@ export interface TranscriberDeps {
 
 interface Job {
   id: string;
+  options: EngineOptions;
   resolve: (segments: Segment[]) => void;
   reject: (err: Error) => void;
   onProgress?: (p: TranscribeProgress) => void;
@@ -48,6 +49,8 @@ export class Transcriber {
   private readonly createWorker: () => WorkerLike;
   private worker: WorkerLike | undefined;
   private readonly pending = new Map<string, Job>();
+  /** The model the live worker holds loaded: what its last result was made with. */
+  private loaded: EngineOptions | undefined;
   private disposed = false;
   private seq = 0;
 
@@ -82,8 +85,24 @@ export class Transcriber {
       // A detached or shared buffer makes postMessage throw; that fails this job only (the
       // executor's throw rejects the promise) and registers nothing, so later jobs are unaffected.
       worker.postMessage(request, [pcm.buffer as ArrayBuffer]);
-      this.pending.set(id, { id, resolve, reject, onProgress });
+      this.pending.set(id, {
+        id,
+        options: { model: opts.model, backend: opts.backend },
+        resolve,
+        reject,
+        onProgress,
+      });
     });
+  }
+
+  /**
+   * Whether the worker holds this model loaded, as far as its results say: true after a job with
+   * these options succeeded on the worker that is still alive; false before the first job, after
+   * a restart (a failure, a crash) and once a job with other options ran. What the pipeline's
+   * progress plan asks before it decides whether the human will see a "Speech model" step.
+   */
+  holdsModel(options: EngineOptions): boolean {
+    return this.worker !== undefined && !!this.loaded && sameEngineOptions(this.loaded, options);
   }
 
   /** Terminates the worker and fails every pending job. A disposed Transcriber stays disposed. */
@@ -114,6 +133,7 @@ export class Transcriber {
       }
       case 'result':
         this.pending.delete(job.id);
+        this.loaded = job.options;
         job.resolve(msg.segments);
         return;
       case 'error':
@@ -137,6 +157,7 @@ export class Transcriber {
   private restart(err: Error): void {
     this.worker?.terminate();
     this.worker = undefined;
+    this.loaded = undefined;
     const jobs = [...this.pending.values()];
     this.pending.clear();
     for (const job of jobs) job.reject(err);

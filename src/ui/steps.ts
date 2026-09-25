@@ -48,7 +48,8 @@ function note(step: PipelineStep, vertical: boolean): string | undefined {
       ? `${percent(step.fraction)} · ${step.detail}`
       : percent(step.fraction);
   }
-  if (step.state === 'done' && step.cached) return step.detail;
+  // Done: what a kept or a silent channel has to say.
+  if (step.state === 'done') return step.detail;
   return undefined;
 }
 
@@ -123,8 +124,8 @@ export function renderSteps(root: HTMLElement, p: PipelineProgress, opts: StepsO
     elapsed.dataset['startedAt'] = String(p.startedAt);
     foot.append(elapsed);
   }
-  if (p.remainingS !== undefined)
-    foot.append(el('span', 'steps-left', formatRemaining(p.remainingS)));
+  if (p.remaining)
+    foot.append(el('span', 'steps-left', formatRemaining(p.remaining.seconds, p.remaining.scope)));
   box.append(foot);
   root.replaceChildren(box);
 }

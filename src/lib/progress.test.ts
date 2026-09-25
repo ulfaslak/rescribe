@@ -143,30 +143,31 @@ describe('ProgressTracker', () => {
     t.report('mic', { phase: 'download', loaded: 100e6, total: 600e6, file: 'a/enc' }, t0 + 20);
     emit(t.snapshot('download', t0 + 20)); // 3
     t.report('mic', { phase: 'download', loaded: 600e6, total: 600e6, file: 'a/enc' }, t0 + 30);
+    emit(t.snapshot('download', t0 + 30)); // 4: the first file done, the next not started
     t.report('mic', { phase: 'download', loaded: 50e6, total: 100e6, file: 'a/dec' }, t0 + 40);
-    emit(t.snapshot('download', t0 + 40)); // 4
+    emit(t.snapshot('download', t0 + 40)); // 5
     t.report('mic', { phase: 'load', loaded: 0, total: 1 }, t0 + 50);
-    emit(t.snapshot('load', t0 + 50)); // 5
+    emit(t.snapshot('load', t0 + 50)); // 6
     // The microphone: three regions, 60 voiced seconds.
     t.report('mic', region(0, 3, 0, 60, 12), t0 + 1000);
-    emit(t.snapshot('transcribe', t0 + 1000)); // 6
+    emit(t.snapshot('transcribe', t0 + 1000)); // 7
     t.report('mic', region(2, 3, 45, 60, 1092), t0 + 11_000);
-    emit(t.snapshot('transcribe', t0 + 11_000)); // 7
+    emit(t.snapshot('transcribe', t0 + 11_000)); // 8
     t.report('mic', region(3, 3, 60, 60), t0 + 15_000);
     t.finishChannel('mic', t0 + 15_000);
     t.startChannel('display');
-    emit(t.snapshot('transcribe', t0 + 15_000)); // 8
+    emit(t.snapshot('transcribe', t0 + 15_000)); // 9
     // The call: the model is loaded now, the job starts at its regions.
     t.report('display', region(0, 2, 0, 40, 3), t0 + 16_000);
-    emit(t.snapshot('transcribe', t0 + 16_000)); // 9
+    emit(t.snapshot('transcribe', t0 + 16_000)); // 10
     t.report('display', region(2, 2, 40, 40), t0 + 26_000);
     t.finishChannel('display', t0 + 26_000);
     t.begin('attribute');
-    emit(t.snapshot('attribute', t0 + 26_100)); // 10
+    emit(t.snapshot('attribute', t0 + 26_100)); // 11
     t.begin('export');
-    emit(t.snapshot('export', t0 + 26_200)); // 11
+    emit(t.snapshot('export', t0 + 26_200)); // 12
     t.finish();
-    emit(t.snapshot('done', t0 + 26_300, 'Transcribed.')); // 12
+    emit(t.snapshot('done', t0 + 26_300, 'Transcribed.')); // 13
 
     const counts = new Set(seen.map((p) => p.steps.length));
     assert.deepEqual([...counts], [5]);
@@ -175,6 +176,7 @@ describe('ProgressTracker', () => {
       [
         'Waiting to transcribe…',
         'Transcribing Ulf’s microphone',
+        'Downloading the speech model',
         'Downloading the speech model',
         'Downloading the speech model',
         'Downloading the speech model',
@@ -191,17 +193,21 @@ describe('ProgressTracker', () => {
     // Reading the audio: the channel runs without a share.
     assert.deepEqual(stepOf(seen[1]!), { index: 2, count: 5 });
     assert.equal(seen[1]!.fraction, undefined);
-    // The download: the model runs and the channel waits; one bar over both files, in MB.
+    // The download: the model runs and the channel waits; one count over both files, in MB, and
+    // no share (the total grows as each file starts: a share would fall at the boundary).
     assert.deepEqual(stepOf(seen[2]!), { index: 1, count: 5 });
     assert.equal(seen[2]!.steps[1]!.state, 'pending');
+    assert.equal(seen[2]!.steps[0]!.detail, undefined);
     assert.equal(seen[3]!.steps[0]!.detail, '100 of 600 MB');
-    assert.equal(seen[4]!.steps[0]!.detail, '650 of 700 MB');
-    assert.ok(Math.abs(seen[4]!.fraction! - 650 / 700) < 1e-9);
-    assert.equal(seen[5]!.fraction, 1);
-    assert.equal(seen[5]!.steps[0]!.detail, 'loading');
+    assert.equal(seen[4]!.steps[0]!.detail, '600 of 600 MB');
+    assert.equal(seen[5]!.steps[0]!.detail, '650 of 700 MB');
+    for (const i of [2, 3, 4, 5]) assert.equal(seen[i]!.fraction, undefined, `download ${i}`);
+    assert.equal(seen[6]!.fraction, 1);
+    assert.equal(seen[6]!.steps[0]!.detail, 'loading');
+    assert.ok(Math.abs(seen[6]!.overall - 0.3 / 2.4) < 1e-9);
     // The microphone at its second region: the step's share by voiced seconds, the position in
     // the recording, and where the whole job stands.
-    const mid = seen[7]!;
+    const mid = seen[8]!;
     assert.equal(mid.channel, 'mic');
     assert.equal(mid.steps[0]!.state, 'done');
     assert.equal(mid.fraction, 0.75);
@@ -209,43 +215,66 @@ describe('ProgressTracker', () => {
     assert.deepEqual(stepOf(mid), { index: 2, count: 5 });
     assert.ok(Math.abs(mid.overall - (0.3 + 0.75) / 2.4) < 1e-9, String(mid.overall));
     assert.equal(mid.startedAt, t0);
-    // Its pace: 45 voiced seconds in 10 s. Left: 15 s here, plus 60 s guessed for the call.
-    assert.equal(mid.remainingS, 17);
-    // Between the channels: the microphone is done, the call runs without a share yet.
+    // Its pace: 45 voiced seconds in 10 s; 15 s to go on this step. The call's speech is not
+    // measured yet, so the estimate covers this step only.
+    assert.deepEqual(mid.remaining, { seconds: 3, scope: 'step' });
+    // Between the channels: the microphone is done, the call runs without a share or an
+    // estimate yet.
     assert.deepEqual(
-      seen[8]!.steps.map((s) => s.state),
+      seen[9]!.steps.map((s) => s.state),
       ['done', 'done', 'running', 'pending', 'pending'],
     );
-    assert.equal(seen[8]!.fraction, undefined);
-    // The call's first region: no pace of its own yet, the microphone's (60 s in 14 s) is used.
-    const call = seen[9]!;
+    assert.equal(seen[9]!.fraction, undefined);
+    assert.equal(seen[9]!.remaining, undefined);
+    // The call's first region: no pace of its own yet, the microphone's (60 s in 14 s) is used,
+    // and with no channel behind it the estimate is the job's.
+    const call = seen[10]!;
     assert.equal(call.channel, 'display');
-    assert.equal(call.remainingS, Math.round(40 / (60 / 14)));
+    assert.deepEqual(call.remaining, { seconds: Math.round(40 / (60 / 14)), scope: 'job' });
     // The last two steps, then everything done.
     assert.deepEqual(
-      seen[10]!.steps.map((s) => s.state),
+      seen[11]!.steps.map((s) => s.state),
       ['done', 'done', 'done', 'running', 'pending'],
     );
-    assert.equal(seen[10]!.remainingS, undefined);
+    assert.equal(seen[11]!.remaining, undefined);
     assert.deepEqual(
-      seen[12]!.steps.map((s) => s.state),
+      seen[13]!.steps.map((s) => s.state),
       ['done', 'done', 'done', 'done', 'done'],
     );
-    assert.equal(seen[12]!.overall, 1);
+    assert.equal(seen[13]!.overall, 1);
+    assert.equal(summaryLine(seen[13]!), 'Transcribed.');
     // Never backwards.
     for (let i = 1; i < seen.length; i++)
       assert.ok(seen[i]!.overall >= seen[i - 1]!.overall - 1e-9, `overall fell at ${i}`);
     // A snapshot is a copy: the tracker moving on does not change what a listener kept.
-    assert.equal(seen[6]!.steps[1]!.state, 'running');
+    assert.equal(seen[7]!.steps[1]!.state, 'running');
+  });
+
+  it('a failed run ends where it stopped: no full share, no step in the line', () => {
+    const t = new ProgressTracker({ ...both, model: false }, t0);
+    t.startChannel('mic');
+    t.report('mic', region(1, 2, 30, 60, 100), t0);
+    const p = t.snapshot('done', t0 + 10, 'Transcription failed: boom');
+    assert.ok(p.overall < 1, String(p.overall));
+    assert.equal(summaryLine(p), 'Transcription failed: boom');
   });
 
   it('shows no time left before a channel has been recognised for a while', () => {
     const t = new ProgressTracker(both, t0);
     t.report('mic', { phase: 'download', loaded: 1, total: 2, file: 'x' }, t0 + 10);
-    assert.equal(t.snapshot('download', t0 + 10).remainingS, undefined);
+    assert.equal(t.snapshot('download', t0 + 10).remaining, undefined);
     t.report('mic', region(1, 4, 10, 40), t0 + 100);
-    assert.equal(t.snapshot('transcribe', t0 + 2000).remainingS, undefined);
-    assert.equal(typeof t.snapshot('transcribe', t0 + 6000).remainingS, 'number');
+    assert.equal(t.snapshot('transcribe', t0 + 2000).remaining, undefined);
+    assert.equal(t.snapshot('transcribe', t0 + 6000).remaining?.scope, 'step');
+  });
+
+  it('a files step the plan did not have is added when the export begins', () => {
+    const t = new ProgressTracker({ ...both, exportFiles: false }, t0);
+    assert.equal(t.steps.length, 4);
+    t.begin('export');
+    const p = t.snapshot('export', t0);
+    assert.deepEqual(stepOf(p), { index: 5, count: 5 });
+    assert.equal(p.message, 'Writing the transcript files');
   });
 
   it('adds the model step on the spot when the worker fetches one the plan did not expect', () => {
@@ -266,12 +295,16 @@ describe('ProgressTracker', () => {
     assert.equal(t.snapshot('load', t0).message, 'Loading the speech model');
   });
 
-  it('a silent channel is done at once', () => {
+  it('a silent channel is done at once, and stays marked as silent', () => {
     const t = new ProgressTracker(both, t0);
     t.report('mic', { phase: 'transcribe', loaded: 0, total: 0 }, t0);
     const p = t.snapshot('transcribe', t0);
     assert.equal(p.fraction, 1);
     assert.equal(p.steps[1]!.detail, 'no speech found');
+    t.finishChannel('mic', t0);
+    assert.equal(t.snapshot('transcribe', t0).steps[1]!.detail, 'no speech found');
+    t.finish();
+    assert.equal(t.snapshot('done', t0).steps[1]!.detail, 'no speech found');
   });
 
   it('a run from the cache goes straight to who said what', () => {
@@ -319,5 +352,7 @@ describe('summaryLine and formatRemaining', () => {
     assert.equal(formatRemaining(150), 'about 3 min left');
     assert.equal(formatRemaining(3600), 'about 1 h left');
     assert.equal(formatRemaining(4800), 'about 1 h 20 min left');
+    assert.equal(formatRemaining(150, 'step'), 'about 3 min left on this step');
+    assert.equal(formatRemaining(10, 'step'), 'under a minute left on this step');
   });
 });

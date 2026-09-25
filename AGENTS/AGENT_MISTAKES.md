@@ -58,11 +58,11 @@ The decision on a stopped recording could be taken from the dialog (through `app
 
 ### 2026-09-25 · #24 · a race diagnosed from the symptom, then written into the code `[not codified]`
 
-Two tests failed with the dialog "closing on its own" and Discard "doing nothing"; I attributed both to a broadcast `sendMessage` racing the service worker's non-answer, rewrote the dialog to message the app tab by id, and wrote that race into a comment and a commit message as something "seen in the e2e". The next run failed identically: the real causes were Playwright reporting a page closed *during* the Escape press that closed it, and the two-step button's own double-click guard swallowing a confirm 300 ms after arming. The targeted messaging stayed because it is the right shape (only the owner may answer), the false claim was removed. Already named as a pattern (#12 "prose claim asserted, not verified"); this is the second instance. What would codify it: a CLAUDE.md line under self-testing, "before writing a cause into a comment, make the test fail on that cause and pass on its fix".
+Two tests failed with the dialog "closing on its own" and Discard "doing nothing"; I attributed both to a broadcast `sendMessage` racing the service worker's non-answer, rewrote the dialog to message the app tab by id, and wrote that race into a comment and a commit message as something "seen in the e2e". The next run failed identically: the real causes were Playwright reporting a page closed _during_ the Escape press that closed it, and the two-step button's own double-click guard swallowing a confirm 300 ms after arming. The targeted messaging stayed because it is the right shape (only the owner may answer), the false claim was removed. Already named as a pattern (#12 "prose claim asserted, not verified"); this is the second instance. What would codify it: a CLAUDE.md line under self-testing, "before writing a cause into a comment, make the test fail on that cause and pass on its fix".
 
 ### 2026-09-24 · #22 · a tab moved to the background, the start path still written for a visible one `[learned]`
 
-Leaving the app tab hidden on a Meet click was a one-line routing change, but the start path had three assumptions that only held for a visible tab: a note is seen (a missing-microphone note was shown, then overwritten by the ticking clock a second later, after yanking the human out of the call for it), a permission prompt shows (Chrome queues prompts from hidden tabs; the tab-capture id was consumed first, so a queued prompt would have muted the call with nobody hearing it), and a second click reaches a guard (`starting` was set after the first await, and a click landing after the start finished met a stale `idle`). Found by the adversarial review. Rule: when a change alters *where the human is looking*, re-read every line that assumes they can see or act, not just the line that moved them.
+Leaving the app tab hidden on a Meet click was a one-line routing change, but the start path had three assumptions that only held for a visible tab: a note is seen (a missing-microphone note was shown, then overwritten by the ticking clock a second later, after yanking the human out of the call for it), a permission prompt shows (Chrome queues prompts from hidden tabs; the tab-capture id was consumed first, so a queued prompt would have muted the call with nobody hearing it), and a second click reaches a guard (`starting` was set after the first await, and a click landing after the start finished met a stale `idle`). Found by the adversarial review. Rule: when a change alters _where the human is looking_, re-read every line that assumes they can see or act, not just the line that moved them.
 
 ### 2026-09-24 · #22 · an absolute count asserted in a profile that persists `[learned]`
 
@@ -100,7 +100,6 @@ The capture spike recorded "chunks arrive per timeslice, so data on disk within 
 
 `participants` collected every name string ever seen, including the adapter's id fallback and pre-rename names, so a transcript would have read `Participants: spaces/x/devices/1, Anna`; a unit test even enshrined `['p1', 'Anna']`. The list should come from resolved state (the final name per id) and the test should have asked what the human would read. Found by the adversarial review. Codified by the "never an id string" contract on `PlatformEvidence.participants` and its tests in `evidence.test.ts`.
 
-
 ### 2026-09-24 · #18 · a second copy of the owner `[learned]`
 
 Any app tab set the badge and answered `query-status` on load, so a second Rescribe tab desynced the badge and, answering first, could start a concurrent recording from a toolbar click. The design said "one app tab" and nothing enforced it. Found by the adversarial review. Codified in ARCHITECTURE § Runtime topology (single owner: a tab that finds a sibling never listens; the service worker closes duplicates and messages the owner by tab id) and pinned by `e2e/record.spec.ts` "a second app tab is inert".
@@ -127,7 +126,7 @@ Video chunks were queued as `pending = pending.then(async …)`; one rejected `a
 
 ### 2026-09-24 · #2 part 1 · float seconds where the unit was frames `[learned]`
 
-The VAD merged two regions when their gap was *under* 500 ms, but computed the gap in float seconds derived from frame indices, so an exact 500 ms gap came out as 0.4999… and merged. Caught by the unit test that pins both sides of the boundary (`vad.test.ts`, "bursts with a gap under the merge gap become one region; over it, two"); fixed by doing pad, merge, drop and split in integer frames and converting to seconds once at the end.
+The VAD merged two regions when their gap was _under_ 500 ms, but computed the gap in float seconds derived from frame indices, so an exact 500 ms gap came out as 0.4999… and merged. Caught by the unit test that pins both sides of the boundary (`vad.test.ts`, "bursts with a gap under the merge gap become one region; over it, two"); fixed by doing pad, merge, drop and split in integer frames and converting to seconds once at the end.
 
 ### 2026-09-24 · #2 part 1 · state registered before the fallible call `[learned]`
 
@@ -148,7 +147,6 @@ DECISIONS promised a one-time download; `getParakeetModel` fetched the Hub tree 
 ### 2026-09-24 · #17 · contract documented for the eager case, implemented lazily `[learned]`
 
 The client's docstring promised the PCM buffer was transferred at call time; the transfer actually happened when the queued job ran, so a caller reusing the buffer meanwhile would have had the display audio transcribed as the mic channel, silently. Found by the adversarial review; jobs are now posted at call time and `transcriber.test.ts` asserts both buffers are detached before either job finishes.
-
 
 ### 2026-09-24 · #2 part 2 · absence of input read as success `[learned]`
 
@@ -173,6 +171,7 @@ ARCHITECTURE, DECISIONS, INVARIANTS and PRODUCT all said Save now exports the vi
 ### 2026-09-24 · #20 · a re-run erased the failure it was retrying `[learned]`
 
 Marking a `failed` recording `transcribing` cleared its `error`, so the recorder's reason ("Video chunk lost: …") was gone whatever the re-run did, and a re-run without an export path could end `done` with no error at all. Found by the adversarial review. Codified in `pipeline.ts` (the earlier error moves to the note; `done` without an export path always carries a "Not exported: …" reason; no media keeps the earlier text in front) and pinned by "re-running a failed recording".
+
 ### 2026-09-24 · #4 · two-step confirm defeated by a double-click `[learned]`
 
 The library's in-page two-step button armed on the first click and ran on the second, so a double-click on **Delete**, the most ordinary accidental gesture on a button, deleted the recording in one go. The confirm was designed against a single stray click and never walked as a gesture. Found on the paper walk of the edge list before the e2e ran. Codified by `ARM_GUARD_MS` in `src/app/library.ts` (a confirm sooner than 350 ms after arming is ignored) and pinned by the `dblclick` case in `e2e/library.spec.ts`.
