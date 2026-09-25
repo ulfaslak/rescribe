@@ -230,10 +230,13 @@ test('picker path: 3 s → recording.webm (av1+opus, 5 fps, with its duration), 
   await clearRecordings(page);
   await seedExportFolder(page);
   // No {time}: the second recording renders the same folder name and must get a suffix. The
-  // stored settings are an unversioned object with the old default container, as every profile
-  // from before #27 has: the migration drops it and the recording must come out as the new default.
+  // stored settings are an unversioned object with the old default container and no frame rate,
+  // as every profile from before #27 has (the profile here is reused between tests, so the frame
+  // rate a later test sets is dropped): the migration drops the container, and the recording must
+  // come out at the new defaults.
   await setSettings(page, {
     container: 'mp4',
+    frameRate: undefined,
     settingsVersion: undefined,
     pathTemplate: '{date} {title}',
     micByDefault: true,
@@ -322,7 +325,11 @@ test('mp4 option: h264 + aac, exported as recorded', async ({ context, extension
   const page = await openApp(context, extensionId);
   await clearRecordings(page);
   await seedExportFolder(page);
-  await setSettings(page, { container: 'mp4', pathTemplate: '{date} {time} {title}' });
+  await setSettings(page, {
+    container: 'mp4',
+    frameRate: 5,
+    pathTemplate: '{date} {time} {title}',
+  });
   await page.reload();
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
@@ -379,7 +386,7 @@ for (const container of ['webm', 'mp4'] as const)
     let page = await openApp(context, extensionId);
     await clearRecordings(page);
     await seedExportFolder(page);
-    await setSettings(page, { container, pathTemplate: '{date} {time} {title}' });
+    await setSettings(page, { container, frameRate: 5, pathTemplate: '{date} {time} {title}' });
     await page.reload();
     await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
     await expect(page.locator('#status')).toHaveText('idle');
@@ -407,8 +414,10 @@ for (const container of ['webm', 'mp4'] as const)
     expect(probe.codecs).toEqual(expect.arrayContaining([container === 'webm' ? 'av1' : 'h264']));
     // Everything up to the last chunk written before the kill decodes.
     expect(probe.duration).toBeGreaterThan(seconds - 1.5);
-    // The recovered export carries its duration too (from the PCM length).
-    expect(Math.abs(probe.headerDuration - seconds)).toBeLessThan(0.01);
+    // The header says how long: the recovered WebM gets the record's duration (from the PCM
+    // length) written in; a fragmented MP4 carries its own from the fragments.
+    if (container === 'webm') expect(Math.abs(probe.headerDuration - seconds)).toBeLessThan(0.01);
+    else expect(probe.headerDuration).toBeGreaterThan(seconds - 1.5);
   });
 
 test('display track ends mid-recording (Stop sharing, tab closed): the recording waits stopped, the stop dialog opens, Save from it exports a playable video', async ({
