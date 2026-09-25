@@ -76,6 +76,30 @@ Non-negotiable for every PR, including one-line fixes.
 4. **Document mistakes** only if self-testing found real bugs: a `## Mistakes found during self-testing` section in the PR and an entry in [[AGENT_MISTAKES]]. Don't fabricate.
 5. **Clean up.** Kill watchers and browsers you started. Merge. Then from the primary clone: `git checkout main && git pull && npm run build`, and tell the human to reload the extension at `brave://extensions` (see [[DEVELOPMENT]] § "Release").
 
+# Closing a response
+
+End every response that wraps up substantial work (a feature, a multi-commit fix, a deep investigation) with this closer, in this order, and nothing after it. Skip it for short answers and routine replies.
+
+```
+## ⚠️ HEADS UP
+
+<ONE ALL-CAPS SENTENCE PER ITEM, ~15 WORDS MAX>
+> optional lowercase detail, as a blockquote directly under its flag
+
+## Recap
+
+<1–3 plain sentences, under 40 words>
+
+## Next steps
+
+- <one bare action the human takes>
+```
+
+- **`## ⚠️ HEADS UP` only when something diverged from what the human asked or expected.** The human skims closers assuming "went as instructed, everything works", so ALL CAPS is the one signal that breaks the skim. Flag it when: you implemented something differently from the instruction; you found something that changes the picture (a wrong assumption, a pre-existing bug, data that isn't what everyone thought); part of the task is unfinished, unverified, skipped or blocked; you made a judgment call the human would plausibly reverse; something irreversible happened; the human must do something by hand for the work to land. **The test is surprise, not importance.** Do not flag normal successful work, passing tests, decisions already surfaced in the PR body, or the expected consequences of the human's own instructions. If nothing diverged, write no heads-up section at all: never an ALL-CAPS "ALL GOOD". Max 3 flags. Keep ALL CAPS out of the rest of the message. A flag's only accepted sub-detail is one `> lowercase` blockquote line directly beneath it; never fake an indent with spaces or `&nbsp;`.
+- **`## Recap`** is a landing strip, not a summary of the session: under 40 words, 1–3 plain sentences, no bullets, no bold. Lead with the goal and where it landed. Root cause, fix internals and secondary detail belong in the body above, not here. Any GitHub issue the session created is named here (or in Next steps if the human has to act on it) as a clickable link with a half-line of what it tracks; the human never first discovers a filed issue by browsing the tracker.
+- **`## Next steps`** holds only what **the human** does next: max 3 one-line bullets, each a bare action with no rationale clause. Anything you can do yourself is not a next step; do it instead. **When there is nothing for the human to do, omit the section, heading and all.** Never a heading followed by "Nothing", "You're all set" or "Just review when you get a chance". A clean, fully-shipped piece of work ends at the Recap.
+- Anything you name in the closer that can carry a link gets one, as a markdown link with short display text: `[#28](https://github.com/ulfaslak/rescribe/pull/28)`, never a bare `#28` or a bare URL. Not in PR or issue bodies, where `Closes #N` must stay bare.
+
 # Guardrail changes
 
 The human is the gatekeeper. To change a guardrail, propose the change explicitly and wait for approval.
