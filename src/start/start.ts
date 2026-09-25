@@ -234,6 +234,8 @@ async function onStart(): Promise<void> {
   hideOverlay(false);
   status(res?.error ?? 'Rescribe did not answer; try again.', true);
   start.disabled = false;
+  // Disabling the button dropped the focus; back on it, so Escape and Enter still reach the dialog.
+  start.focus();
   starting = false;
 }
 

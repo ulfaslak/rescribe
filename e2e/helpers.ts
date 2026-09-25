@@ -417,8 +417,11 @@ export async function escape(dialog: Page | Frame): Promise<void> {
     return;
   }
   if (!isOverlay(dialog)) return escape(dialog.page());
+  // The keys go to the focused frame of the page: focus the dialog first (a control of its own;
+  // its body is not focusable).
   await dialog
-    .locator('body')
+    .locator('button:not([disabled]), select:not([disabled])')
+    .first()
     .press('Escape')
     .catch(() => undefined);
   await expect.poll(() => dialog.isDetached(), { timeout: 5000 }).toBe(true);

@@ -242,10 +242,18 @@ test('the dialog for a tab that closed meanwhile offers nothing; a discarded rec
 }) => {
   const { page, targetId } = await setUp(context, extensionId);
   const worker = await serviceWorker(context);
-  // The target closes under the open dialog: Start is refused there, not after the fact.
-  await toolbarClick(worker, { id: targetId, url: MEET_URL, title: 'Meet' });
+  // The target closes under the open dialog: Start is refused there, not after the fact. Only a
+  // window outlives its tab (an overlay goes with it), so the target is a page that gets one.
+  const browserPage = await context.newPage();
+  await browserPage.goto('chrome://version');
+  const browserTab = await worker.evaluate(
+    async () =>
+      (await chrome.tabs.query({})).find((t) => t.url?.startsWith('chrome://version'))!.id!,
+  );
+  await toolbarClick(worker, { id: browserTab, url: 'chrome://version/' });
   const dialog = await waitForStartDialog(context, extensionId);
-  await worker.evaluate((id) => chrome.tabs.remove(id), targetId);
+  expect(isOverlay(dialog)).toBe(false);
+  await worker.evaluate((id) => chrome.tabs.remove(id), browserTab);
   await dialog.click('#start');
   await expect(dialog.locator('#status')).toContainText('closed', { timeout: 10_000 });
   await escape(dialog);
