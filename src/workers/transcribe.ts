@@ -45,6 +45,13 @@ export interface ProgressMessage {
   /** 'transcribe' phase: the region about to be recognised (absent on the final message). */
   regionIndex?: number;
   regionCount?: number;
+  /** 'transcribe' phase: where that region starts in the recording, seconds (absent at the end). */
+  positionS?: number;
+  /** 'transcribe' phase: where the channel's audio ends, recording-relative seconds. */
+  lengthS?: number;
+  /** 'transcribe' phase: voiced seconds recognised so far, and in the whole channel. */
+  voicedDoneS?: number;
+  voicedTotalS?: number;
 }
 
 export interface ResultMessage {
@@ -130,6 +137,11 @@ async function runJob(request: TranscribeRequest): Promise<void> {
 
   try {
     const regions = detectVoice(pcm, SAMPLE_RATE);
+    // For the progress: the voiced time is what the recogniser's time follows, the position is
+    // where in the recording the human would look.
+    const lengthS = offsetS + pcm.length / SAMPLE_RATE;
+    const voicedTotalS = regions.reduce((sum, r) => sum + (r.end - r.start), 0);
+    let voicedDoneS = 0;
     const segments: Segment[] = [];
     for (let i = 0; i < regions.length; i++) {
       const region = regions[i]!;
@@ -139,16 +151,24 @@ async function runJob(request: TranscribeRequest): Promise<void> {
         total: regions.length,
         regionIndex: i,
         regionCount: regions.length,
+        positionS: offsetS + region.start,
+        lengthS,
+        voicedDoneS,
+        voicedTotalS,
       });
       const { words } = await asr.transcribe(sliceRegion(pcm, region), SAMPLE_RATE);
       const segment = toSegment(channel, region, words, offsetS);
       if (segment) segments.push(segment);
+      voicedDoneS += region.end - region.start;
     }
     progress({
       phase: 'transcribe',
       loaded: regions.length,
       total: regions.length,
       regionCount: regions.length,
+      lengthS,
+      voicedDoneS: voicedTotalS,
+      voicedTotalS,
     });
     post({ type: 'result', jobId, segments, backend: asr.options.backend });
   } catch (err) {

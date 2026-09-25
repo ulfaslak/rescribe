@@ -30,6 +30,11 @@ for (const page of ['app', 'stop', 'start', 'progress']) {
   }
 }
 if (existsSync('src/icons')) cpSync('src/icons', join(OUT, 'icons'), { recursive: true });
+// Stylesheets of the DOM helpers the pages share (src/ui/), linked from the pages as ../ui/*.css.
+mkdirSync(join(OUT, 'ui'), { recursive: true });
+for (const f of readdirSync('src/ui').filter((f) => f.endsWith('.css'))) {
+  copyFileSync(join('src/ui', f), join(OUT, 'ui', f));
+}
 
 // onnxruntime-web loads its .wasm (and the .mjs glue for threaded builds) at runtime from
 // ort.env.wasm.wasmPaths. We point that at chrome-extension://<id>/vendor/ort/.

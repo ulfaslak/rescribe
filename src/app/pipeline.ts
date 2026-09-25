@@ -10,11 +10,17 @@
 // `transcribing` on startup and run again once). Each channel's segments are kept as
 // `segments.<channel>.json`, so a re-run after a failure on the other channel, with another
 // "my name", or after the media was deleted, does not transcribe it again.
+//
+// Progress goes out as a step plan (lib/progress.ts): the steps of the job in order, which one
+// runs and how far, the whole job's share and a rough time left, in the human's words. The plan
+// is made before the first step from what is on disk, so it is complete from the first event.
 import { assembleTranscript, parseEventLog } from '../lib/assemble.ts';
+import { ProgressTracker, type PipelineProgress } from '../lib/progress.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { ChannelId, Recording, Segment } from '../lib/types.ts';
 import { exportArtifacts, ExportError } from '../storage/export.ts';
 import {
+  getChannelFile,
   getRecording,
   getVideoFile,
   listRecordings,
@@ -27,19 +33,6 @@ import {
 } from '../storage/store.ts';
 import { Transcriber, type TranscribeProgress } from './transcriber.ts';
 
-/** `queued`: the record was just marked `transcribing`; `done`: its final status is written. */
-export type PipelinePhase =
-  'queued' | 'download' | 'load' | 'transcribe' | 'attribute' | 'export' | 'done';
-
-export interface PipelineProgress {
-  phase: PipelinePhase;
-  channel?: ChannelId;
-  /** 0–1 when known. */
-  fraction?: number;
-  /** One line for a status readout, e.g. "Transcribing mic · downloading encoder 312/652 MB". */
-  message: string;
-}
-
 type Listener = (id: string, p: PipelineProgress) => void;
 
 const CHANNELS: ChannelId[] = ['mic', 'display'];
@@ -50,6 +43,13 @@ const running = new Map<string, Promise<Recording>>();
 let chain: Promise<unknown> = Promise.resolve();
 /** One worker for the tab, spawned on the first channel, kept (with its model) afterwards. */
 let transcriber: Transcriber | undefined;
+/**
+ * The model key the worker holds loaded, as far as this side knows: set when a channel's job
+ * succeeded, cleared when one failed (the worker may have been restarted). Only a guess for the
+ * step plan: a model step the worker turns out not to need finishes at once, and one it needs
+ * without being planned is added when its first report arrives (lib/progress.ts).
+ */
+let loadedKey: string | undefined;
 
 /** Subscribe to progress for any recording; returns the unsubscribe function. */
 export function onPipelineProgress(listener: Listener): () => void {
@@ -123,35 +123,10 @@ function emit(id: string, p: PipelineProgress): void {
   }
 }
 
-const mb = (bytes: number): string => (bytes / 1e6).toFixed(0);
-
-/** The worker's per-job progress → one status line. */
-function describe(channel: ChannelId, p: TranscribeProgress): PipelineProgress {
-  const prefix = `Transcribing ${channel}`;
-  switch (p.phase) {
-    case 'download': {
-      const file = p.file ? p.file.replace(/^.*\//, '') : 'model';
-      return p.total > 0
-        ? {
-            phase: 'download',
-            channel,
-            fraction: p.loaded / p.total,
-            message: `${prefix} · downloading ${file} ${mb(p.loaded)}/${mb(p.total)} MB`,
-          }
-        : { phase: 'download', channel, message: `${prefix} · downloading ${file}…` };
-    }
-    case 'load':
-      return { phase: 'load', channel, message: `${prefix} · loading model…` };
-    case 'transcribe':
-      return p.total > 0
-        ? {
-            phase: 'transcribe',
-            channel,
-            fraction: p.loaded / p.total,
-            message: `${prefix} ${Math.min(p.loaded + 1, p.total)}/${p.total} regions`,
-          }
-        : { phase: 'transcribe', channel, fraction: 1, message: `${prefix} · no speech found` };
-  }
+/** A channel with audio on disk: a step of the plan. */
+async function hasAudio(id: string, channel: ChannelId): Promise<boolean> {
+  const file = await getChannelFile(id, channel);
+  return file !== undefined && file.size > 0;
 }
 
 interface CachedSegments {
@@ -200,19 +175,23 @@ async function enqueue(id: string, previous: Promise<unknown>): Promise<Recordin
       ? { error: undefined, note: appendNote(rec.note, `Earlier failure: ${earlier}`) }
       : {}),
   });
-  emit(id, { phase: 'queued', message: 'Waiting to transcribe…' });
+  emit(id, { phase: 'queued', message: 'Waiting to transcribe…', steps: [], overall: 0 });
   await previous;
   return run(id, earlier);
 }
 
-function finish(rec: Recording): Recording {
-  emit(rec.id, {
-    phase: 'done',
-    message:
-      rec.status === 'failed'
-        ? `Transcription failed: ${rec.error ?? 'unknown error'}`
-        : 'Transcribed.',
-  });
+function finish(rec: Recording, tracker: ProgressTracker | undefined): Recording {
+  const message =
+    rec.status === 'failed'
+      ? `Transcription failed: ${rec.error ?? 'unknown error'}`
+      : 'Transcribed.';
+  if (tracker && rec.status !== 'failed') tracker.finish();
+  emit(
+    rec.id,
+    tracker
+      ? tracker.snapshot('done', Date.now(), message)
+      : { phase: 'done', message, steps: [], overall: 1 },
+  );
   return rec;
 }
 
@@ -220,31 +199,66 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
   const settings = await loadSettings();
   const rescribeVersion = chrome.runtime.getManifest().version;
   const key = { model: settings.model, backend: settings.backend, rescribeVersion };
+  const keyString = JSON.stringify(key);
+  let tracker: ProgressTracker | undefined;
   const fail = async (error: string): Promise<Recording> =>
-    finish(await updateRecording(id, { status: 'failed', error }));
+    finish(await updateRecording(id, { status: 'failed', error }), tracker);
+
+  // The plan, complete before the first step, so the step count the human sees never changes:
+  // each channel with audio (cached ones done already), the model when the worker may not hold
+  // it, who said what, and the files when there is a folder to write them to.
+  const before = await getRecording(id);
+  if (!before) throw new Error(`recording ${id} not found`);
+  const cache = new Map<ChannelId, Segment[]>();
+  const channels: { channel: ChannelId; cached: boolean }[] = [];
+  for (const channel of CHANNELS) {
+    const cached = await cachedSegments(id, channel, key);
+    if (cached) {
+      cache.set(channel, cached);
+      channels.push({ channel, cached: true });
+    } else if (await hasAudio(id, channel)) channels.push({ channel, cached: false });
+  }
+  tracker = new ProgressTracker(
+    {
+      channels,
+      model: transcriber === undefined || loadedKey !== keyString,
+      exportFiles: before.exportPath !== undefined,
+      myName: settings.myName,
+    },
+    Date.now(),
+  );
+  const t = tracker;
+  const progress = (phase: Parameters<typeof t.snapshot>[0]): void =>
+    emit(id, t.snapshot(phase, Date.now()));
 
   // 3. Transcribe, one channel at a time.
   const segments: Segment[] = [];
   let found = false;
-  for (const channel of CHANNELS) {
-    const cached = await cachedSegments(id, channel, key);
-    if (cached) {
-      found = true;
-      segments.push(...cached);
+  for (const { channel, cached } of channels) {
+    found = true;
+    const kept = cache.get(channel);
+    if (cached && kept) {
+      segments.push(...kept);
       continue;
     }
+    t.startChannel(channel);
+    progress('transcribe');
     const pcm = await readChannelPcm(id, channel);
-    if (!pcm || pcm.length === 0) continue;
-    found = true;
+    if (!pcm || pcm.length === 0) {
+      // Gone between the plan and now (it cannot be deleted while `transcribing`; a guard).
+      t.finishChannel(channel, Date.now());
+      continue;
+    }
     let last: TranscribeProgress['phase'] | undefined;
     let out: Segment[];
     try {
       transcriber ??= new Transcriber();
       out = await transcriber.transcribeChannel(pcm, channel, key, (p) => {
         last = p.phase;
-        emit(id, describe(channel, p));
+        progress(t.report(channel, p, Date.now()));
       });
     } catch (err) {
+      loadedKey = undefined;
       const stage =
         last === 'transcribe'
           ? 'transcribing'
@@ -255,6 +269,8 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
               : 'starting the transcriber';
       return fail(`Transcription failed on the ${channel} channel while ${stage}: ${message(err)}`);
     }
+    loadedKey = keyString;
+    t.finishChannel(channel, Date.now());
     try {
       await writeArtifact(
         id,
@@ -283,7 +299,8 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
     );
 
   // 4–5. Attribute and render from what is on disk: the segments and the event log.
-  emit(id, { phase: 'attribute', message: 'Attributing speakers…' });
+  t.begin('attribute');
+  progress('attribute');
   const transcribedAt = Date.now();
   try {
     const events = parseEventLog(await readEventLog(id));
@@ -308,7 +325,8 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
   // recording without an export path always says why.
   let error: string | undefined;
   if (rec.exportPath) {
-    emit(id, { phase: 'export', message: 'Saving transcript…' });
+    t.begin('export');
+    progress('export');
     try {
       await exportArtifacts(rec);
       error = undefined;
@@ -331,5 +349,6 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
       transcribedAt,
       error,
     }),
+    t,
   );
 }

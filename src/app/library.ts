@@ -9,6 +9,7 @@
 // no actions and no pencil. While a row is live a 1 s refresh keeps its duration and status
 // current without help from the recorder or the pipeline.
 import { formatDuration } from '../lib/format.ts';
+import type { PipelineProgress } from '../lib/progress.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { finalize } from '../recorder/recorder.ts';
@@ -35,13 +36,9 @@ import {
   type StorageUsage,
 } from '../storage/store.ts';
 import { confirmButton } from '../ui/confirm.ts';
+import { renderSteps, tickElapsed } from '../ui/steps.ts';
 import { decide, isDeciding } from './decide.ts';
-import {
-  isTranscribing,
-  onPipelineProgress,
-  transcribeRecording,
-  type PipelineProgress,
-} from './pipeline.ts';
+import { isTranscribing, onPipelineProgress, transcribeRecording } from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -129,10 +126,10 @@ const live = (rec: Recording): boolean =>
   rec.status === 'recording' || rec.status === 'transcribing' || isTranscribing(rec.id);
 
 // --- Transcription (steps 3–5 live in src/app/pipeline.ts) --------------------------------------
-/** The pipeline's latest progress message per recording id, shown on its row while it is held. */
-const progress = new Map<string, string>();
+/** The pipeline's latest progress per recording id, shown on its row while it is held. */
+const progress = new Map<string, PipelineProgress>();
 
-/** app.ts re-renders the list on every phase change; here the line of a row already rendered as
+/** app.ts re-renders the list on every phase change; here the widget of a row already rendered as
  * held is updated in place, and a row not yet rendered that way is rendered (coalesced). */
 function onProgress(id: string, p: PipelineProgress): void {
   if (p.phase === 'done') {
@@ -140,9 +137,11 @@ function onProgress(id: string, p: PipelineProgress): void {
     void renderList();
     return;
   }
-  progress.set(id, p.message);
-  const el = document.querySelector(`.recording-item[data-id="${CSS.escape(id)}"] .progress`);
-  if (el) el.textContent = p.message;
+  progress.set(id, p);
+  const el = document.querySelector<HTMLElement>(
+    `.recording-item[data-id="${CSS.escape(id)}"] .progress`,
+  );
+  if (el) renderSteps(el, p, { headline: true });
   else void renderList();
 }
 
@@ -551,14 +550,16 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
 
   if (rec.exportPath)
     li.append(div('path', `${rec.exportRoot ? `${rec.exportRoot}/` : ''}${rec.exportPath}/`));
-  if (rec.status === 'transcribing' || isTranscribing(rec.id))
-    li.append(
-      div(
-        'progress',
-        progress.get(rec.id) ??
-          (rec.status === 'transcribing' ? 'Transcribing…' : 'Queued for transcription…'),
-      ),
+  if (rec.status === 'transcribing' || isTranscribing(rec.id)) {
+    // The pipeline's steps (ui/steps.ts); before its first event, one line.
+    const p = progress.get(rec.id);
+    const el = div(
+      'progress',
+      p ? '' : rec.status === 'transcribing' ? 'Transcribing…' : 'Queued for transcription…',
     );
+    if (p) renderSteps(el, p, { headline: true });
+    li.append(el);
+  }
   if (rec.error) li.append(div('hint error', rec.error));
   if (rec.note) li.append(div('hint', rec.note));
   if (rec.mediaDeleted)
@@ -771,7 +772,8 @@ function setLive(live: boolean): void {
   }
 }
 
-/** Once a second while something is live: a status change re-renders, otherwise the durations tick. */
+/** Once a second while something is live: a status change re-renders, otherwise the durations
+ * and the transcribing rows' elapsed times tick. */
 async function refreshLive(): Promise<void> {
   if (rendering) return;
   const recs = await listRecordings();
@@ -779,6 +781,7 @@ async function refreshLive(): Promise<void> {
     await renderList();
     return;
   }
+  tickElapsed($<HTMLUListElement>('#recordings-list'));
   for (const rec of recs) {
     if (rec.status !== 'recording') continue;
     const el = document.querySelector(`.recording-item[data-id="${CSS.escape(rec.id)}"] .duration`);

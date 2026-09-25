@@ -2,6 +2,7 @@
 // windows and the processing tab) is a member of this union. It is the single roster of those
 // message types. Workers speak postMessage, and each worker's protocol is typed in its own file
 // under src/workers/.
+import type { PipelineProgress } from './progress.ts';
 import type { RecordingStatus } from './types.ts';
 
 /**
@@ -44,11 +45,8 @@ export interface ProgressInfo {
   title?: string;
   /** True while a decision (the stop, the video export) is being applied to it. */
   saving: boolean;
-  /** The pipeline's latest phase and line for it, while it is queued or transcribing. */
-  phase?: string;
-  message?: string;
-  /** 0–1 when known. */
-  fraction?: number;
+  /** The pipeline's latest progress for it (lib/progress.ts), while it is queued or transcribing. */
+  progress?: PipelineProgress;
 }
 
 export type Platform = 'meet';

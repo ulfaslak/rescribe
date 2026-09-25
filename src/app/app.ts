@@ -10,6 +10,7 @@ import type {
 } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
+import { summaryLine, type PipelinePhase, type PipelineProgress } from '../lib/progress.ts';
 import { loadSettings, migrateSettings, saveSettings, toFrameRate } from '../lib/settings.ts';
 import {
   DEFAULT_SETTINGS,
@@ -42,8 +43,6 @@ import {
   onPipelineProgress,
   recoverInterruptedTranscriptions,
   transcribeRecording,
-  type PipelinePhase,
-  type PipelineProgress,
 } from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
@@ -476,13 +475,13 @@ async function progressInfo(id?: string): Promise<ProgressInfo | undefined> {
     );
     for (const h of held) {
       const rec = await getRecording(h);
-      if (rec) return { id: h, title: rec.title, saving: saving(h), ...lastProgress.get(h) };
+      if (rec) return { id: h, title: rec.title, saving: saving(h), progress: lastProgress.get(h) };
     }
     return undefined;
   }
   const p = lastProgress.get(id);
   if (!p && !saving(id)) return undefined;
-  return { id, saving: saving(id), phase: p?.phase, message: p?.message, fraction: p?.fraction };
+  return { id, saving: saving(id), progress: p };
 }
 
 /**
@@ -748,7 +747,7 @@ async function main(): Promise<void> {
   // recording (queued: marked `transcribing`; done) and at every phase in between.
   const lastPhase = new Map<string, PipelinePhase>();
   onPipelineProgress((id, p) => {
-    if (status === 'idle') note(p.message);
+    if (status === 'idle') note(summaryLine(p));
     if (p.phase === 'done') lastProgress.delete(id);
     else lastProgress.set(id, p);
     if (lastPhase.get(id) !== p.phase) {

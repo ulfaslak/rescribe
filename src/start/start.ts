@@ -6,6 +6,7 @@
 // button again, or Escape, closes it and starts nothing. Its writes: the microphone choice into
 // Settings, and the Settings folder handle from Change… (a picker inside its own click).
 import type { Message, PendingInfo, ProgressInfo, StartResult } from '../lib/messages.ts';
+import { stepOf } from '../lib/progress.ts';
 import { send } from '../lib/messages.ts';
 import { loadSettings, saveSettings } from '../lib/settings.ts';
 import { getExportRoot, setExportRoot } from '../storage/handles.ts';
@@ -108,9 +109,10 @@ async function describeBackground(): Promise<void> {
   }
   const busy = await askApp<ProgressInfo>({ type: 'query-progress' });
   if (busy?.title) {
+    const at = busy.progress ? stepOf(busy.progress) : undefined;
     text.textContent = busy.saving
       ? `Saving “${busy.title}” in the background.`
-      : `Transcribing “${busy.title}” in the background.`;
+      : `Transcribing “${busy.title}” in the background${at ? ` (step ${at.index} of ${at.count})` : ''}.`;
     open.textContent = 'Show';
     open.onclick = () => void send({ type: 'open-progress', id: busy.id });
     line.hidden = false;
