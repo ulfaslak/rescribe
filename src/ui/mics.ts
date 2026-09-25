@@ -24,9 +24,16 @@ export async function listMics(): Promise<MediaDeviceInfo[]> {
   }
 }
 
-/** Fill `select` with the microphones and select `current`; the default device when it is gone. */
-export async function fillMicSelect(select: HTMLSelectElement, current: MicChoice): Promise<void> {
-  const mics = await listMics();
+/**
+ * Fill `select` with the microphones (`given`, or this page's own) and select `current`; the
+ * default device when it is gone.
+ */
+export async function fillMicSelect(
+  select: HTMLSelectElement,
+  current: MicChoice,
+  given?: { deviceId: string; label: string }[],
+): Promise<void> {
+  const mics = given ?? (await listMics());
   select.replaceChildren();
   const add = (value: string, text: string): void => {
     const o = document.createElement('option');

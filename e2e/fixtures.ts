@@ -1,16 +1,48 @@
 // Playwright fixtures: launch Chromium with the built extension and Chrome's fake media devices.
 // See AGENTS/DNA/DEVELOPMENT.md § "The e2e harness".
 import { test as base, chromium, type BrowserContext } from '@playwright/test';
-import { existsSync, globSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  constants,
+  cpSync,
+  existsSync,
+  globSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 /** Title of the page a test opens for getDisplayMedia to auto-select (see the flag below). */
 export const CAPTURE_TARGET_TITLE = 'Rescribe Capture Target';
 
+/**
+ * The build the browser loads: a copy of dist/ whose manifest also holds host access to every
+ * page. A real toolbar click grants activeTab on the clicked tab, which the start dialog's overlay
+ * is injected on; the click the harness fakes through the service worker grants nothing, so
+ * without this every page would get the fallback window (ENVIRONMENT_NOTES § "The faked toolbar
+ * click has no activeTab grant"). It reaches the file:// capture target too (an extension loaded
+ * with --load-extension has file access), so a test that wants the fallback window clicks on a
+ * chrome:// tab. The path is fixed, so the extension id (and the model cache under it) survives
+ * between runs.
+ */
+function testBuild(): string {
+  const dist = path.resolve('dist');
+  const out = path.resolve('.playwright/extension');
+  rmSync(out, { recursive: true, force: true });
+  cpSync(dist, out, { recursive: true, mode: constants.COPYFILE_FICLONE });
+  const manifest = JSON.parse(readFileSync(path.join(dist, 'manifest.json'), 'utf8')) as Record<
+    string,
+    unknown
+  >;
+  manifest['host_permissions'] = ['<all_urls>'];
+  writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  return out;
+}
+
 export const test = base.extend<{ context: BrowserContext; extensionId: string }>({
   // eslint-disable-next-line no-empty-pattern
   context: async ({}, use) => {
-    const dist = path.resolve('dist');
+    const dist = testBuild();
     const wav = path.resolve('e2e/fixtures/speech.wav');
     const headed = !!process.env['HEADED'];
     const profile = path.resolve(process.env['PW_PROFILE'] ?? '.playwright/profile');

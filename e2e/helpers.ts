@@ -3,7 +3,7 @@
 // record.spec.ts predates this file and carries its own copies of the first half.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { BrowserContext, Page, Worker } from '@playwright/test';
+import type { BrowserContext, Frame, Page, Worker } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect } from './fixtures.ts';
 import { SETTINGS_VERSION, type Recording } from '../src/lib/types.ts';
 
@@ -325,8 +325,20 @@ export function pagesAt(context: BrowserContext, url: string): Page[] {
 }
 export const stopDialogs = (context: BrowserContext, extensionId: string): Page[] =>
   pagesAt(context, stopDialogUrl(extensionId));
-export const startDialogs = (context: BrowserContext, extensionId: string): Page[] =>
+/** The start dialogs open right now: overlays' frames in pages, and fallback windows' pages. */
+export const startDialogs = (context: BrowserContext, extensionId: string): Frame[] =>
+  context
+    .pages()
+    .flatMap((p) => p.frames())
+    .filter((f) => !f.isDetached() && f.url().startsWith(startDialogUrl(extensionId)));
+/** The fallback windows among them (a page of their own). */
+export const startDialogWindows = (context: BrowserContext, extensionId: string): Page[] =>
   pagesAt(context, startDialogUrl(extensionId));
+/** Whether a start dialog is the overlay in a page rather than a window of its own. */
+export const isOverlay = (dialog: Frame): boolean => dialog.parentFrame() !== null;
+/** The tab a start dialog is for (its URL also carries the one-time key). */
+export const dialogTab = (dialog: Frame): number =>
+  Number(new URL(dialog.url()).searchParams.get('tab'));
 export const progressPages = (context: BrowserContext, extensionId: string): Page[] =>
   pagesAt(context, progressUrl(extensionId));
 
@@ -353,15 +365,22 @@ export const waitForStopDialog = (
   timeout?: number,
 ): Promise<Page> => waitForPageAt(context, stopDialogUrl(extensionId), timeout);
 
-/** The next start dialog to open, or one already open, with its target, microphones and folder shown. */
+/**
+ * The next start dialog to open, or one already open, with its target, microphones and folder
+ * shown: the overlay's frame in a page, or the fallback window's main frame.
+ */
 export async function waitForStartDialog(
   context: BrowserContext,
   extensionId: string,
-  timeout?: number,
-): Promise<Page> {
-  const page = await waitForPageAt(context, startDialogUrl(extensionId), timeout);
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
-  return page;
+  timeout = 10_000,
+): Promise<Frame> {
+  let dialog: Frame | undefined;
+  await expect
+    .poll(() => (dialog = startDialogs(context, extensionId)[0]) !== undefined, { timeout })
+    .toBe(true);
+  if (!isOverlay(dialog!)) await dialog!.page().waitForLoadState();
+  await expect(dialog!.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
+  return dialog!;
 }
 
 /** The next processing tab to open, or one already open. */
@@ -387,12 +406,25 @@ export function windowOfTab(worker: Worker, tabId: number): Promise<number> {
 }
 
 /**
- * Escape in a dialog closes its window from the keydown, so the press itself can report a
- * closed target; that it closed is what the caller asserts afterwards.
+ * Escape in a dialog closes its window (or takes the overlay out of its page) from the keydown,
+ * so the press itself can report a closed target; that it closed is what the caller asserts
+ * afterwards.
  */
-export async function escape(dialog: Page): Promise<void> {
-  await dialog.keyboard.press('Escape').catch(() => undefined);
-  await expect.poll(() => dialog.isClosed(), { timeout: 5000 }).toBe(true);
+export async function escape(dialog: Page | Frame): Promise<void> {
+  if ('keyboard' in dialog) {
+    await dialog.keyboard.press('Escape').catch(() => undefined);
+    await expect.poll(() => dialog.isClosed(), { timeout: 5000 }).toBe(true);
+    return;
+  }
+  if (!isOverlay(dialog)) return escape(dialog.page());
+  // The keys go to the focused frame of the page: focus the dialog first (a control of its own;
+  // its body is not focusable).
+  await dialog
+    .locator('button:not([disabled]), select:not([disabled])')
+    .first()
+    .press('Escape')
+    .catch(() => undefined);
+  await expect.poll(() => dialog.isDetached(), { timeout: 5000 }).toBe(true);
 }
 
 /**
@@ -413,3 +445,7 @@ export async function toolbarClick(
     tab,
   );
 }
+
+/** Whether a start dialog is gone: the overlay out of its page, or the window closed. */
+export const dialogClosed = (dialog: Frame): boolean =>
+  isOverlay(dialog) ? dialog.isDetached() : dialog.page().isClosed();

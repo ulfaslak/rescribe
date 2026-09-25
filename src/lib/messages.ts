@@ -38,6 +38,23 @@ export interface StartResult {
   error?: string;
 }
 
+/** A microphone as the app tab lists it: its device id there, and its name. */
+export interface MicInfo {
+  deviceId: string;
+  label: string;
+}
+
+/**
+ * The app tab's answer to `query-start-info`: the Settings folder's name and the microphones, as
+ * the app tab's own frame sees them (it is the one that captures, so its device ids are the ones
+ * that count). The overlay asks rather than reading them itself: its frame sits in another site's
+ * page, where the device ids and the storage may be that site's partition.
+ */
+export interface StartInfo {
+  folder?: string;
+  mics: MicInfo[];
+}
+
 /** The app tab's answer to `query-progress`: what it is doing with a recording right now. */
 export interface ProgressInfo {
   id: string;
@@ -87,11 +104,15 @@ export type Message =
   | { type: 'decide'; id: string; action: Decision }
   /**
    * The start dialog → service worker: Start Capture. The dialog was opened for `tabId` by a
-   * toolbar click, which is the invocation the tab capture needs. `mic` says whether to record
+   * toolbar click, which is the invocation the tab capture needs; `key` is the one-time key the
+   * service worker put in that dialog's URL, so a page that loads the dialog page itself (it is
+   * web-accessible, for the overlay) cannot start anything. `mic` says whether to record
    * the microphone and `micDeviceId` which one (absent: the default device). Answered with a
    * StartResult once the tab-capture id was obtained and handed to the app tab, or with why not.
    */
-  | { type: 'start-capture'; tabId: number; mic: boolean; micDeviceId?: string }
+  | { type: 'start-capture'; tabId: number; key: string; mic: boolean; micDeviceId?: string }
+  /** The start dialog's overlay → the owning app tab: answered with a StartInfo. */
+  | { type: 'query-start-info' }
   /**
    * The stop dialog (a save) or the start dialog ("Show") → service worker: open the processing
    * tab for this recording (one per recording; an open one is focused).

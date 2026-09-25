@@ -14,6 +14,7 @@ import {
   startDialogs,
   stopDialogs,
   waitForStartDialog,
+  dialogClosed,
   waitForStopDialog,
   windowOfTab,
 } from './helpers.ts';
@@ -736,7 +737,7 @@ test('toolbar click: the start dialog opens for the clicked tab and the app tab 
     timeout: 15_000,
   });
   await expect(dialog.locator('#start')).toBeEnabled();
-  expect(dialog.isClosed()).toBe(false);
+  expect(dialogClosed(dialog)).toBe(false);
   expect(await activeTab(made[0]!.id)).toBe(false);
   await expect(app.locator('#status')).toHaveText('idle');
   const before = (await recordings(app)).length;
@@ -744,7 +745,7 @@ test('toolbar click: the start dialog opens for the clicked tab and the app tab 
   // The button again closes the dialog and opens nothing; the next click opens it again; Escape
   // closes it.
   await toggle('https://meet.google.com/abc-defg-hij');
-  await expect.poll(() => dialog.isClosed(), { timeout: 5000 }).toBe(true);
+  await expect.poll(() => dialogClosed(dialog), { timeout: 5000 }).toBe(true);
   await app.waitForTimeout(500);
   expect(startDialogs(context, extensionId)).toHaveLength(0);
   expect(stopDialogs(context, extensionId)).toHaveLength(0);

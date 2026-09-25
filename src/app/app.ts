@@ -7,6 +7,7 @@ import type {
   Message,
   PendingInfo,
   ProgressInfo,
+  StartInfo,
 } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
@@ -35,7 +36,7 @@ import {
 } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { getRecording, listRecordings } from '../storage/store.ts';
-import type { MicChoice } from '../ui/mics.ts';
+import { listMics, type MicChoice } from '../ui/mics.ts';
 import { decide, decidingIds, isDeciding, onDecision } from './decide.ts';
 import { describeSources, renderList } from './library.ts';
 import {
@@ -171,7 +172,9 @@ async function micWillPrompt(): Promise<boolean> {
 function onMessage(
   msg: Message,
   sender: chrome.runtime.MessageSender,
-  sendResponse: (res: AppStatus | PendingInfo | DecideResult | ProgressInfo | undefined) => void,
+  sendResponse: (
+    res: AppStatus | PendingInfo | DecideResult | ProgressInfo | StartInfo | undefined,
+  ) => void,
 ): boolean {
   switch (msg.type) {
     case 'query-status':
@@ -187,6 +190,9 @@ function onMessage(
       return true;
     case 'query-progress':
       void progressInfo(msg.id).then((info) => sendResponse(info));
+      return true;
+    case 'query-start-info':
+      void startInfo().then((info) => sendResponse(info));
       return true;
     case 'folder-changed':
       void describeFolder();
@@ -586,6 +592,12 @@ async function ensureSettingsFolder(): Promise<boolean> {
     else note(`Could not choose a folder: ${describe(err)}`, true);
     return false;
   }
+}
+
+/** The start dialog's overlay asks for the folder and the microphones (messages.ts StartInfo). */
+async function startInfo(): Promise<StartInfo> {
+  const [root, mics] = await Promise.all([getExportRoot(), listMics()]);
+  return { folder: root?.name, mics: mics.map((d) => ({ deviceId: d.deviceId, label: d.label })) };
 }
 
 // --- Settings -----------------------------------------------------------------------------

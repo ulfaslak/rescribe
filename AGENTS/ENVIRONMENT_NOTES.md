@@ -58,6 +58,14 @@ Playwright's Chromium runs with dangling-pointer detection on: removing the stop
 
 Chromium keeps an installed extension's service worker script in `<profile>/Default/Service Worker/` and, when the manifest version has not changed, serves that copy at the next launch instead of re-reading `dist/background.js` (found 2026-09-24, #18: a rebuilt worker's new message handler never ran while its old handlers did). Extension pages and content scripts are not affected. `e2e/fixtures.ts` deletes that directory before every launch; the model cache lives in IndexedDB and survives. `PW_PROFILE=<dir>` points a run at another profile (a fresh one is the cleanest control when a service worker change looks ignored).
 
+### The faked toolbar click has no activeTab grant
+
+`helpers.toolbarClick` calls the service worker's `onToggle` directly, so Chrome grants no `activeTab` on the tab: `chrome.scripting.executeScript` for the start dialog's overlay fails and the fallback window opens. The fixture therefore loads a copy of the build with `host_permissions: <all_urls>` (DEVELOPMENT § "The e2e harness"). Whether the real click's grant covers the injection is a live check, not something the e2e proves. Nor does the keyboard command help: `page.keyboard.press` of the command's shortcut goes to the page and never fires `chrome.commands.onCommand` (probed 2026-09-25), so no real grant can be had under Playwright. The host access also reaches file:// (an extension loaded with `--load-extension` has file access), so the file:// capture target gets the overlay; a `chrome://` tab gets the window.
+
+### An extension iframe inside a web page (probed 2026-09-25, headless Chromium)
+
+An extension page in an iframe of an http(s) page, as the start dialog's overlay is (probed **with** `host_permissions: <all_urls>` and `--use-fake-ui-for-media-stream`; with only a real click's `activeTab`, whether storage and device ids are partitioned by the host site is unproven, which is why the overlay asks the app tab for them): `showDirectoryPicker` throws `NotAllowedError: Third party iframes are not allowed to show a file picker`; IndexedDB and OPFS are the extension origin's own, not partitioned by the page (a handle stored by the app tab reads back); `enumerateDevices` gives labels when the iframe has `allow="microphone"` and the extension origin holds the permission; a page CSP of `default-src 'none'; frame-src 'none'` does not block it; `chrome.runtime.getContexts` lists it as a `TAB` context with the page's `tabId` and a `frameId` above 0, `documentUrl` with its query string.
+
 ### Claude in Chrome
 
 The Claude browser extension was not connected in the kickoff session, so browser-automation MCP tools may be unavailable. Playwright is the reliable way to drive the extension; use it.
@@ -68,4 +76,4 @@ The Claude browser extension was not connected in the kickoff session, so browse
 
 ### The gtr post-create hook has not run
 
-`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed.
+`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-09-25 (`feat/in-page-start`).
