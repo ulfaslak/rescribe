@@ -28,6 +28,8 @@ const $ = <T extends Element>(sel: string): T => {
 let info: PendingInfo | undefined;
 /** Set once a decision was sent or the dialog is on its way out: no more refreshes. */
 let finished = false;
+/** Empty answers in a row; one is a hiccup (the app tab between two states), two is an answer. */
+let misses = 0;
 /** The owning app tab, once found. */
 let appTabId: number | undefined;
 
@@ -127,11 +129,13 @@ async function refresh(): Promise<void> {
   const next = await query();
   if (finished) return;
   if (!next || (info && next.id !== info.id)) {
+    if (++misses < 2) return;
     finished = true;
     if (!info) status('Nothing is recording.');
     setTimeout(() => void close(), info ? 0 : CLOSE_AFTER_NOTHING_MS);
     return;
   }
+  misses = 0;
   const first = info === undefined;
   info = next;
   render();

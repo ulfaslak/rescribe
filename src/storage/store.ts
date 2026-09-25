@@ -1,6 +1,7 @@
 // The storage client for recording metadata (IndexedDB `recordings`, keyed by id) and the media in
 // OPFS (layout in opfs.ts). App-tab only. Transcription and the library call these; the recorder
-// owns the `recording → recorded | failed` transitions.
+// owns the `recording → stopped | failed` transitions and the decision (app/decide.ts) the step
+// to `recorded`.
 import { idb } from '../lib/idb.ts';
 import { int16ToFloat32 } from '../lib/pcm.ts';
 import { deleteRecordingExportRoot } from './handles.ts';

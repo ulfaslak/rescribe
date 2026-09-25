@@ -8,6 +8,18 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #24 · a status answered before the state behind it was read `[learned]`
+
+The app tab registered its `query-status` listener first thing in `main()` and read what was waiting on disk (`refreshPending`) last, after settings, the library walk and the crash recovery; the service worker starts its toolbar path the moment the tab answers, so a stale `idle` let a start race the pending state, and the loser was silent (the guard in `startRecording` dropped both streams with no note). Found by the adversarial review. Codified in `app.ts` `main()` (`refreshPending` before the listener, a note and `comeForward` on the guard) and pinned by "a recording waiting stopped never blocks a new one" in `e2e/stop-dialog.spec.ts`. Rule: whatever answers a question from another context must have read its inputs before it starts answering.
+
+### 2026-09-25 · #24 · an empty answer read as "nothing there" `[learned]`
+
+`pendingInfo` answered nothing during the recorder's drain (the live record was neither `recording` nor yet `stopped`), and the dialog closed itself on the first empty poll; a share that died under an open dialog made it vanish and a second one open, or none when the two raced. Found by the adversarial review. Codified in `app.ts` `pendingInfo` (the live record is answered until it is `stopped`, unless a decision took it) and `stop.ts` (two empty polls before closing), pinned by "the share ends while the dialog is open" in `e2e/stop-dialog.spec.ts`. Same family as #2 part 2 "absence of input read as success".
+
+### 2026-09-25 · #24 · one entry point asked, the others assumed `[learned]`
+
+The stop dialog's Save picked a folder when none was chosen; the row's Save and the app tab's Stop did not and quietly produced a `recorded` recording with "Not exported" and a transcription under way, which is what the new `stopped` state and no-trace Discard exist to avoid. Found by the adversarial review. Codified in `decide.ts` (`save` refuses without a folder), `library.ts` `saveStopped` and `app.ts` `onStop` (the picker first, cancelled leaves everything untouched) and DECISIONS § Form factor ("a Save without a folder chosen picks one first"), pinned by "no export folder chosen" in `e2e/record.spec.ts`.
+
 ### 2026-09-25 · #24 · an API's refusal treated as impossible `[learned]`
 
 `openStopDialog` computed a position for the popup window from the last focused window and passed it to `chrome.windows.create` with no catch; Chrome refuses bounds that are mostly off-screen, so in headless Chromium (and on a desktop with a browser window half off a display) no dialog ever opened and the rejection vanished into a `void` promise, while the badge said `REC` as if all was well. Found by every stop-dialog e2e timing out on the window. Codified in `background.ts` (default placement on refusal) and ENVIRONMENT_NOTES § "`chrome.windows.create` refuses bounds off the visible screen". Rule: a positioned window, a permission request, a picker: anything Chrome may refuse for reasons outside the code gets a fallback, not a `void`.

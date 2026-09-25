@@ -19,6 +19,7 @@ import {
   exportedFileState,
   exportVideoName,
   getExportRoot,
+  setExportRoot,
   setRecordingExportRoot,
   type ExportedFileState,
 } from '../storage/export.ts';
@@ -302,8 +303,24 @@ async function claim(id: string, what: string): Promise<Recording | string> {
 }
 
 // --- The decision on a stopped recording (app/decide.ts) ----------------------------------------
-/** Save into the folder from Settings; the permission is re-requested inside the click. */
+/**
+ * Save into the folder from Settings, chosen here first when there is none (a Save must save;
+ * cancelled, nothing happens); the permission is re-requested inside the click.
+ */
 async function saveStopped(id: string): Promise<Outcome> {
+  if (!(await getExportRoot())) {
+    try {
+      const handle = await window.showDirectoryPicker({
+        id: 'rescribe-export',
+        mode: 'readwrite',
+      });
+      await setExportRoot(handle);
+    } catch (err) {
+      if ((err as DOMException).name === 'AbortError')
+        return fail('Choose a folder to save to; the recording is untouched.');
+      return fail(`Could not choose a folder: ${describe(err)}`);
+    }
+  }
   await ensureExportPermission().catch(() => undefined);
   const rec = await decide(id, 'save');
   return savedOutcome(rec);
@@ -500,7 +517,9 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
   li.dataset['id'] = rec.id;
   li.dataset['status'] = rec.status;
 
-  const busy = inflight.get(rec.id);
+  // An action of ours, or a decision being applied from the stop dialog (the export of a long
+  // call takes minutes, and the record reads `stopped` until it is done).
+  const busy = inflight.get(rec.id) ?? (isDeciding(rec.id) ? 'Saving…' : undefined);
   const titleRow = document.createElement('div');
   titleRow.className = 'title-row';
   titleRow.append(span('title', rec.title));

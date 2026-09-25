@@ -125,11 +125,16 @@ async function openStopDialog(): Promise<void> {
 
 const BADGE: Record<BadgeState, { text: string; color: string; title: string }> = {
   idle: { text: '', color: '#000000', title: 'Rescribe: record this tab' },
-  recording: { text: 'REC', color: '#d93025', title: 'Rescribe: recording (click to stop)' },
+  recording: {
+    text: 'REC',
+    color: '#d93025',
+    title: 'Rescribe: recording (click to save, save as or discard)',
+  },
   pending: {
     text: 'SAVE',
     color: '#e37400',
-    title: 'Rescribe: a recording is waiting to be saved (click to decide)',
+    title:
+      'Rescribe: a recording is waiting in the Rescribe tab (save, save as or discard); a click here still records this tab',
   },
   processing: { text: '…', color: '#1a73e8', title: 'Rescribe: transcribing (click to open)' },
   error: {
@@ -147,10 +152,11 @@ async function setBadge(state: BadgeState): Promise<void> {
 }
 
 /**
- * The toolbar button. Idle: start recording the clicked tab (plus mic) through the app tab.
- * Recording, or a recording waiting `stopped`: open the stop dialog, where Save, Save as… and
- * Discard live; closing it keeps recording, so a misclick stops nothing. Anything else (the
- * recorder draining, an export running): bring the app tab forward.
+ * The toolbar button. Idle, or a recording waiting `stopped` (it never blocks a new one; its
+ * dialog is a click on the app tab or its row away): start recording the clicked tab (plus mic)
+ * through the app tab. Recording: open the stop dialog, where Save, Save as… and Discard live;
+ * closing it keeps recording, so a misclick stops nothing. Anything else (the recorder
+ * draining, an export running): bring the app tab forward.
  *
  * On a call platform tab (Meet, `lib/platform.ts`) the human stays in the call: the app tab is
  * opened, or left, in the background and the badge is the feedback. It comes forward on its own
@@ -171,13 +177,14 @@ async function setBadge(state: BadgeState): Promise<void> {
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
   const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
   const status = await queryStatus();
-  if (status === 'recording' || status === 'stopped') {
+  if (status === 'recording' || (status === 'stopped' && !target)) {
     await openStopDialog();
     return;
   }
-  const stayInCall = status === 'idle' && platformOf(target?.url) !== undefined;
+  const canStart = status === 'idle' || status === 'stopped';
+  const stayInCall = canStart && platformOf(target?.url) !== undefined;
   const app = await ensureAppTab(!stayInCall);
-  if (app?.id === undefined || status !== 'idle' || !target?.id) return;
+  if (app?.id === undefined || !canStart || !target?.id) return;
   let streamId: string | undefined;
   let error: string | undefined;
   try {

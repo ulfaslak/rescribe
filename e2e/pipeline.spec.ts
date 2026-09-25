@@ -308,12 +308,19 @@ test('no export folder: done, artifacts kept in OPFS, the row and the status lin
   context,
   extensionId,
 }) => {
-  const { page, net } = await setUp(context, extensionId, { folder: false });
+  // A Save always picks a folder first, so the only way to a recording that is `recorded` with
+  // no folder is the crash recovery: the app tab closes mid-recording and the next open
+  // finalizes it without asking (DECISIONS § Form factor), then transcribes it.
+  const setup = await setUp(context, extensionId, { folder: false });
+  const net = setup.net;
+  let page = setup.page;
   await expect(page.locator('#folder-name')).toHaveText('No folder chosen');
   await startRecording(page);
   await page.waitForTimeout(3000);
-  await stopRecording(page);
+  await page.close({ runBeforeUnload: false });
+  page = await openApp(context, extensionId);
   const [started] = await recordings(page);
+  expect(started!.note).toMatch(/Interrupted/);
   const id = started!.id;
   // The row follows the stored record: `transcribing` from the moment the pipeline queued it,
   // and no Save now while it owns the recording.

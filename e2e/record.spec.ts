@@ -381,10 +381,16 @@ test('display track ends mid-recording (Stop sharing, tab closed): the recording
   expect(probe.duration).toBeGreaterThan(1);
 });
 
-test('no export folder chosen: recorded, not exported, media kept; Save now exports it later', async ({
+test('no export folder chosen: Stop asks for one and keeps recording; the share ending leaves it waiting; Save from the row exports once a folder exists', async ({
   context,
   extensionId,
 }) => {
+  // The picker cannot be driven: here it is cancelled.
+  await context.addInitScript(() => {
+    window.showDirectoryPicker = async () => {
+      throw new DOMException('cancelled', 'AbortError');
+    };
+  });
   await openTarget(context);
   const page = await openApp(context, extensionId);
   await clearRecordings(page);
@@ -406,20 +412,38 @@ test('no export folder chosen: recorded, not exported, media kept; Save now expo
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#folder-name')).toHaveText('No folder chosen');
 
-  await record(page, 2);
-  const [rec] = await recordings(page);
-  console.log(JSON.stringify(rec));
-  expect(rec!.status).toBe('recorded');
-  expect(rec!.exportPath).toBeUndefined();
-  expect(rec!.error).toMatch(/No export folder/);
-  expect(await opfsSize(page, ['recordings', rec!.id, 'video.mp4'])).toBeGreaterThan(10_000);
-  await expect(page.locator('#record-status')).toContainText('No export folder');
+  // Stop with no folder: the picker (cancelled here), the recording untouched. Never a
+  // recording marked "recorded, not exported" from a Save.
+  await page.click('#record-screen');
+  await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+  await page.waitForTimeout(2000);
+  await page.click('#stop');
+  await expect(page.locator('#record-status')).toContainText('Choose a folder to save to');
+  await expect(page.locator('#status')).toHaveText('recording');
+  let [rec] = await recordings(page);
+  expect(rec!.status).toBe('recording');
 
-  // The row offers Save now; once a folder exists, the click exports without re-recording.
+  // The share ends: it waits, with the media kept; Save from the row once a folder exists.
+  await page.evaluate(() => {
+    const w = window as unknown as { __displayStreams: MediaStream[] };
+    for (const t of w.__displayStreams[0]!.getVideoTracks()) {
+      t.stop();
+      t.dispatchEvent(new Event('ended'));
+    }
+  });
+  await expect(page.locator('#status')).toHaveText('stopped', { timeout: 30_000 });
+  await escape(await waitForStopDialog(context, extensionId));
+  [rec] = await recordings(page);
+  console.log(JSON.stringify(rec));
+  expect(rec!.status).toBe('stopped');
+  expect(rec!.exportPath).toBeUndefined();
+  expect(rec!.error).toBeUndefined();
+  expect(await opfsSize(page, ['recordings', rec!.id, 'video.mp4'])).toBeGreaterThan(10_000);
   const row = page.locator(`.recording-item[data-id="${rec!.id}"]`);
-  await expect(row.locator('button.save-now')).toBeVisible();
+  await expect(row.locator('button.save')).toBeVisible();
+  await expect(row.locator('button.save-now')).toHaveCount(0);
   await seedExportFolder(page);
-  await row.locator('button.save-now').click();
+  await row.locator('button.save').click();
   await expect(row.locator('.path')).toHaveText(/Screen recording\/$/, { timeout: 15_000 });
   const [saved] = await recordings(page);
   expect(saved!.id).toBe(rec!.id);
@@ -430,6 +454,7 @@ test('no export folder chosen: recorded, not exported, media kept; Save now expo
     10_000,
   );
   await expect(row.locator('button.save-now')).toHaveCount(0);
+  await expect(page.locator('#status')).toHaveText('idle');
 });
 
 test('a second app tab is inert: no badge change, no second recording', async ({

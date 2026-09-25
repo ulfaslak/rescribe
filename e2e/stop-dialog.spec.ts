@@ -262,10 +262,10 @@ test("the share ends: the recording waits stopped with the badge on SAVE and the
   expect(rec.status).toBe('stopped');
   expect(rec.exportPath).toBeUndefined();
   expect(rec.endedAt).toBeDefined();
-  // Nothing exported, nothing transcribed while it waits.
+  // Nothing exported, nothing transcribed while it waits; a new recording is not blocked by it.
   expect(await opfsList(page, [EXPORT_DIR])).toEqual([]);
   await expect(page.locator('#record-status')).toContainText('not saved yet');
-  await expect(page.locator('#record-screen')).toBeDisabled();
+  await expect(page.locator('#record-screen')).toBeEnabled();
 
   // Escape: still stopped, the row offers the three choices, the note stays.
   await escape(dialog);
@@ -286,8 +286,10 @@ test("the share ends: the recording waits stopped with the badge on SAVE and the
   expect(rec.status).toBe('stopped');
   await expect(page.locator('#record-status')).toContainText('not saved yet');
 
-  // A toolbar click while stopped opens the dialog again, starts nothing.
-  await toolbarClick(worker, { id: targetId, url: MEET_URL });
+  // A toolbar click on the app tab itself while stopped opens the dialog again (`ended`, the
+  // elapsed time frozen); on any other tab it starts a new recording (below), never the dialog.
+  const appTabId = await page.evaluate(async () => (await chrome.tabs.getCurrent())!.id!);
+  await toolbarClick(worker, { id: appTabId, url: page.url() });
   const again = await waitForStopDialog(context, extensionId);
   await expect(again.locator('#state')).toHaveText('ended');
   await expect(again.locator('#elapsed')).toHaveText(/^0:0[1-4]$/);
@@ -314,48 +316,122 @@ test("the share ends: the recording waits stopped with the badge on SAVE and the
   expect(await badgeText(page)).toBe('');
 });
 
-test("a Meet call that ends opens the dialog while the recording goes on; a stranger tab's call-ended does nothing", async ({
+test('a Meet call that ends opens the dialog while the recording goes on: from any tab on the picker path, never without a tab, never after the recording', async ({
   context,
   extensionId,
 }) => {
   const { page } = await setUp(context, extensionId);
-  // Duplicate app tabs stand in for content-script senders: they carry a tab id.
-  const openDuplicate = async (): Promise<Page> => {
-    const dup = await context.newPage();
-    await dup.goto(`chrome-extension://${extensionId}/app/app.html`);
-    await expect(dup.locator('#duplicate')).toBeVisible();
-    return dup;
-  };
-  const meetTab = await openDuplicate();
-  const strangerTab = await openDuplicate();
-  const from = (tab: Page, msg: object) =>
-    tab.evaluate((m) => chrome.runtime.sendMessage(m).catch(() => undefined), msg);
+  // A duplicate app tab stands in for a content-script sender: it carries a tab id. The service
+  // worker stands in for anything that is not a tab.
+  const meetTab = await context.newPage();
+  await meetTab.goto(`chrome-extension://${extensionId}/app/app.html`);
+  await expect(meetTab.locator('#duplicate')).toBeVisible();
+  const worker = await serviceWorker(context);
+  const send = (m: object) => chrome.runtime.sendMessage(m).catch(() => undefined);
+  const ended = () => ({ type: 'call-ended', platform: 'meet', at: Date.now() });
   await startRecording(page);
-  // The Meet tab contributes a speaker event (the picker path ties events to contributing tabs).
-  await from(meetTab, {
-    type: 'speaker',
-    platform: 'meet',
-    at: Date.now(),
-    id: 'p1',
-    name: 'Anna',
-    speaking: true,
-  });
-  await page.waitForTimeout(300);
-  await from(strangerTab, { type: 'call-ended', platform: 'meet', at: Date.now() });
+  await worker.evaluate(send, ended());
   await page.waitForTimeout(1500);
   expect(stopDialogs(context, extensionId)).toHaveLength(0);
-  await from(meetTab, { type: 'call-ended', platform: 'meet', at: Date.now() });
+  // The picker path cannot tell which tab the shared window shows: any tab's call-ended counts,
+  // contributed events or not (the toolbar path takes only the recorded tab's; no harness for it).
+  await meetTab.evaluate(send, ended());
   const dialog = await waitForStopDialog(context, extensionId);
   await expect(dialog.locator('#state')).toHaveText('recording');
   await expect(page.locator('#status')).toHaveText('recording');
   await escape(dialog);
   await expect(page.locator('#status')).toHaveText('recording');
-  // After the recording, a call-ended is not ours.
+  // After the recording, nothing.
   await page.click('#stop');
   await expect(page.locator('#status')).toHaveText('idle', { timeout: 30_000 });
-  await from(meetTab, { type: 'call-ended', platform: 'meet', at: Date.now() });
+  await meetTab.evaluate(send, ended());
   await page.waitForTimeout(1000);
   expect(stopDialogs(context, extensionId)).toHaveLength(0);
   const [rec] = await recordings(page);
   expect(rec!.status).toBe('recorded');
+});
+
+test('a recording waiting stopped never blocks a new one: a toolbar click starts (here: fails visibly) without a dialog, Record screen… records, and the waiting one is pending again afterwards', async ({
+  context,
+  extensionId,
+}) => {
+  const { page, targetId } = await setUp(context, extensionId);
+  const worker = await serviceWorker(context);
+  await startRecording(page);
+  await page.waitForTimeout(1500);
+  const [waiting] = await recordings(page);
+  await endDisplayTrack(page);
+  await expect(page.locator('#status')).toHaveText('stopped', { timeout: 30_000 });
+  await escape(await waitForStopDialog(context, extensionId));
+
+  // The app tab closed with the recording waiting (no warning for that: the beforeunload handler
+  // does not cancel), then a click in a call: the app tab comes back already knowing what waits,
+  // the start goes ahead (and fails here, the harness has no stream id), no dialog opens, and the
+  // waiting one is still waiting.
+  const warns = () =>
+    page.evaluate(() => {
+      const e = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    });
+  expect(await warns()).toBe(false);
+  await page.close();
+  await expect.poll(() => page.isClosed(), { timeout: 5000 }).toBe(true);
+  const appUrl = `chrome-extension://${extensionId}/app/app.html`;
+  const nextApp = context.waitForEvent('page', {
+    predicate: (p) => p.url() === appUrl,
+    timeout: 15_000,
+  });
+  await toolbarClick(worker, { id: targetId, url: MEET_URL, title: 'Meet' });
+  const app = await nextApp;
+  await ready(app);
+  await expect(app.locator('#record-status')).toContainText("Couldn't capture that tab", {
+    timeout: 15_000,
+  });
+  await page.waitForTimeout(1500).catch(() => undefined);
+  expect(stopDialogs(context, extensionId)).toHaveLength(0);
+  await expect(app.locator('#status')).toHaveText('stopped');
+  expect(await badgeText(app)).toBe('SAVE');
+  const r = row(app, waiting!.id);
+  await expect(r).toHaveAttribute('data-status', 'stopped');
+  await expect(r.locator('button.save')).toBeVisible();
+
+  // Record screen… works while it waits; Stop saves the new one; the old one is pending again.
+  await expect(app.locator('#record-screen')).toBeEnabled();
+  await startRecording(app);
+  expect(await badgeText(app)).toBe('REC');
+  await app.click('#stop');
+  await expect(app.locator('#record-screen')).toBeEnabled({ timeout: 30_000 });
+  const recs = await recordings(app);
+  expect(recs).toHaveLength(2);
+  expect(recs.find((x) => x.id === waiting!.id)!.status).toBe('stopped');
+  expect(recs.find((x) => x.id !== waiting!.id)!.status).toBe('recorded');
+  await expect(app.locator('#status')).toHaveText('stopped');
+  expect(await badgeText(app)).toBe('SAVE');
+  await expect(app.locator('#record-status')).toContainText('not saved yet');
+});
+
+test('the share ends while the dialog is open: the same dialog turns to ended, none other opens', async ({
+  context,
+  extensionId,
+}) => {
+  const { page, targetId } = await setUp(context, extensionId);
+  const worker = await serviceWorker(context);
+  await startRecording(page);
+  await toolbarClick(worker, { id: targetId, url: MEET_URL });
+  const dialog = await waitForStopDialog(context, extensionId);
+  await expect(dialog.locator('#state')).toHaveText('recording');
+  await endDisplayTrack(page);
+  await expect(page.locator('#status')).toHaveText('stopped', { timeout: 30_000 });
+  await expect(dialog.locator('#state')).toHaveText('ended', { timeout: 5000 });
+  await page.waitForTimeout(2500);
+  expect(dialog.isClosed()).toBe(false);
+  expect(stopDialogs(context, extensionId)).toHaveLength(1);
+  await expect(dialog.locator('#footer')).toContainText('waiting');
+  await dialog.click('#save');
+  await expect(dialog.locator('#status')).toContainText('Saved to ', { timeout: 30_000 });
+  await expect.poll(() => dialog.isClosed(), { timeout: 10_000 }).toBe(true);
+  const [rec] = await recordings(page);
+  expect(rec!.status).toBe('recorded');
+  expect(rec!.exportPath).toBeDefined();
 });

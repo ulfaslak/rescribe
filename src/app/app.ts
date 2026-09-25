@@ -13,7 +13,12 @@ import {
   stopAll,
 } from '../recorder/capture.ts';
 import type { Captured } from '../recorder/capture.ts';
-import { exportVideoName, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
+import {
+  exportVideoName,
+  Recorder,
+  recoverInterrupted,
+  type RecorderPhase,
+} from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { getRecording, listRecordings } from '../storage/store.ts';
 import { decide, isDeciding, onDecision } from './decide.ts';
@@ -75,7 +80,8 @@ function refreshStatus(): void {
   pill.textContent = shown;
   pill.className = `pill ${PILL_CLASS[shown] ?? ''}`;
   $<HTMLButtonElement>('#stop').disabled = status !== 'recording';
-  $<HTMLButtonElement>('#record-screen').disabled = status !== 'idle';
+  // A waiting `stopped` recording never blocks a new one (DECISIONS § Form factor).
+  $<HTMLButtonElement>('#record-screen').disabled = !canStart();
   void send({
     type: 'badge',
     state:
@@ -89,13 +95,20 @@ function refreshStatus(): void {
   });
 }
 
+/** A recording may start: nothing running, draining or exporting. A waiting one does not count. */
+function canStart(): boolean {
+  return (status === 'idle' || status === 'stopped') && !starting;
+}
+
 /**
- * Nothing live and no decision in flight: the newest `stopped` recording, if any, is what the
- * stop dialog and the badge are about, and the status says so. Called after every stop and
- * every decision, and on startup (a recording left `stopped` by a closed tab is still waiting).
+ * Nothing live, starting or deciding: the newest `stopped` recording, if any, is what the stop
+ * dialog and the badge are about, and the status says so. Called after every stop and every
+ * decision, and first thing on startup, before this tab answers `query-status` (a recording
+ * left `stopped` by a closed tab is still waiting, and the service worker's first question must
+ * not meet a stale `idle`).
  */
 async function refreshPending(): Promise<void> {
-  if (recorder || applying > 0) return;
+  if (recorder || starting || applying > 0) return;
   const stopped = (await listRecordings()).filter((r) => r.status === 'stopped');
   pendingId = stopped[0]?.id;
   if (pendingId) {
@@ -167,12 +180,12 @@ function onMessage(
       });
       return true;
     case 'call-ended': {
-      // Only from the recorded tab (toolbar path) or a tab that contributed events (picker
-      // path), and only while recording: the human is asked, the recording goes on.
+      // Like a speaker or roster event, not like a diagnostic: from the recorded tab on the
+      // toolbar path, from any tab on the picker path (a Meet window on a shared screen may
+      // never have contributed an event if its meters did not match), and only while
+      // recording. The human is asked; the recording goes on.
       const from = sender.tab?.id;
-      const ours =
-        from !== undefined &&
-        (recordedTabId !== undefined ? from === recordedTabId : contributingTabs.has(from));
+      const ours = from !== undefined && (recordedTabId === undefined || from === recordedTabId);
       if (recorder && status === 'recording' && ours) askToSave();
       return false;
     }
@@ -256,7 +269,7 @@ async function acquireMic(settings: Settings): Promise<MicResult> {
 async function onToggleRecording(
   msg: Extract<Message, { type: 'toggle-recording' }>,
 ): Promise<void> {
-  if (status !== 'idle' || starting) {
+  if (!canStart()) {
     comeForward();
     return;
   }
@@ -288,12 +301,14 @@ async function onToggleRecording(
     await startRecording(display, mic, settings, msg.tabTitle || 'Tab recording', msg.tabId);
   } finally {
     starting = false;
+    // The buttons key on `starting` too; and a failed start goes back to whatever waits.
+    void refreshPending().then(refreshStatus);
   }
 }
 
 /** "Record screen…": Chrome's picker, from a click in this tab. The picker first: it needs the gesture. */
 async function onRecordScreen(): Promise<void> {
-  if (status !== 'idle' || starting) return;
+  if (!canStart()) return;
   starting = true;
   try {
     let display: Captured;
@@ -309,6 +324,7 @@ async function onRecordScreen(): Promise<void> {
     await startRecording(display, mic, settings, 'Screen recording');
   } finally {
     starting = false;
+    void refreshPending().then(refreshStatus);
   }
 }
 
@@ -323,9 +339,13 @@ async function startRecording(
   title: string,
   tabId?: number,
 ): Promise<void> {
-  if (status !== 'idle') {
+  if (status !== 'idle' && status !== 'stopped') {
+    // Cannot happen with `starting` held from the first capture; if it does, say so rather than
+    // drop the captured streams on the floor with the human waiting for the badge.
     stopAll(display.stream);
     if (mic.mic) stopAll(mic.mic.stream);
+    note('Not started: a recording is already running.', true);
+    comeForward();
     return;
   }
   recordedTabId = tabId;
@@ -351,7 +371,7 @@ async function startRecording(
   }
 }
 
-function onRecorderChange(rec: Recording, phase: 'recording' | 'stopping' | 'stopped'): void {
+function onRecorderChange(rec: Recording, phase: RecorderPhase): void {
   switch (phase) {
     case 'recording':
       setStatus('recording');
@@ -388,10 +408,15 @@ function onRecorderChange(rec: Recording, phase: 'recording' | 'stopping' | 'sto
   void renderList();
 }
 
-/** What the stop dialog shows: the live recording, else the newest one waiting `stopped`. */
+/**
+ * What the stop dialog shows: the live recording (also while it drains after its stream died,
+ * so the dialog does not take an empty answer for "nothing pending" and close between the
+ * drain and `stopped`), else the newest one waiting `stopped`. Nothing while a decision is
+ * being applied: there is nothing left to decide.
+ */
 async function pendingInfo(): Promise<PendingInfo | undefined> {
   const live = recorder?.recording;
-  if (live && status === 'recording')
+  if (live && deciding !== live.id)
     return { id: live.id, title: live.title, startedAt: live.startedAt, live: true };
   if (!pendingId || applying > 0 || isDeciding(pendingId)) return undefined;
   const rec = await getRecording(pendingId);
@@ -473,13 +498,37 @@ async function runPipeline(id: string): Promise<void> {
   }
 }
 
-/** Stop in the app tab: stop and save into the folder from Settings, in one click. */
+/**
+ * Stop in the app tab: stop and save into the folder from Settings, in one click. With no folder
+ * chosen yet, the picker first (inside the click); cancelled, the recording goes on and the
+ * status line says why, as the stop dialog does.
+ */
 async function onStop(): Promise<void> {
   const r = recorder;
   if (!r) return;
+  if (!(await ensureSettingsFolder())) return;
   // Inside the click: the folder permission prompt needs a user gesture.
   await ensureExportPermission().catch(() => undefined);
   await applyDecision(r.recording.id, 'save');
+}
+
+/**
+ * The Settings folder, chosen here when there is none (a Save must save). False when the
+ * picker was cancelled or failed; the status line says so.
+ */
+async function ensureSettingsFolder(): Promise<boolean> {
+  if (await getExportRoot()) return true;
+  try {
+    const handle = await window.showDirectoryPicker({ id: 'rescribe-export', mode: 'readwrite' });
+    await setExportRoot(handle);
+    await describeFolder();
+    return true;
+  } catch (err) {
+    if ((err as DOMException).name === 'AbortError')
+      note('Choose a folder to save to; the recording is untouched.', true);
+    else note(`Could not choose a folder: ${describe(err)}`, true);
+    return false;
+  }
 }
 
 // --- Settings -----------------------------------------------------------------------------
@@ -568,8 +617,11 @@ async function main(): Promise<void> {
     document.body.dataset['ready'] = 'duplicate';
     return;
   }
-  chrome.runtime.onMessage.addListener(onMessage);
   setStatus('idle');
+  // What is waiting on disk, before this tab answers anything: the service worker reads the
+  // status the moment the tab answers, and a toolbar click must not meet a stale `idle`.
+  await refreshPending();
+  chrome.runtime.onMessage.addListener(onMessage);
   // Every decision, wherever it was made (the stop dialog, Stop, a row): the status line says
   // what happened and a saved recording is transcribed (the artifacts go to OPFS first and follow
   // the video when it is saved, exported or not).
@@ -578,8 +630,11 @@ async function main(): Promise<void> {
   onDecision((ev) => {
     if (ev.phase === 'started') {
       if (!recorder) setStatus('recorded');
+      void renderList();
       return;
     }
+    // The stop dialog may have chosen the Settings folder on the way (Save with none chosen).
+    void describeFolder();
     const rec = ev.rec;
     if (ev.action === 'discard') note(`Discarded "${ev.before.title}".`);
     else if (!rec) note('');
@@ -630,7 +685,7 @@ async function main(): Promise<void> {
   for (const rec of interrupted) void runPipeline(rec.id);
   for (const rec of recovered) if (rec.status === 'recorded') void autoTranscribe(rec.id);
   if (interrupted.length > 0) await renderList();
-  // A recording left `stopped` (the tab closed before the human decided) is still waiting.
+  // Again after the recovery: a recovered recording may have changed what is waiting.
   await refreshPending();
   // Startup is complete (recovery included); the e2e harness waits for this.
   document.body.dataset['ready'] = 'owner';

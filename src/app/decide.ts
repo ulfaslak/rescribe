@@ -7,7 +7,11 @@ import type { Decision } from '../lib/messages.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { finalize } from '../recorder/recorder.ts';
-import { deleteRecordingExportRoot, getRecordingExportRoot } from '../storage/handles.ts';
+import {
+  deleteRecordingExportRoot,
+  getExportRoot,
+  getRecordingExportRoot,
+} from '../storage/handles.ts';
 import { deleteRecording, getRecording, updateRecording } from '../storage/store.ts';
 
 /**
@@ -46,7 +50,8 @@ function emit(ev: DecisionEvent): void {
 
 /**
  * Apply the decision to a recording at `stopped`. `save`: `finalize` into the folder from
- * Settings (a Save as handle left behind by an earlier, failed attempt is dropped first).
+ * Settings, refused when none is chosen (a Save must save; the callers open the picker first),
+ * a Save as handle left behind by an earlier, failed attempt dropped first.
  * `save-as`: the same into the folder whose handle the caller stored under `export:<id>`
  * (storage/handles.ts) before calling; its name goes on the record. `discard`: the record, its
  * files and its handle are deleted; nothing was ever exported. Throws when the recording does not
@@ -75,9 +80,13 @@ export async function decide(
         const own = await getRecordingExportRoot(id);
         if (!own) throw new Error('No folder was chosen for this recording.');
         target = await updateRecording(id, { exportRoot: own.name });
-      } else if (before.exportRoot !== undefined || (await getRecordingExportRoot(id))) {
-        await deleteRecordingExportRoot(id);
-        target = await updateRecording(id, { exportRoot: undefined });
+      } else {
+        if (!(await getExportRoot()))
+          throw new Error('No export folder chosen in Settings; choose one, then save.');
+        if (before.exportRoot !== undefined || (await getRecordingExportRoot(id))) {
+          await deleteRecordingExportRoot(id);
+          target = await updateRecording(id, { exportRoot: undefined });
+        }
       }
       out = await finalize(target, (await loadSettings()).pathTemplate, onExporting);
     }
