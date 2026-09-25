@@ -14,9 +14,16 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 **Success criteria**: a transcript, no fallback warning, WebGPU faster than WASM. Headless Chromium has WebGPU (ENVIRONMENT_NOTES) and `e2e/transcribe.spec.ts` covers it with `RESCRIBE_E2E_WEBGPU=1`; Brave gates GPU features differently, so only the real browser settles it.
 **On failure**: keep WASM as the default (it is), file a bug with the console output.
 
+### The first compact recording: size, encoder cost during the call, playback
+
+**Trigger**: compact recordings (#27) merged and the extension reloaded at `brave://extensions`; the first real Meet call recorded after that, ten minutes or longer.
+**Steps**: before the call, open Settings once and check **Video format** says WebM and **Frame rate** 5 fps (a profile from before #27 is migrated on load; the row of the earlier recordings still says `.mp4`). Record the call from the toolbar button as usual. During the call, open Activity Monitor and note Brave's CPU with the recording running and, for comparison, the Brave Helper (Renderer) process of the Rescribe tab; note whether the fans come on or Meet's video stutters. After Save, look at `recording.webm` in Finder (size), then open it in Brave (drag it into a tab) and in VLC: the length must show at once, scrubbing must work, and both your voice and the call's audio must be there; look at a stretch with a shared screen and one with faces.
+**Success criteria**: about 1 MB per minute of call at 5 fps (65 MB/h; an hour under 100 MB), text on the shared screen legible, faces clean; Brave's CPU with the recording running not visibly above what the call costs on its own (the AV1 encoder is software; Chromium's realtime settings held 5 fps at 1080p with headroom in the headless probe, but a real call adds Meet's own encoding); the length shown at once in Brave and VLC, seeking to the middle works.
+**On failure**: the file is far above 100 MB/h: run `ffprobe -show_streams` on it and file the video stream's `codec_name` (VP9 means the AV1 fallback fired; the row's note says so) and the frame count against the duration. CPU too high or Meet stuttering: file it with the CPU figures and the machine; a lower frame rate is already in force, so the encoder is the question (Chromium's AV1 encoder is software; a VP9 or hardware H.264 default would be the fallback), and the MP4 option is the workaround meanwhile. No length or no seeking in Brave: the header patch did not apply; run `ffprobe` on the file, file the `format.duration` and the first 200 bytes (`xxd -l 200`).
+
 ### The first real MP4 plays and seeks in QuickTime
 
-**Trigger**: the first recording made with the real extension in the human's Chrome (vertical slice merged).
+**Trigger**: the first recording made with the MP4 option (Settings → Video format → MP4). Since #27 the default is WebM, which QuickTime does not play; this check is for the option.
 **Steps**: open `recording.mp4` from the export folder in QuickTime Player and in Finder's preview; scrub to the middle; check the duration shown.
 **Success criteria**: plays with audio, scrubbing works, duration matches the recording. MediaRecorder writes a *fragmented* MP4 (`moof`+`mdat` per keyframe, `mfra` at the end; see [[ENVIRONMENT_NOTES]] § "MediaRecorder cadence"), which is what this check is about.
 **On failure**: remux on export (a `moov`-first, non-fragmented MP4) becomes a task; file it as a bug with the symptom.

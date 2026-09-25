@@ -6,6 +6,7 @@
 // `setRecordingExportRoot`, which the stop dialog calls inside its own clicks.
 import { candidateName, renderPathTemplate } from '../lib/pathtemplate.ts';
 import type { Container, Recording } from '../lib/types.ts';
+import { withDuration } from '../lib/webm.ts';
 import { getExportRoot, getRecordingExportRoot } from './handles.ts';
 import { listArtifacts, readArtifact } from './store.ts';
 
@@ -22,6 +23,29 @@ export type ExportFailure = 'no-folder' | 'permission' | 'io' | 'missing';
 
 export function exportVideoName(container: Container): string {
   return container === 'mp4' ? 'recording.mp4' : 'recording.webm';
+}
+
+/** Enough of a WebM to hold its EBML header, Segment header and Info (Chrome's end under 100 bytes in). */
+const WEBM_HEAD_BYTES = 64 * 1024;
+
+/**
+ * The bytes to export for the video: the OPFS file as it is, except that a WebM gets
+ * `durationMs` written into the header (`withDuration`, lib/webm.ts). MediaRecorder writes a live
+ * stream without one, and a browser then plays the file as endless. The OPFS copy is left as
+ * recorded: it is the append-only copy the crash recovery reads. A WebM whose header cannot be
+ * patched, or a duration that is not positive, is exported unchanged.
+ */
+export async function exportVideoData(
+  video: Blob,
+  container: Container,
+  durationMs: number,
+): Promise<ReadableStream<Uint8Array>> {
+  if (container !== 'webm') return video.stream();
+  const head = new Uint8Array(await video.slice(0, WEBM_HEAD_BYTES).arrayBuffer());
+  const patched = withDuration(head, durationMs);
+  if (!patched) return video.stream();
+  // A Blob over a Blob slice references the file; nothing but the head is copied.
+  return new Blob([patched.bytes, video.slice(patched.consumed)]).stream();
 }
 
 export class ExportError extends Error {

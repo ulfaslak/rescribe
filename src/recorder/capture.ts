@@ -1,7 +1,7 @@
 // Getting the streams. Three entry points, one shape out: the toolbar path (a tab-capture stream
 // id from the service worker), the picker path (getDisplayMedia from the app tab, needs a user
 // gesture) and the microphone. DECISIONS § Capture.
-import type { Source } from '../lib/types.ts';
+import type { FrameRate, Source } from '../lib/types.ts';
 
 export interface Captured {
   stream: MediaStream;
@@ -19,8 +19,16 @@ export class CaptureCancelled extends Error {
   }
 }
 
-/** Toolbar path: consume the stream id `chrome.tabCapture.getMediaStreamId` produced. */
-export async function captureTab(streamId: string, title?: string): Promise<Captured> {
+/**
+ * Toolbar path: consume the stream id `chrome.tabCapture.getMediaStreamId` produced. The frame
+ * rate is capped at the source (Settings, 5 fps by default): MediaRecorder encodes every frame it
+ * is given, so this is where the file size and the encoder's work are decided.
+ */
+export async function captureTab(
+  streamId: string,
+  frameRate: FrameRate,
+  title?: string,
+): Promise<Captured> {
   const constraints = {
     audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
     video: {
@@ -29,7 +37,7 @@ export async function captureTab(streamId: string, title?: string): Promise<Capt
         chromeMediaSourceId: streamId,
         maxWidth: 1920,
         maxHeight: 1080,
-        maxFrameRate: 30,
+        maxFrameRate: frameRate,
       },
     },
   } as unknown as MediaStreamConstraints;
@@ -41,11 +49,14 @@ export async function captureTab(streamId: string, title?: string): Promise<Capt
   };
 }
 
-/** Picker path. Throws CaptureCancelled when the picker is dismissed. */
-export async function captureDisplay(): Promise<Captured> {
+/** Picker path, the frame rate capped as above. Throws CaptureCancelled when the picker is dismissed. */
+export async function captureDisplay(frameRate: FrameRate): Promise<Captured> {
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: frameRate, max: frameRate } },
+      audio: true,
+    });
   } catch (err) {
     const name = (err as DOMException).name;
     if (name === 'AbortError' || name === 'NotAllowedError') throw new CaptureCancelled();

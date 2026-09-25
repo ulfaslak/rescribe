@@ -108,7 +108,12 @@ export function buildGraph(
         break;
       }
       case 'mixer':
-        mixer = ctx.createMediaStreamDestination();
+        // Mono: the channels are speech, and a stereo mix doubled the video file's audio for
+        // nothing (DECISIONS § Capture).
+        mixer = new MediaStreamAudioDestinationNode(ctx, {
+          channelCount: 1,
+          channelCountMode: 'explicit',
+        });
         node = mixer;
         break;
       case 'speakers':

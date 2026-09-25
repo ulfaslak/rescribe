@@ -10,8 +10,14 @@ import type {
 } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
-import { loadSettings, saveSettings } from '../lib/settings.ts';
-import { DEFAULT_SETTINGS, type Recording, type Settings } from '../lib/types.ts';
+import { loadSettings, migrateSettings, saveSettings, toFrameRate } from '../lib/settings.ts';
+import {
+  DEFAULT_SETTINGS,
+  FRAME_RATES,
+  type FrameRate,
+  type Recording,
+  type Settings,
+} from '../lib/types.ts';
 import {
   captureDisplay,
   captureMic,
@@ -311,7 +317,7 @@ async function onToggleRecording(
     );
     let display: Captured;
     try {
-      display = await captureTab(msg.streamId, msg.tabTitle);
+      display = await captureTab(msg.streamId, settings.frameRate, msg.tabTitle);
     } catch (err) {
       if (mic.mic) stopAll(mic.mic.stream);
       note(`Couldn't capture that tab: ${String(err)}`, true);
@@ -326,20 +332,24 @@ async function onToggleRecording(
   }
 }
 
-/** "Record screen…": Chrome's picker, from a click in this tab. The picker first: it needs the gesture. */
+/**
+ * "Record screen…": Chrome's picker, from a click in this tab. The picker needs the click's
+ * transient activation, which outlives the settings read by seconds; the microphone comes after
+ * the picker.
+ */
 async function onRecordScreen(): Promise<void> {
   if (!canStart()) return;
   starting = true;
   try {
+    const settings = await loadSettings();
     let display: Captured;
     try {
-      display = await captureDisplay();
+      display = await captureDisplay(settings.frameRate);
     } catch (err) {
       if (err instanceof CaptureCancelled) note('');
       else note(`Couldn't start: ${String(err)}`, true);
       return;
     }
-    const settings = await loadSettings();
     const mic = await acquireMic(settings);
     await startRecording(display, mic, settings, 'Screen recording');
   } finally {
@@ -379,6 +389,7 @@ async function startRecording(
         mic: mic.mic,
         title,
         container: settings.container,
+        frameRate: settings.frameRate,
         note: mic.missing ? 'Microphone unavailable at start; recorded without it.' : undefined,
       },
       onRecorderChange,
@@ -610,12 +621,26 @@ async function chooseFolder(): Promise<void> {
   }
 }
 
+/** One option per offered frame rate (types.ts `FRAME_RATES`), so the two cannot drift. */
+const FRAME_RATE_LABELS: Record<FrameRate, string> = {
+  5: '5 fps: calls and slides, the smallest files',
+  10: '10 fps',
+  30: '30 fps: smooth motion, the largest files',
+};
+
+function fillFrameRates(): void {
+  $<HTMLSelectElement>('select[name="frameRate"]').replaceChildren(
+    ...FRAME_RATES.map((rate) => new Option(FRAME_RATE_LABELS[rate], String(rate))),
+  );
+}
+
 /** The form and the Record section's checkbox from Settings. */
 function fillSettings(settings: Settings): void {
   const fields = $<HTMLFormElement>('#settings-form').elements;
   (fields.namedItem('pathTemplate') as HTMLInputElement).value = settings.pathTemplate;
   (fields.namedItem('myName') as HTMLInputElement).value = settings.myName;
   (fields.namedItem('container') as HTMLSelectElement).value = settings.container;
+  (fields.namedItem('frameRate') as HTMLSelectElement).value = String(settings.frameRate);
   (fields.namedItem('micByDefault') as HTMLInputElement).checked = settings.micByDefault;
   (fields.namedItem('model') as HTMLSelectElement).value = settings.model;
   (fields.namedItem('backend') as HTMLSelectElement).value = settings.backend;
@@ -629,6 +654,7 @@ const settingsKey = (s: Settings): string =>
 
 function bindSettings(settings: Settings): void {
   const form = $<HTMLFormElement>('#settings-form');
+  fillFrameRates();
   fillSettings(settings);
   formBound = true;
   let lastSaved = settingsKey(settings);
@@ -641,7 +667,8 @@ function bindSettings(settings: Settings): void {
       const saved = await saveSettings({
         pathTemplate: String(data.get('pathTemplate') || '{date} {time} {title}'),
         myName: String(data.get('myName') || 'Me'),
-        container: data.get('container') === 'webm' ? 'webm' : 'mp4',
+        container: data.get('container') === 'mp4' ? 'mp4' : 'webm',
+        frameRate: toFrameRate(data.get('frameRate')),
         micByDefault: data.get('micByDefault') === 'on',
         model: String(data.get('model') || settings.model),
         backend: data.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',
@@ -659,7 +686,10 @@ function bindSettings(settings: Settings): void {
   chrome.storage.onChanged.addListener((changes, area) => {
     const change = changes['settings'];
     if (area !== 'local' || !change) return;
-    const next = { ...DEFAULT_SETTINGS, ...(change.newValue as Partial<Settings> | undefined) };
+    const next = {
+      ...DEFAULT_SETTINGS,
+      ...migrateSettings((change.newValue as Partial<Settings> | undefined) ?? {}),
+    };
     if (settingsKey(next) === lastSaved) return;
     lastSaved = settingsKey(next);
     fillSettings(next);

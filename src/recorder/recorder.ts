@@ -8,9 +8,10 @@
 // ArrayBuffer, and one 200 ms PCM block per channel. Everything is transferred to the storage
 // worker and written to OPFS immediately (INVARIANTS "on disk within seconds").
 import { pcmSeconds, PCM_SAMPLE_RATE } from '../lib/pcm.ts';
-import type { ChannelId, Container, Recording, Source } from '../lib/types.ts';
+import type { ChannelId, Container, FrameRate, Recording, Source } from '../lib/types.ts';
 import {
   ExportError,
+  exportVideoData,
   exportVideoName,
   getExportDirectory,
   writeExportFile,
@@ -31,16 +32,29 @@ import { buildGraph, planGraph, TAP_SAMPLE_RATE, type BuiltGraph } from './graph
 import type { TapCommand, TapMessage } from './tap.worklet.ts';
 
 const TIMESLICE_MS = 1000;
-/** Chrome's fragmented-MP4 muxer emits a fragment only at a keyframe, and its default keyframe
- * interval is about 5 s (measured 2026-09-24: first media fragment at +10 s). A keyframe per
- * timeslice makes every timeslice a chunk on disk, which is what "on disk within seconds" needs. */
-const KEYFRAME_INTERVAL_MS = 1000;
-const VIDEO_BPS = 2_500_000;
-const AUDIO_BPS = 128_000;
-const MIME: Record<Container, string> = {
-  mp4: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-  webm: 'video/webm;codecs=vp9,opus',
+/** "On disk within seconds" (INVARIANTS) needs a chunk per timeslice. Chrome's WebM muxer emits
+ * one whatever the keyframe interval, so keyframes can be sparse (a keyframe of a static screen
+ * costs as much as tens of its delta frames). Chrome's fragmented-MP4 muxer emits a fragment only
+ * at a keyframe, and its default keyframe interval is about 5 s (measured 2026-09-24: first media
+ * fragment at +10 s), so MP4 needs a keyframe per timeslice. */
+const KEYFRAME_INTERVAL_MS: Record<Container, number> = { webm: 10_000, mp4: 1000 };
+/** Video bitrate caps (DECISIONS § Storage and output). AV1 at 300 kbit/s, 1080p, 5 fps kept a
+ * Meet call's shared screen legible and the faces clean at about 50 MB/h (2026-09-25, #27); the
+ * higher frame rates scale the cap for their extra frames. The MP4 option keeps H.264 at the cap
+ * it always had: it exists for players, not for size. */
+const VIDEO_BPS: Record<Container, Record<FrameRate, number>> = {
+  webm: { 5: 300_000, 10: 450_000, 30: 900_000 },
+  mp4: { 5: 2_500_000, 10: 2_500_000, 30: 2_500_000 },
 };
+/** The mix is mono speech (graph.ts): Opus is transparent for it at 32 kbit/s; AAC-LC needs 64. */
+const AUDIO_BPS: Record<Container, number> = { webm: 32_000, mp4: 64_000 };
+/** MIME candidates per container, best first. WebM: AV1 (Chromium 153 and Brave 152 record it,
+ * 2026-09-25), else VP9 with a note on the recording. */
+const MIME: Record<Container, string[]> = {
+  webm: ['video/webm;codecs=av1,opus', 'video/webm;codecs=vp9,opus'],
+  mp4: ['video/mp4;codecs=avc1.42E01E,mp4a.40.2'],
+};
+const CODEC_FALLBACK_NOTE = 'No AV1 encoder in this browser; recorded VP9 (a larger file).';
 /** Deadlines on the storage worker and the taps, so a dead worker or a stuck render thread ends
  * in a `failed` or `recorded`-with-note outcome instead of a hang. */
 const OPEN_DEADLINE_MS = 5000;
@@ -75,6 +89,8 @@ export interface StartOptions {
   mic?: Captured;
   title: string;
   container: Container;
+  /** The rate the display was captured at (capture.ts); sets the video bitrate cap. */
+  frameRate: FrameRate;
   /** Shown on the recording, e.g. that the microphone was unavailable. */
   note?: string;
 }
@@ -154,9 +170,12 @@ export class Recorder {
     let persisted = false;
     try {
       if (!videoTrack) throw new Error('The captured stream has no video track.');
-      const mime = MIME[opts.container];
-      if (!MediaRecorder.isTypeSupported(mime))
-        throw new Error(`This browser cannot record ${mime}.`);
+      const mime = MIME[opts.container].find((m) => MediaRecorder.isTypeSupported(m));
+      if (!mime)
+        throw new Error(`This browser cannot record ${MIME[opts.container].join(' or ')}.`);
+      const note = [opts.note, mime === MIME[opts.container][0] ? '' : CODEC_FALLBACK_NOTE]
+        .filter(Boolean)
+        .join(' ');
 
       // Until the recorder exists, a worker failure rejects open() (StorageWriter.fail).
       writer = new StorageWriter((err) => recorder?.fail(err));
@@ -186,9 +205,9 @@ export class Recorder {
         new MediaStream([videoTrack, ...graph.mixer.stream.getAudioTracks()]),
         {
           mimeType: mime,
-          videoBitsPerSecond: VIDEO_BPS,
-          audioBitsPerSecond: AUDIO_BPS,
-          videoKeyFrameIntervalDuration: KEYFRAME_INTERVAL_MS,
+          videoBitsPerSecond: VIDEO_BPS[opts.container][opts.frameRate],
+          audioBitsPerSecond: AUDIO_BPS[opts.container],
+          videoKeyFrameIntervalDuration: KEYFRAME_INTERVAL_MS[opts.container],
         } as MediaRecorderOptions,
       );
       const recording: Recording = {
@@ -198,7 +217,7 @@ export class Recorder {
         sources,
         status: 'recording',
         container: opts.container,
-        ...(opts.note ? { note: opts.note } : {}),
+        ...(note ? { note } : {}),
       };
       // The record exists before anything can call stop(): the track and MediaRecorder listeners
       // are attached in wire(), and rec.start() follows in the same task, so no stop can race
@@ -446,7 +465,11 @@ export async function finalize(
   onExporting?.(rec);
   try {
     const { dir, path } = await getExportDirectory(rec, pathTemplate);
-    await writeExportFile(dir, exportVideoName(rec.container), video.stream());
+    await writeExportFile(
+      dir,
+      exportVideoName(rec.container),
+      await exportVideoData(video, rec.container, await mediaDurationMs(rec)),
+    );
     return await updateRecording(rec.id, {
       status,
       exportPath: path,
@@ -459,6 +482,32 @@ export async function finalize(
       ...(keepError ? {} : { error: `Not exported: ${msg}` }),
     });
   }
+}
+
+/**
+ * The recording's length on the audio clock: the longest PCM channel, one sample per 1/16000 s
+ * of elapsed monotonic time (INVARIANTS "Every timestamp in the pipeline is recording-relative").
+ * 0 when no channel was recorded.
+ */
+async function recordedSeconds(id: string): Promise<number> {
+  let seconds = 0;
+  for (const channel of ['mic', 'display'] as const) {
+    const f = await getChannelFile(id, channel);
+    if (f) seconds = Math.max(seconds, pcmSeconds(f.size));
+  }
+  return seconds;
+}
+
+/**
+ * How long the media runs, for the exported header: the PCM length, since MediaRecorder stamps
+ * its clusters on the same monotonic clock (one that pauses with the machine, unlike the wall
+ * clock between `startedAt` and `endedAt`); for a recording without an audio channel, the wall
+ * clock is all there is.
+ */
+async function mediaDurationMs(rec: Recording): Promise<number> {
+  const seconds = await recordedSeconds(rec.id);
+  if (seconds > 0) return Math.round(seconds * 1000);
+  return rec.endedAt === undefined ? 0 : rec.endedAt - rec.startedAt;
 }
 
 /**
@@ -481,11 +530,7 @@ export async function recoverInterrupted(pathTemplate: string): Promise<Recordin
       );
       continue;
     }
-    let seconds = 0;
-    for (const channel of ['mic', 'display'] as const) {
-      const f = await getChannelFile(rec.id, channel);
-      if (f) seconds = Math.max(seconds, pcmSeconds(f.size));
-    }
+    const seconds = await recordedSeconds(rec.id);
     const endedAt =
       seconds > 0
         ? rec.startedAt + Math.round(seconds * 1000)

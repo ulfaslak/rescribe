@@ -6,12 +6,6 @@ Remove an entry in the PR that resolves it.
 
 ---
 
-### WebM exports carry no duration header
-
-**What**: a MediaRecorder WebM is a live stream: the header has no `Duration` element, so `ffprobe` reports none and players show an unknown length until they parse the whole file. The MP4 path is unaffected (fragmented MP4 with `mfra`; see the QuickTime live check).
-**Why deferred**: WebM is the non-default container; remuxing on export means shipping a muxer.
-**Trigger**: the human uses WebM and a player refuses to seek, or a downstream tool needs the duration.
-
 ### The loaded model stays in memory for the life of the app tab
 
 **What**: `app/pipeline.ts` keeps one `Transcriber` (one worker, the model loaded) after the first transcription; ARCHITECTURE § Runtime topology says the worker lives as long as the app tab. The pinned tab lives all day, so the int8 model's working set (about 1 GB on WASM) stays resident between calls. Freeing it after an idle period costs a reload from the cache (seconds) on the next recording.
