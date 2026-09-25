@@ -107,6 +107,8 @@ export interface Settings {
   myName: string;
   container: Container;
   micByDefault: boolean;
+  /** The microphone to record, a `MediaDeviceInfo.deviceId`; absent or empty: the default device. */
+  micDeviceId?: string;
   /** parakeet.js model key. */
   model: string;
   /** Where the speech engine runs (DECISIONS § Speech recognition: WASM by default). */

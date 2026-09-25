@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rescribe</title>
+    <link rel="stylesheet" href="progress.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="../icons/icon-32.png" alt="" width="24" height="24" />
+        <span class="brand">Rescribe</span>
+      </header>
+      <p id="title" class="title">…</p>
+      <h1 id="headline">…</h1>
+      <div id="bar" class="bar" hidden><div id="bar-fill" class="bar-fill"></div></div>
+      <p id="detail" class="detail"></p>
+      <p id="destination" class="path"></p>
+      <p id="note" class="hint">
+        Rescribe does this in its own tab, pinned at the left of your tabs. You can close this tab;
+        it does not stop anything. Closing the Rescribe tab pauses the transcription until you open
+        it again.
+      </p>
+      <div class="actions">
+        <button id="open-app">Open Rescribe</button>
+      </div>
+    </main>
+    <script type="module" src="progress.js"></script>
+  </body>
+</html>

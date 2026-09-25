@@ -1,10 +1,17 @@
 // The app tab. Owns all state: the recorder, storage, settings, the library list. The service
 // worker only pokes it with messages. See ARCHITECTURE § Runtime topology.
-import type { AppStatus, DecideResult, Decision, Message, PendingInfo } from '../lib/messages.ts';
+import type {
+  AppStatus,
+  DecideResult,
+  Decision,
+  Message,
+  PendingInfo,
+  ProgressInfo,
+} from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
 import { loadSettings, saveSettings } from '../lib/settings.ts';
-import type { Recording, Settings } from '../lib/types.ts';
+import { DEFAULT_SETTINGS, type Recording, type Settings } from '../lib/types.ts';
 import {
   captureDisplay,
   captureMic,
@@ -29,6 +36,7 @@ import {
   recoverInterruptedTranscriptions,
   transcribeRecording,
   type PipelinePhase,
+  type PipelineProgress,
 } from './pipeline.ts';
 
 const $ = <T extends Element>(sel: string): T => {
@@ -56,12 +64,20 @@ let pendingId: string | undefined;
 let deciding: string | undefined;
 /** Decisions being applied (an export in flight), whatever recording they are on. */
 let applying = 0;
+/** The recordings those decisions are on (for `query-progress`). */
+const applyingIds = new Set<string>();
+/**
+ * The pipeline's latest progress per recording it holds, queued or running, in queue order (the
+ * first entry is the one running); dropped at `done`. What `query-progress` answers with.
+ */
+const lastProgress = new Map<string, PipelineProgress>();
 
 /**
  * `status` is the recorder's state and what `query-status` answers, so a toolbar click can still
- * start a recording while a transcription runs. The pill and the badge show that transcription
- * when nothing is being recorded. `stopped`: a recording waits for the decision (badge `SAVE`);
- * `recorded`: busy for a moment (the recorder draining, an export running).
+ * start a recording while a transcription runs. The pill shows that transcription when nothing
+ * is being recorded; the badge does not (the processing tab is its feedback). `stopped`: a
+ * recording waits for the decision (badge `SAVE`); `recorded`: busy for a moment (the recorder
+ * draining, an export running).
  */
 function setStatus(next: AppStatus): void {
   status = next;
@@ -84,14 +100,7 @@ function refreshStatus(): void {
   $<HTMLButtonElement>('#record-screen').disabled = !canStart();
   void send({
     type: 'badge',
-    state:
-      shown === 'recording'
-        ? 'recording'
-        : shown === 'stopped'
-          ? 'pending'
-          : shown === 'transcribing'
-            ? 'processing'
-            : 'idle',
+    state: status === 'recording' ? 'recording' : status === 'stopped' ? 'pending' : 'idle',
   });
 }
 
@@ -158,7 +167,7 @@ async function micWillPrompt(): Promise<boolean> {
 function onMessage(
   msg: Message,
   sender: chrome.runtime.MessageSender,
-  sendResponse: (res: AppStatus | PendingInfo | DecideResult | undefined) => void,
+  sendResponse: (res: AppStatus | PendingInfo | DecideResult | ProgressInfo | undefined) => void,
 ): boolean {
   switch (msg.type) {
     case 'query-status':
@@ -170,7 +179,16 @@ function onMessage(
     case 'query-pending':
       void pendingInfo().then((info) => sendResponse(info));
       return true;
+    case 'query-progress':
+      void progressInfo(msg.id).then((info) => sendResponse(info));
+      return true;
+    case 'folder-changed':
+      void describeFolder();
+      return false;
     case 'decide':
+      // A save decided in the stop dialog: the processing tab takes over from the dialog at once
+      // (the export may take a while), whatever the decision's outcome; the tab shows it.
+      if (msg.action !== 'discard') void send({ type: 'open-progress', id: msg.id });
       void applyDecision(msg.id, msg.action).then((result) => {
         try {
           sendResponse(result);
@@ -242,6 +260,12 @@ function micWanted(settings: Settings): boolean {
   return formBound ? $<HTMLInputElement>('#mic').checked : settings.micByDefault;
 }
 
+/** The start dialog's microphone choice, carried in `toggle-recording`. */
+interface MicChoice {
+  mic: boolean;
+  micDeviceId?: string;
+}
+
 /** The microphone when wanted; `missing` when it was wanted and unavailable (denied, absent). */
 interface MicResult {
   mic?: Captured;
@@ -253,18 +277,19 @@ interface MicResult {
  * the prompt only for a visible tab, and a toolbar click on a call platform tab leaves this tab
  * hidden. Unavailable is not a failure: the recording goes on without it.
  */
-async function acquireMic(settings: Settings): Promise<MicResult> {
-  if (!micWanted(settings)) return { missing: false };
+async function acquireMic(settings: Settings, choice?: MicChoice): Promise<MicResult> {
+  if (!(choice ? choice.mic : micWanted(settings))) return { missing: false };
   if (await micWillPrompt()) comeForward();
-  const mic = await captureMic();
+  const mic = await captureMic(choice ? choice.micDeviceId : settings.micDeviceId);
   return { mic, missing: !mic };
 }
 
 /**
- * Toolbar button or keyboard command: the service worker obtained a tab-capture stream id. It
- * sends this only after reading `idle`, so a message that arrives while not idle, or while a
- * start is pending, is a click it did not bring this tab forward for: do it now, with whatever
- * the pending start waits on (a permission prompt) or with Stop.
+ * Start Capture in the start dialog: the service worker obtained a tab-capture stream id. It
+ * sends this only after reading `idle` (or `stopped`), so a message that arrives while not idle,
+ * or while a start is pending, is a start it did not bring this tab forward for: do it now, with
+ * whatever the pending start waits on (a permission prompt) or with Stop. The dialog's
+ * microphone choice travels with the message; the checkbox here is for "Record screen…".
  */
 async function onToggleRecording(
   msg: Extract<Message, { type: 'toggle-recording' }>,
@@ -288,7 +313,10 @@ async function onToggleRecording(
     // human until the recorder plays it back, and a permission prompt takes as long as the human
     // takes. The id lives 10 s from issue (background.ts): enough once the microphone is granted;
     // a prompt answered later fails the tab capture visibly and the next click succeeds.
-    const mic = await acquireMic(settings);
+    const mic = await acquireMic(
+      settings,
+      msg.mic === undefined ? undefined : { mic: msg.mic, micDeviceId: msg.micDeviceId },
+    );
     let display: Captured;
     try {
       display = await captureTab(msg.streamId, msg.tabTitle);
@@ -431,6 +459,31 @@ async function pendingInfo(): Promise<PendingInfo | undefined> {
 }
 
 /**
+ * What the processing tab and the start dialog ask: what is happening to a recording in this
+ * tab right now. With an id: whether a decision is being applied to it (the stop, the export)
+ * and the pipeline's latest line for it; undefined when neither. Without an id: whichever
+ * recording a decision or the pipeline holds right now, with its title, for a one-liner.
+ */
+async function progressInfo(id?: string): Promise<ProgressInfo | undefined> {
+  if (id === undefined) {
+    const held = deciding ?? [...applyingIds][0] ?? [...lastProgress.keys()][0];
+    if (held === undefined) return undefined;
+    const rec = await getRecording(held);
+    if (!rec) return undefined;
+    return {
+      id: held,
+      title: rec.title,
+      saving: deciding === held || applyingIds.has(held),
+      ...lastProgress.get(held),
+    };
+  }
+  const p = lastProgress.get(id);
+  const saving = deciding === id || applyingIds.has(id);
+  if (!p && !saving) return undefined;
+  return { id, saving, phase: p?.phase, message: p?.message, fraction: p?.fraction };
+}
+
+/**
  * The decision, from the stop dialog, the Stop button or a row: stop the recorder first when the
  * recording is the live one (its stop ends at `stopped`), then `decide` (app/decide.ts). The
  * export runs with the status at `recorded` (busy); the outcome goes to the status line and,
@@ -563,9 +616,9 @@ async function chooseFolder(): Promise<void> {
   }
 }
 
-function bindSettings(settings: Settings): void {
-  const form = $<HTMLFormElement>('#settings-form');
-  const fields = form.elements;
+/** The form and the Record section's checkbox from Settings. */
+function fillSettings(settings: Settings): void {
+  const fields = $<HTMLFormElement>('#settings-form').elements;
   (fields.namedItem('pathTemplate') as HTMLInputElement).value = settings.pathTemplate;
   (fields.namedItem('myName') as HTMLInputElement).value = settings.myName;
   (fields.namedItem('container') as HTMLSelectElement).value = settings.container;
@@ -574,14 +627,24 @@ function bindSettings(settings: Settings): void {
   (fields.namedItem('backend') as HTMLSelectElement).value = settings.backend;
   (fields.namedItem('autoTranscribe') as HTMLInputElement).checked = settings.autoTranscribe;
   $<HTMLInputElement>('#mic').checked = settings.micByDefault;
+}
+
+/** Settings as one comparable string, whatever the key order. */
+const settingsKey = (s: Settings): string =>
+  JSON.stringify(Object.entries(s).sort(([a], [b]) => (a < b ? -1 : 1)));
+
+function bindSettings(settings: Settings): void {
+  const form = $<HTMLFormElement>('#settings-form');
+  fillSettings(settings);
   formBound = true;
+  let lastSaved = settingsKey(settings);
 
   let timer: number | undefined;
   form.addEventListener('input', () => {
     window.clearTimeout(timer);
     timer = window.setTimeout(async () => {
       const data = new FormData(form);
-      await saveSettings({
+      const saved = await saveSettings({
         pathTemplate: String(data.get('pathTemplate') || '{date} {time} {title}'),
         myName: String(data.get('myName') || 'Me'),
         container: data.get('container') === 'webm' ? 'webm' : 'mp4',
@@ -590,10 +653,22 @@ function bindSettings(settings: Settings): void {
         backend: data.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',
         autoTranscribe: data.get('autoTranscribe') === 'on',
       });
-      const saved = $<HTMLElement>('#settings-saved');
-      saved.textContent = 'Saved.';
-      window.setTimeout(() => (saved.textContent = ''), 1500);
+      lastSaved = settingsKey(saved);
+      const note = $<HTMLElement>('#settings-saved');
+      note.textContent = 'Saved.';
+      window.setTimeout(() => (note.textContent = ''), 1500);
     }, 300);
+  });
+  // A change made elsewhere (the start dialog's microphone choice): shown here, so the next save
+  // from this form does not write the old value back. Our own saves are skipped, not re-filled:
+  // a re-fill mid-typing would eat keystrokes.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    const change = changes['settings'];
+    if (area !== 'local' || !change) return;
+    const next = { ...DEFAULT_SETTINGS, ...(change.newValue as Partial<Settings> | undefined) };
+    if (settingsKey(next) === lastSaved) return;
+    lastSaved = settingsKey(next);
+    fillSettings(next);
   });
 }
 
@@ -629,10 +704,12 @@ async function main(): Promise<void> {
   // while it runs, then whatever is pending next.
   onDecision((ev) => {
     if (ev.phase === 'started') {
+      if (ev.action !== 'discard') applyingIds.add(ev.id);
       if (!recorder) setStatus('recorded');
       void renderList();
       return;
     }
+    applyingIds.delete(ev.id);
     // The stop dialog may have chosen the Settings folder on the way (Save with none chosen).
     void describeFolder();
     const rec = ev.rec;
@@ -650,6 +727,8 @@ async function main(): Promise<void> {
   const lastPhase = new Map<string, PipelinePhase>();
   onPipelineProgress((id, p) => {
     if (status === 'idle') note(p.message);
+    if (p.phase === 'done') lastProgress.delete(id);
+    else lastProgress.set(id, p);
     if (lastPhase.get(id) !== p.phase) {
       lastPhase.set(id, p.phase);
       void renderList();

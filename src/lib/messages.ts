@@ -1,10 +1,14 @@
-// Every message that crosses chrome.runtime (service worker, app tab, content scripts) is a
-// member of this union. It is the single roster of those message types. Workers speak
-// postMessage, and each worker's protocol is typed in its own file under src/workers/.
+// Every message that crosses chrome.runtime (service worker, app tab, content scripts, the dialog
+// windows and the processing tab) is a member of this union. It is the single roster of those
+// message types. Workers speak postMessage, and each worker's protocol is typed in its own file
+// under src/workers/.
 import type { RecordingStatus } from './types.ts';
 
-/** `pending`: a stopped recording waits for the human's decision (save, save as, discard). */
-export type BadgeState = 'idle' | 'recording' | 'pending' | 'processing' | 'error';
+/**
+ * `pending`: a stopped recording waits for the human's decision (save, save as, discard). No
+ * state for a transcription: the processing tab is its feedback (DECISIONS § Form factor).
+ */
+export type BadgeState = 'idle' | 'recording' | 'pending' | 'error';
 
 /** What the human does with a recording once it stops (or to stop it). */
 export type Decision = 'save' | 'save-as' | 'discard';
@@ -26,6 +30,27 @@ export interface DecideResult {
   message: string;
 }
 
+/** The service worker's answer to `start-capture`. */
+export interface StartResult {
+  ok: boolean;
+  /** Why not, for the start dialog to show. */
+  error?: string;
+}
+
+/** The app tab's answer to `query-progress`: what it is doing with a recording right now. */
+export interface ProgressInfo {
+  id: string;
+  /** The recording's title, on the answer without an id (the start dialog's one-liner). */
+  title?: string;
+  /** True while a decision (the stop, the video export) is being applied to it. */
+  saving: boolean;
+  /** The pipeline's latest phase and line for it, while it is queued or transcribing. */
+  phase?: string;
+  message?: string;
+  /** 0–1 when known. */
+  fraction?: number;
+}
+
 export type Platform = 'meet';
 
 export type Message =
@@ -39,7 +64,8 @@ export type Message =
   /**
    * A duplicate app tab → service worker: bring the owning app tab forward and close me. Also the
    * owning app tab → service worker: a start left in the background needs the human (a permission
-   * prompt, an error), bring me forward.
+   * prompt, an error), bring me forward. Also the processing tab's and the start dialog's "Open
+   * Rescribe".
    */
   | { type: 'focus-app' }
   /**
@@ -54,18 +80,40 @@ export type Message =
    */
   | { type: 'query-pending' }
   /**
-   * The stop dialog or a library row → the owning app tab: the human decided. `save` stops the
-   * recording if it still runs and exports it to the folder from Settings; `save-as` the same
-   * into the folder whose handle the sender stored under `export:<id>` first (handles cannot
-   * travel in a message); `discard` stops it and deletes it. Answered with a DecideResult once the
-   * export (or the deletion) is done.
+   * The stop dialog → the owning app tab: the human decided. `save` stops the recording if it
+   * still runs and exports it to the folder from Settings; `save-as` the same into the folder
+   * whose handle the sender stored under `export:<id>` first (handles cannot travel in a
+   * message); `discard` stops it and deletes it. Answered with a DecideResult once the export (or
+   * the deletion) is done. For a save the app tab asks the service worker for the processing tab
+   * at once (`open-progress`), which replaces the dialog.
    */
   | { type: 'decide'; id: string; action: Decision }
   /**
-   * Service worker → app tab: the toolbar button or the keyboard command fired on `tabId`.
-   * `streamId` is the tab-capture id to consume with getUserMedia; when it could not be obtained,
-   * `error` says why and the app tab shows it (there is no picker fallback: getDisplayMedia needs
-   * a gesture in the app tab).
+   * The start dialog → service worker: Start Capture. The dialog was opened for `tabId` by a
+   * toolbar click, which is the invocation the tab capture needs. `mic` says whether to record
+   * the microphone and `micDeviceId` which one (absent: the default device). Answered with a
+   * StartResult once the tab-capture id was obtained and handed to the app tab, or with why not.
+   */
+  | { type: 'start-capture'; tabId: number; mic: boolean; micDeviceId?: string }
+  /**
+   * The owning app tab (a save decided in the stop dialog) or the start dialog → service worker:
+   * open the processing tab for this recording (one per recording; an open one is focused) and
+   * close the stop dialog, which it replaces.
+   */
+  | { type: 'open-progress'; id: string }
+  /**
+   * The processing tab or the start dialog → the owning app tab: what is happening to `id`, or,
+   * without an id, to whichever recording a decision or the pipeline holds right now. Answered
+   * with a ProgressInfo, or undefined when nothing is happening to it in this tab.
+   */
+  | { type: 'query-progress'; id?: string }
+  /** The start dialog → the owning app tab: the Settings folder changed; show the new one. */
+  | { type: 'folder-changed' }
+  /**
+   * Service worker → app tab: Start Capture in the start dialog, for `tabId`. `streamId` is the
+   * tab-capture id to consume with getUserMedia; when it could not be obtained, `error` says why
+   * and the app tab shows it (there is no picker fallback: getDisplayMedia needs a gesture in the
+   * app tab). `mic` and `micDeviceId` are the dialog's microphone choice; absent, Settings decide.
    */
   | {
       type: 'toggle-recording';
@@ -73,6 +121,8 @@ export type Message =
       tabTitle?: string;
       streamId?: string;
       error?: string;
+      mic?: boolean;
+      micDeviceId?: string;
     }
   /**
    * Content script → app tab: a participant started or stopped speaking. `at` is wall-clock ms of
