@@ -8,6 +8,22 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #31 · a time left built on a number the job had not measured `[learned]`
+
+The first estimate of the time left charged each waiting channel with the running channel's voiced seconds, so during the human's microphone (a few minutes of speech on a call) the widget promised "under a minute left" for a job with the whole call still to go. Found by the adversarial review. Codified in `src/lib/progress.ts` `remaining` (the estimate covers the running channel alone while another waits, and says so: "on this step"; the whole job only once the last channel runs), pinned by `progress.test.ts`. Rule: an estimate may only extend over what has been measured; a guess for the rest is a wrong number with a bar under it.
+
+### 2026-09-25 · #31 · a share over a total that grows `[learned]`
+
+The model download's bar was the bytes done over the bytes known, and the files come one after another, each announcing its size as it starts: the bar filled to 100 % on the 12 MB encoder file, then fell to 0.5 % when the 2.4 GB weights began, the very "fills twice" the issue was about. Found by the adversarial review (the unit test's "never backwards" loop passed because no snapshot was taken at the boundary). Codified in `src/lib/progress.ts` (the download shows a count and no share; the test snapshots the boundary). Rule: a fraction needs a denominator that is final.
+
+### 2026-09-25 · #31 · a wording rule kept on the happy path only `[learned]`
+
+The DECISIONS line "never channel ids" went in with the pipeline's own failure strings still saying "on the mic channel", and the e2e word check ran on a run that succeeded. Found by the adversarial review. Codified in `src/app/pipeline.ts` (`channelPhrase` in the failure strings) and `e2e/pipeline.spec.ts` (the failure line is checked for the words). Rule: a rule about what the human sees covers the error path first, since that is where the raw internals leak.
+
+### 2026-09-25 · #31 · a poll that waited forever on an element that had just gone `[learned]`
+
+The screenshot walk read the widget's phase through a locator after the row had finished and dropped the widget; this project sets no Playwright action timeout, so the read waited for the element until the test's 15 minutes ran out. Found by self-testing (the walk hung after its last state). Codified in `e2e/progress.spec.ts` (`text()`: every poll read is a plain `evaluate`) and ENVIRONMENT_NOTES § Playwright.
+
 ### 2026-09-25 · #27 · a test that compared the export's header with itself `[learned]`
 
 The crash-recovery e2e asserted the recovered WebM's length from `ffprobe`'s `format.duration`, which on this branch is the very number the export had just written into the header from the record, so a recovered file with no decodable picture would have passed. Found by the adversarial review. Codified in `e2e/record.spec.ts` (the recovery test reads the last video packet's time and the frame count, never the header); the same rule as the #25 entry below: an expectation that comes from the same source as the code under test proves nothing.

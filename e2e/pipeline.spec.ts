@@ -645,6 +645,8 @@ test('an interrupted transcription whose media is gone fails instead of producin
   expect(after.error).toMatch(/no longer in Rescribe's storage/);
   expect(after.note).toContain('interrupted by a reload');
   await expect(page.locator('#record-status')).toContainText('Transcription failed');
+  // The failure names the channel in the human's words, never by its id (issue #31).
+  await expect(page.locator('#record-status')).not.toHaveText(/\b(mic|display|regions?)\b/);
   finish(net);
 });
 
