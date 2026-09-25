@@ -14,7 +14,7 @@ const RELOAD_TIMEOUT_MS = 8000;
 const STOP_WIDTH = 420;
 const STOP_HEIGHT = 300;
 const START_WIDTH = 400;
-const START_HEIGHT = 470;
+const START_HEIGHT = 440;
 
 const describe = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
