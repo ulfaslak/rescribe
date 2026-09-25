@@ -25,8 +25,9 @@ export function formatDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-export function formatTime(d: Date): string {
-  return `${pad(d.getHours())}-${pad(d.getMinutes())}`;
+/** `HH-MM` for a directory name; `formatTime(d, ':')` for text. */
+export function formatTime(d: Date, sep = '-'): string {
+  return `${pad(d.getHours())}${sep}${pad(d.getMinutes())}`;
 }
 
 function utf8Length(codePoint: number): number {

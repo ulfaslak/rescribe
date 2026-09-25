@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatTime, renderMarkdown, toTurns } from './transcript.ts';
+import { renderPathTemplate } from './pathtemplate.ts';
+import { formatLocalDateTime, formatTime, renderMarkdown, toTurns } from './transcript.ts';
 import type { LabelledSegment } from './types.ts';
 
 const ls = (
@@ -48,7 +49,7 @@ test('renderMarkdown produces a heading, participants and timestamped turns', ()
     toTurns([ls('display', 'Anna', 61, 63, 'Hello.'), ls('mic', 'Me', 64, 65, 'Hey.')]),
     {
       title: 'Weekly sync',
-      startedAt: Date.UTC(2026, 8, 24, 14, 30),
+      startedAt: new Date(2026, 8, 24, 14, 30).getTime(),
       participants: ['Anna', 'Me'],
     },
   );
@@ -57,4 +58,23 @@ test('renderMarkdown produces a heading, participants and timestamped turns', ()
   assert.match(md, /Participants: Anna, Me/);
   assert.match(md, /\*\*Anna\*\* \[1:01\]\n\nHello\.\n/);
   assert.match(md, /\*\*Me\*\* \[1:04\]\n\nHey\.\n$/);
+});
+
+test('the header shows the local clock the export folder name uses, not UTC', () => {
+  // 2026-09-25 07:19:36 UTC. In a zone with offset 0 the UTC header would be indistinguishable
+  // from the local one, so the test pins a zone with an offset and asserts the literal.
+  const startedAt = 1790320776839;
+  const tz = process.env.TZ;
+  process.env.TZ = 'Europe/Copenhagen';
+  try {
+    assert.equal(new Date(startedAt).getTimezoneOffset(), -120);
+    assert.equal(formatLocalDateTime(startedAt), '2026-09-25 09:19');
+    const md = renderMarkdown([], { title: 'T', startedAt, participants: [] });
+    assert.match(md, /^# T\n\n2026-09-25 09:19\n/);
+    const [dir] = renderPathTemplate('{date} {time} {title}', { startedAt, title: 'T' });
+    assert.equal(dir, '2026-09-25 09-19 T');
+  } finally {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
 });
