@@ -121,15 +121,23 @@ export interface SelfTile {
 export const SELF_MIC_SHARE = 0.5;
 /** Seconds a tile must have been reported speaking before its mic share is trusted. */
 export const SELF_MIN_SECONDS = 5;
+/**
+ * Seconds a tile must have been on screen (summed over roster snapshots), or half the recording
+ * when that is shorter, to be a participant without ever having spoken for `minDuration`. Meet
+ * flashes tiles for a shared screen or a status ("You are presenting", three seconds on
+ * 2026-09-25) that are nobody.
+ */
+export const MIN_PRESENCE_SECONDS = 10;
 
 export interface PlatformEvidence {
   /** Display-channel platform intervals, cleaned, clipped to the recording, sorted by start. */
   intervals: SpeakerInterval[];
   /**
    * Resolved display names, one per participant id plus roster names, in first-seen order,
-   * deduplicated, with the self tile replaced by `selfLabel` or omitted, and without
-   * presentation tiles (a name that is another participant's name plus a parenthesised suffix,
-   * Meet's "Anna (Presentation)"). Never an id string.
+   * deduplicated, with the self tile replaced by `selfLabel` or omitted. Not listed: presentation
+   * tiles (a name that is another participant's name plus a parenthesised suffix, Meet's
+   * "Anna (Presentation)") and tiles of no substance (never reported speaking for `minDuration`
+   * and on screen under `MIN_PRESENCE_SECONDS`). Never an id string.
    */
   participants: string[];
   /** The human's tile when `micSpeech` identified one. */
@@ -200,9 +208,11 @@ export function eventsToEvidence(
   /** Participant ids and roster names in the order they were first seen. */
   const order: Array<{ id: string } | { name: string }> = [];
   const toggles: Array<{ t: number; speaker: string; speaking: boolean }> = [];
+  const rosters: Array<{ t: number; names: string[] }> = [];
   for (const ev of events) {
     if (ev.type === 'roster') {
       for (const n of ev.names) order.push({ name: n });
+      rosters.push({ t: toRecordingSeconds(ev.at, startedAtMs), names: ev.names });
       continue;
     }
     if (!ids.has(ev.id)) {
@@ -235,19 +245,28 @@ export function eventsToEvidence(
     end: Math.min(duration, iv.end),
   }));
 
+  const byId = new Map<string, SpeakerInterval[]>();
+  for (const iv of clipped) {
+    if (iv.end <= iv.start) continue;
+    const list = byId.get(iv.speaker) ?? [];
+    list.push(iv);
+    byId.set(iv.speaker, list);
+  }
+  /** Seconds each id was reported speaking, clipped to the recording. */
+  const secondsById = new Map<string, number>();
+  for (const [id, list] of byId) {
+    secondsById.set(
+      id,
+      list.reduce((sum, iv) => sum + (iv.end - iv.start), 0),
+    );
+  }
+
   // Self by microphone: per id, how much of its speaking coincides with mic speech.
   const selfIds = new Set<string>();
   let self: SelfTile | undefined;
   if (opts.micSpeech) {
-    const byId = new Map<string, SpeakerInterval[]>();
-    for (const iv of clipped) {
-      if (iv.end <= iv.start) continue;
-      const list = byId.get(iv.speaker) ?? [];
-      list.push(iv);
-      byId.set(iv.speaker, list);
-    }
     for (const [id, list] of byId) {
-      const seconds = list.reduce((sum, iv) => sum + (iv.end - iv.start), 0);
+      const seconds = secondsById.get(id) ?? 0;
       if (seconds < SELF_MIN_SECONDS) continue;
       const share = overlapSeconds(list, opts.micSpeech) / seconds;
       if (share < SELF_MIC_SHARE) continue;
@@ -282,6 +301,29 @@ export function eventsToEvidence(
   }
   const allNames = new Set<string>(nameOf.values());
   for (const entry of order) if ('name' in entry && !ids.has(entry.name)) allNames.add(entry.name);
+
+  // Substance: seconds on screen per name from the roster snapshots (each holds until the next),
+  // and seconds reported speaking per name over its ids.
+  const presence = new Map<string, number>();
+  const sortedRosters = [...rosters].sort((a, b) => a.t - b.t);
+  sortedRosters.forEach((r, i) => {
+    const next = i + 1 < sortedRosters.length ? sortedRosters[i + 1]!.t : duration;
+    const span = Math.min(duration, next) - Math.max(0, r.t);
+    if (span <= 0) return;
+    for (const n of new Set(r.names)) presence.set(n, (presence.get(n) ?? 0) + span);
+  });
+  const spokenByName = new Map<string, number>();
+  for (const [id, seconds] of secondsById) {
+    const name = nameOf.get(id);
+    if (name !== undefined) spokenByName.set(name, (spokenByName.get(name) ?? 0) + seconds);
+  }
+  const minSpoken = (opts.clean?.minDuration ?? 0.3) - EPSILON;
+  const minPresence = Math.min(MIN_PRESENCE_SECONDS, duration / 2) - EPSILON;
+  const hasSubstance = (name: string, id?: string): boolean =>
+    (id !== undefined && (secondsById.get(id) ?? 0) >= minSpoken) ||
+    (spokenByName.get(name) ?? 0) >= minSpoken ||
+    (presence.get(name) ?? 0) >= minPresence;
+
   const participants: string[] = [];
   const add = (label: string | undefined): void => {
     if (label !== undefined && !participants.includes(label)) participants.push(label);
@@ -290,6 +332,7 @@ export function eventsToEvidence(
     const name =
       'id' in entry ? nameOf.get(entry.id) : ids.has(entry.name) ? undefined : entry.name;
     if (name === undefined || isPresentationOf(name, allNames)) continue;
+    if (!hasSubstance(name, 'id' in entry ? entry.id : undefined)) continue;
     const isSelf = 'id' in entry ? isSelfId(entry.id) : selfDisplayNames.has(name);
     add(isSelf ? opts.selfLabel : name);
   }

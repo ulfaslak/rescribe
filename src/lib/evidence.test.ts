@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanIntervals, eventsToEvidence, MEET_LEAD, SELF_MIN_SECONDS } from './evidence.ts';
+import {
+  cleanIntervals,
+  eventsToEvidence,
+  MEET_LEAD,
+  MIN_PRESENCE_SECONDS,
+  SELF_MIN_SECONDS,
+} from './evidence.ts';
 import { attribute } from './attribution.ts';
 import type { AdapterEvent } from './evidence.ts';
 import type { SpeakerInterval } from './types.ts';
@@ -581,4 +587,41 @@ test('presentation tiles are not participants; their intervals keep their label'
   });
   assert.deepEqual(spans(out.intervals), [['Carolina Pinheiro (Presentation)', 2, 3]]);
   assert.deepEqual(out.participants, ['Carolina Pinheiro', 'Ulf']);
+});
+
+test('a tile on screen for a moment that never spoke is not a participant; a silent one present for the call is', () => {
+  // "You are presenting" flashed for three seconds with a 40 ms meter blip (2026-09-25); Bo
+  // never spoke but sat in the call.
+  const events = [
+    roster(0, ['You', 'Anna', 'Bo']),
+    roster(4000, ['You', 'Anna', 'Bo', 'You are presenting']),
+    sp(4100, 'x', 'You are presenting', true),
+    sp(4140, 'x', 'You are presenting', false),
+    roster(7000, ['You', 'Anna', 'Bo']),
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(out.participants, ['Ulf', 'Anna', 'Bo']);
+  assert.ok(MIN_PRESENCE_SECONDS > 3);
+});
+
+test('on a short recording, half of it on screen is enough presence', () => {
+  const { participants } = eventsToEvidence(
+    [roster(0, ['Anna']), roster(2000, ['Anna', 'Dee'])],
+    T0,
+    T0 + 6000,
+  );
+  assert.deepEqual(participants, ['Anna', 'Dee']);
+});
+
+test('a participant known only from speaker events counts by what they said', () => {
+  const events = [
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+    sp(5000, 'p2', 'Bo', true),
+    sp(5100, 'p2', 'Bo', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(out.participants, ['Anna']);
 });

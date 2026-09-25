@@ -181,6 +181,19 @@ test('with one remote participant the display channel is that person, not "Speak
     ],
   );
   assert.ok(!out.json.intervals.some((iv) => iv.speaker === 'Speaker'));
+  // A second remote participant who sat silent through the call: the generic label again.
+  const silent = assembleTranscript({
+    recording,
+    settings,
+    segments: [...segments, seg('display', 7, 7.5, 'mm-hmm')],
+    events: [
+      { type: 'roster', platform: 'meet', at: T0 + 100, names: ['You', 'Anna', 'Bo'] },
+      ...ev.slice(1),
+    ],
+    rescribeVersion: '0.1.0',
+  });
+  assert.deepEqual(silent.meta.participants, ['Ulf', 'Anna', 'Bo']);
+  assert.equal(silent.labelled[4]!.speaker, 'Speaker');
   // Two remote participants: the generic label again for what no interval covers.
   const two = assembleTranscript({
     recording,
