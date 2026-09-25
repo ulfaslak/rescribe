@@ -77,11 +77,13 @@ export async function captureMic(deviceId?: string): Promise<Captured | undefine
   try {
     stream = await open(deviceId || undefined);
   } catch (err) {
-    if (!deviceId) {
+    // Only a device that is gone falls back; a denied prompt must not prompt a second time.
+    const name = (err as DOMException).name;
+    if (!deviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) {
       console.warn('[rescribe] microphone unavailable', err);
       return undefined;
     }
-    console.warn('[rescribe] the chosen microphone is unavailable; the default one instead', err);
+    console.warn('[rescribe] the chosen microphone is gone; the default one instead', err);
     try {
       stream = await open();
     } catch (err2) {

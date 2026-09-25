@@ -155,15 +155,25 @@ async function openDialogWindow(url: string, width: number, height: number): Pro
   }
 }
 
-/** Close every window showing a page under `url`; true when there was one. */
-async function closeDialogs(url: string): Promise<boolean> {
-  let closed = false;
+/**
+ * Close every page under `url`: its window when that is the popup it was opened in, only the
+ * tab when the page ended up in a browser window ("Show as tab", a history entry, a restored
+ * session), which must not take the call and every other tab with it. Returns the closed pages'
+ * URLs.
+ */
+async function closeDialogs(url: string): Promise<string[]> {
+  const closed: string[] = [];
   for (const t of await pagesAt(url)) {
-    await chrome.windows.remove(t.windowId).catch(() => undefined);
-    closed = true;
+    const win = await chrome.windows.get(t.windowId).catch(() => undefined);
+    if (win?.type === 'popup') await chrome.windows.remove(t.windowId).catch(() => undefined);
+    else if (t.id !== undefined) await chrome.tabs.remove(t.id).catch(() => undefined);
+    if (t.url) closed.push(t.url);
   }
   return closed;
 }
+
+/** The start dialog page for one tab. */
+const startUrlFor = (tabId: number): string => `${START_URL}?tab=${tabId}`;
 
 /**
  * The stop dialog. Opened on a toolbar click while `recording` or `stopped`, and on the app
@@ -189,7 +199,7 @@ async function openStopDialog(): Promise<void> {
  * in the background meanwhile: Start needs it, and its cold start takes a moment.
  */
 async function openStartDialog(target: chrome.tabs.Tab): Promise<void> {
-  await openDialogWindow(`${START_URL}?tab=${target.id}`, START_WIDTH, START_HEIGHT);
+  await openDialogWindow(startUrlFor(target.id!), START_WIDTH, START_HEIGHT);
   void ensureAppTab(false);
 }
 
@@ -245,11 +255,12 @@ async function setBadge(state: BadgeState): Promise<void> {
 /**
  * The toolbar button (and the keyboard command). It toggles the start dialog: idle, or a
  * recording waiting `stopped` (it never blocks a new one; its dialog is a click on the app tab
- * or its row away), a click on a tab opens the start dialog for that tab, and a click while the
- * dialog is open closes it. Nothing records until Start Capture in the dialog (`startCapture`
- * below). Recording: open the stop dialog, where Save, Save as… and Discard live; closing it
- * keeps recording, so a misclick stops nothing. Anything else (the recorder draining, an export
- * running), and a click on the app tab itself: bring the app tab forward.
+ * or its row away), a click on a tab opens the start dialog for that tab; a click while the
+ * dialog is open closes it, or moves it to the clicked tab when that is another one. Nothing
+ * records until Start Capture in the dialog (`startCapture` below). Recording: open the stop
+ * dialog, where Save, Save as… and Discard live; closing it keeps recording, so a misclick stops
+ * nothing. Anything else (a start under way, which may be waiting on the human; the recorder
+ * draining; an export running), and a click on the app tab itself: bring the app tab forward.
  *
  * The human stays where they are: the app tab is opened, or left, in the background (the badge
  * and the dialogs are the feedback) and comes forward on its own only when a start needs the
@@ -264,7 +275,9 @@ async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
     await openStopDialog();
     return;
   }
-  if (closed) return;
+  // The toggle: the dialog for this very tab was open, so the click closes it and that is all.
+  if (target?.id !== undefined ? closed.includes(startUrlFor(target.id)) : closed.length > 0)
+    return;
   const canStart = status === 'idle' || status === 'stopped';
   if (!canStart || !target) {
     await ensureAppTab(true);
@@ -275,7 +288,10 @@ async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
 
 /**
  * Start Capture in the start dialog: the recording of the tab the dialog was opened for, plus
- * the microphone it chose, through the app tab.
+ * the microphone it chose, through the app tab. `ok` means the app tab took the start; a start
+ * already under way (the app tab may be waiting on a microphone prompt) is refused and the app
+ * tab brought forward, and a dialog closed while its Start waited for the app tab (Escape, the
+ * toolbar button) cancels it: the human backed out, nothing may record behind their back.
  *
  * The tab-capture stream id is bound to the app tab (`consumerTabId`) and requested last. Without
  * `consumerTabId` Chromium binds the id to the caller's render process, the service worker's; the
@@ -301,11 +317,20 @@ async function startCapture(
   const status = await queryStatus();
   if (status === 'recording')
     return { ok: false, error: 'Rescribe is already recording; the toolbar button stops it.' };
+  if (status === 'starting') {
+    void ensureAppTab(true);
+    return {
+      ok: false,
+      error: 'A recording is already starting; it may need you in the Rescribe tab.',
+    };
+  }
   if (status !== 'idle' && status !== 'stopped')
     return { ok: false, error: 'Rescribe is busy finishing a recording; try again in a moment.' };
   const app = await ensureAppTab(false);
   if (app?.id === undefined)
     return { ok: false, error: 'The Rescribe tab did not answer. Reload it, then try again.' };
+  if (!(await pagesAt(startUrlFor(target.id))).length)
+    return { ok: false, error: 'Cancelled: the start window was closed.' };
   let streamId: string;
   try {
     streamId = await chrome.tabCapture.getMediaStreamId({
@@ -318,16 +343,21 @@ async function startCapture(
       error: `Couldn't capture that tab (${describe(err)}). Open Rescribe and use "Record screen…" to pick it instead.`,
     };
   }
-  await chrome.tabs
-    .sendMessage(app.id, {
+  try {
+    await chrome.tabs.sendMessage(app.id, {
       type: 'toggle-recording',
       tabId: target.id,
       tabTitle: target.title,
       streamId,
       mic: msg.mic,
       micDeviceId: msg.micDeviceId,
-    } satisfies Message)
-    .catch(() => undefined);
+    } satisfies Message);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `The Rescribe tab did not take the recording (${describe(err)}); try again.`,
+    };
+  }
   return { ok: true };
 }
 

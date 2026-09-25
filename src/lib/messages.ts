@@ -109,9 +109,10 @@ export type Message =
   | { type: 'folder-changed' }
   /**
    * Service worker → app tab: Start Capture in the start dialog, for `tabId`. `streamId` is the
-   * tab-capture id to consume with getUserMedia; when it could not be obtained, `error` says why
-   * and the app tab shows it (there is no picker fallback: getDisplayMedia needs a gesture in the
-   * app tab). `mic` and `micDeviceId` are the dialog's microphone choice; absent, Settings decide.
+   * tab-capture id to consume with getUserMedia; the service worker sends the message only with
+   * one (a refused capture is answered in the dialog), and the app tab shows `error` on a message
+   * without one all the same. `mic` and `micDeviceId` are the dialog's microphone choice; absent,
+   * Settings decide.
    */
   | {
       type: 'toggle-recording';
@@ -139,7 +140,8 @@ export type Message =
    */
   | { type: 'call-ended'; platform: Platform; at: number };
 
-export type AppStatus = 'idle' | RecordingStatus;
+/** `starting`: a start is under way (the captures, a microphone prompt); nothing else may start. */
+export type AppStatus = 'idle' | 'starting' | RecordingStatus;
 
 /** Fire-and-forget send. Resolves to undefined when nobody is listening. */
 export function send(msg: Message): Promise<unknown> {

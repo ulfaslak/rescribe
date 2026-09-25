@@ -4,6 +4,7 @@
 // background. A view: the record from IndexedDB once a second (the truth on disk, readable with
 // the app tab closed) plus the app tab's live line for it (`query-progress`). Closing this tab
 // stops nothing; a closed app tab does, and this page says so and offers to open it.
+import type { PipelinePhase } from '../app/pipeline.ts';
 import type { ProgressInfo } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { loadSettings } from '../lib/settings.ts';
@@ -32,7 +33,7 @@ interface View {
   fraction?: number;
 }
 
-const PHASE_HEADLINE: Record<string, string> = {
+const PHASE_HEADLINE: Record<Exclude<PipelinePhase, 'done'>, string> = {
   queued: 'Waiting to transcribe…',
   download: 'Downloading the speech model (once)…',
   load: 'Loading the speech model…',
@@ -59,7 +60,7 @@ function view(
   if (live?.saving) return { headline: 'Saving the video…', detail: '', kind: 'busy' };
   if (live?.phase && live.phase !== 'done')
     return {
-      headline: PHASE_HEADLINE[live.phase] ?? 'Working…',
+      headline: PHASE_HEADLINE[live.phase as Exclude<PipelinePhase, 'done'>] ?? 'Working…',
       detail: live.message ?? '',
       kind: 'busy',
       fraction: live.fraction,
@@ -74,21 +75,21 @@ function view(
         kind: 'paused',
       };
     case 'recorded':
+      // Saved, not being transcribed right now: what the app tab says (`live`), not what the
+      // setting promises (auto-transcribe queues a recording at the save, never later).
       if (rec.error)
         return {
           headline: 'Not saved',
           detail: `${rec.error} Use Save now in Rescribe.`,
           kind: 'error',
         };
-      if (!autoTranscribe)
-        return {
-          headline: 'Saved',
-          detail: 'Transcription is off in Settings; run it from the recording in Rescribe.',
-          kind: 'done',
-        };
-      return appOpen
-        ? { headline: 'Saved', detail: 'The transcription starts in a moment…', kind: 'busy' }
-        : PAUSED;
+      return {
+        headline: 'Saved',
+        detail: autoTranscribe
+          ? 'The video is in the folder.'
+          : 'Transcription is off in Settings; run it from the recording in Rescribe.',
+        kind: 'done',
+      };
     case 'transcribing':
       return appOpen ? { headline: 'Waiting to transcribe…', detail: '', kind: 'busy' } : PAUSED;
     case 'done':
@@ -104,11 +105,8 @@ function view(
             kind: 'done',
           };
     case 'failed':
-      return {
-        headline: 'Transcription failed',
-        detail: rec.error ?? 'Unknown error.',
-        kind: 'error',
-      };
+      // The recorder, the export and the pipeline all end here; the error says which.
+      return { headline: 'Failed', detail: rec.error ?? 'Unknown error.', kind: 'error' };
   }
 }
 

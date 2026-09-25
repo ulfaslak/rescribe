@@ -30,6 +30,7 @@ import {
   waitForRecording,
   waitForStartDialog,
   waitForStopDialog,
+  windowOfTab,
 } from './helpers.ts';
 import type { Recording } from '../src/lib/types.ts';
 
@@ -115,6 +116,35 @@ test('the dialog shows the clicked tab, the microphones and the folder; the micr
   await expect(again.locator('#folder')).toHaveText(OTHER_EXPORT_DIR);
   await expect(again.locator('#mic')).toHaveValue(first);
   await escape(again);
+
+  // The button on another tab moves the dialog there instead of merely closing it; and Escape in
+  // a dialog that sits as a tab in the browser window ("Show as tab") closes only that tab.
+  await toolbarClick(worker, { id: targetId, url: MEET_URL, title: 'Meet' });
+  const forTarget = await waitForStartDialog(context, extensionId);
+  const other = await context.newPage();
+  await other.goto('about:blank');
+  const otherId = await worker.evaluate(
+    async () => (await chrome.tabs.query({})).find((t) => t.url === 'about:blank')!.id!,
+  );
+  await toolbarClick(worker, { id: otherId, url: 'https://example.com/' });
+  await expect.poll(() => forTarget.isClosed(), { timeout: 5000 }).toBe(true);
+  const moved = await waitForStartDialog(context, extensionId);
+  expect(moved.url()).toBe(`${startDialogUrl(extensionId)}?tab=${otherId}`);
+  const browserWindow = await windowOfTab(worker, targetId);
+  await worker.evaluate(
+    async ({ url, windowId }) => {
+      const t = (await chrome.tabs.query({})).find((t) => t.url === url)!;
+      await chrome.tabs.move(t.id!, { windowId, index: -1 });
+    },
+    { url: moved.url(), windowId: browserWindow },
+  );
+  const count = () =>
+    worker.evaluate(async (w) => (await chrome.tabs.query({ windowId: w })).length, browserWindow);
+  const before = await count();
+  await escape(moved);
+  expect(await count()).toBe(before - 1);
+  await expect(page.locator('#status')).toHaveText('idle');
+  await other.close();
   expect(await recordings(page)).toHaveLength(0);
 });
 

@@ -28,7 +28,8 @@ import {
 } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { getRecording, listRecordings } from '../storage/store.ts';
-import { decide, isDeciding, onDecision } from './decide.ts';
+import type { MicChoice } from '../ui/mics.ts';
+import { decide, decidingIds, isDeciding, onDecision } from './decide.ts';
 import { describeSources, renderList } from './library.ts';
 import {
   isPipelineBusy,
@@ -64,8 +65,6 @@ let pendingId: string | undefined;
 let deciding: string | undefined;
 /** Decisions being applied (an export in flight), whatever recording they are on. */
 let applying = 0;
-/** The recordings those decisions are on (for `query-progress`). */
-const applyingIds = new Set<string>();
 /**
  * The pipeline's latest progress per recording it holds, queued or running, in queue order (the
  * first entry is the one running); dropped at `done`. What `query-progress` answers with.
@@ -171,7 +170,9 @@ function onMessage(
 ): boolean {
   switch (msg.type) {
     case 'query-status':
-      sendResponse(status);
+      // `starting` while a start is under way: the service worker refuses a second Start and
+      // brings this tab forward (it may be waiting on the microphone prompt).
+      sendResponse(starting ? 'starting' : status);
       return false;
     case 'toggle-recording':
       void onToggleRecording(msg);
@@ -255,12 +256,6 @@ let formBound = false;
 /** Whether this recording wants the microphone: the checkbox once bound, Settings before. */
 function micWanted(settings: Settings): boolean {
   return formBound ? $<HTMLInputElement>('#mic').checked : settings.micByDefault;
-}
-
-/** The start dialog's microphone choice, carried in `toggle-recording`. */
-interface MicChoice {
-  mic: boolean;
-  micDeviceId?: string;
 }
 
 /** The microphone when wanted; `missing` when it was wanted and unavailable (denied, absent). */
@@ -462,22 +457,21 @@ async function pendingInfo(): Promise<PendingInfo | undefined> {
  * recording a decision or the pipeline holds right now, with its title, for a one-liner.
  */
 async function progressInfo(id?: string): Promise<ProgressInfo | undefined> {
+  const saving = (id: string): boolean => deciding === id || isDeciding(id);
   if (id === undefined) {
-    const held = deciding ?? [...applyingIds][0] ?? [...lastProgress.keys()][0];
-    if (held === undefined) return undefined;
-    const rec = await getRecording(held);
-    if (!rec) return undefined;
-    return {
-      id: held,
-      title: rec.title,
-      saving: deciding === held || applyingIds.has(held),
-      ...lastProgress.get(held),
-    };
+    // A stale entry (a recording deleted mid-run) is skipped, not answered.
+    const held = [deciding, ...decidingIds(), ...lastProgress.keys()].filter(
+      (x): x is string => x !== undefined,
+    );
+    for (const h of held) {
+      const rec = await getRecording(h);
+      if (rec) return { id: h, title: rec.title, saving: saving(h), ...lastProgress.get(h) };
+    }
+    return undefined;
   }
   const p = lastProgress.get(id);
-  const saving = deciding === id || applyingIds.has(id);
-  if (!p && !saving) return undefined;
-  return { id, saving, phase: p?.phase, message: p?.message, fraction: p?.fraction };
+  if (!p && !saving(id)) return undefined;
+  return { id, saving: saving(id), phase: p?.phase, message: p?.message, fraction: p?.fraction };
 }
 
 /**
@@ -543,6 +537,9 @@ async function runPipeline(id: string): Promise<void> {
   } catch (err) {
     if (status === 'idle') note(`Transcription failed: ${String(err)}`, true);
   } finally {
+    // The pipeline drops its entry at `done`; a run that rejected (the recording deleted under
+    // it) never gets there.
+    lastProgress.delete(id);
     refreshStatus();
     void renderList();
   }
@@ -701,12 +698,10 @@ async function main(): Promise<void> {
   // while it runs, then whatever is pending next.
   onDecision((ev) => {
     if (ev.phase === 'started') {
-      if (ev.action !== 'discard') applyingIds.add(ev.id);
       if (!recorder) setStatus('recorded');
       void renderList();
       return;
     }
-    applyingIds.delete(ev.id);
     // The stop dialog may have chosen the Settings folder on the way (Save with none chosen).
     void describeFolder();
     const rec = ev.rec;
