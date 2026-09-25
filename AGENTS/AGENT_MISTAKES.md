@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #24 · a cleanup shipped without checking it matched anything `[learned]`
+
+The e2e fixture got a glob to delete the profile's session-restore files, written with a brace pattern that Node's `globSync` does not expand; it matched nothing, and the routing test passing once after the "fix" was taken as proof. When the pattern was corrected the failure stayed, because session restore was not the cause either: Chrome reopens **pinned** tabs on its own, and the service worker pins the app tab. Two wrong diagnoses shipped as fixes before the tab list right at launch was looked at (one ghost app tab, present before any test code ran). Codified in `e2e/fixtures.ts` (`pinned_tabs` stripped from Preferences, one plain pattern per session file) and ENVIRONMENT_NOTES § "The reused profile reopens the last run's pinned app tab". Rule: a cleanup or a filter is verified by what it matched and by the state after it, never by the next test going green; and the first question about a ghost is where it came from, not how to delete it.
+
 ### 2026-09-25 · #24 · a status answered before the state behind it was read `[learned]`
 
 The app tab registered its `query-status` listener first thing in `main()` and read what was waiting on disk (`refreshPending`) last, after settings, the library walk and the crash recovery; the service worker starts its toolbar path the moment the tab answers, so a stale `idle` let a start race the pending state, and the loser was silent (the guard in `startRecording` dropped both streams with no note). Found by the adversarial review. Codified in `app.ts` `main()` (`refreshPending` before the listener, a note and `comeForward` on the guard) and pinned by "a recording waiting stopped never blocks a new one" in `e2e/stop-dialog.spec.ts`. Rule: whatever answers a question from another context must have read its inputs before it starts answering.

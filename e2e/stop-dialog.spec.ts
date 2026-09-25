@@ -375,9 +375,18 @@ test('a recording waiting stopped never blocks a new one: a toolbar click starts
       return e.defaultPrevented;
     });
   expect(await warns()).toBe(false);
-  await page.close();
-  await expect.poll(() => page.isClosed(), { timeout: 5000 }).toBe(true);
+  // Closed as a tab (Playwright's page.close leaves the tab behind now and then, seen
+  // 2026-09-25), and gone before the click: a click in the same instant would meet a dying tab,
+  // which no human manages.
   const appUrl = `chrome-extension://${extensionId}/app/app.html`;
+  const closingId = await page.evaluate(async () => (await chrome.tabs.getCurrent())!.id!);
+  await worker.evaluate((id) => chrome.tabs.remove(id), closingId);
+  await expect.poll(() => page.isClosed(), { timeout: 5000 }).toBe(true);
+  await expect
+    .poll(() => worker.evaluate(async (url) => (await chrome.tabs.query({ url })).length, appUrl), {
+      timeout: 5000,
+    })
+    .toBe(0);
   const nextApp = context.waitForEvent('page', {
     predicate: (p) => p.url() === appUrl,
     timeout: 15_000,
