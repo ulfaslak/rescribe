@@ -8,6 +8,7 @@
 // recorder or the pipeline holds (`recording`, `transcribing`, or queued per `isTranscribing`) gets
 // no actions and no pencil. While a row is live a 1 s refresh keeps its duration and status
 // current without help from the recorder or the pipeline.
+import { formatDuration } from '../lib/format.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { finalize } from '../recorder/recorder.ts';
@@ -18,6 +19,7 @@ import {
   exportedFileState,
   exportVideoName,
   getExportRoot,
+  setRecordingExportRoot,
   type ExportedFileState,
 } from '../storage/export.ts';
 import { isExportableArtifact, isMediaFile, pcmFileName, videoFileName } from '../storage/opfs.ts';
@@ -31,6 +33,8 @@ import {
   updateRecording,
   type StorageUsage,
 } from '../storage/store.ts';
+import { confirmButton } from '../ui/confirm.ts';
+import { decide, isDeciding } from './decide.ts';
 import {
   isTranscribing,
   onPipelineProgress,
@@ -44,10 +48,6 @@ const $ = <T extends Element>(sel: string): T => {
   return el;
 };
 
-/** How long a two-step button stays armed before it quietly disarms. */
-const ARM_MS = 8000;
-/** A confirming click sooner than this after arming is ignored: a double-click must not delete. */
-const ARM_GUARD_MS = 350;
 const LIVE_REFRESH_MS = 1000;
 
 // --- Formatting ---------------------------------------------------------------------------------
@@ -55,15 +55,6 @@ export function describeSources(rec: Recording): string {
   const display = rec.sources.find((s) => s.channel === 'display');
   const mic = rec.sources.some((s) => s.channel === 'mic');
   return `${display?.kind ?? 'display'}${mic ? ' + mic' : ', no mic'}`;
-}
-
-export function formatDuration(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  const mm = String(m % 60).padStart(h ? 2 : 1, '0');
-  const ss = String(s % 60).padStart(2, '0');
-  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 function formatLevels(levels: Recording['levels']): string | undefined {
@@ -290,7 +281,8 @@ async function reExport(id: string): Promise<Outcome> {
 /**
  * The record as it is now, not as the row was rendered: a recording the recorder or the pipeline
  * has taken since (`recording`, `transcribing`, or queued behind another one, which the status on
- * disk may not say yet) must not have its files touched.
+ * disk may not say yet), or one waiting for its decision (`stopped`, or a decision in flight),
+ * must not have its files touched.
  */
 async function claim(id: string, what: string): Promise<Recording | string> {
   const rec = await getRecording(id);
@@ -298,11 +290,47 @@ async function claim(id: string, what: string): Promise<Recording | string> {
   const held =
     rec.status === 'recording' || rec.status === 'transcribing'
       ? rec.status
-      : isTranscribing(rec.id)
-        ? 'queued for transcription'
-        : undefined;
+      : rec.status === 'stopped' || isDeciding(rec.id)
+        ? 'waiting to be saved or discarded'
+        : isTranscribing(rec.id)
+          ? 'queued for transcription'
+          : undefined;
   if (held) return `"${rec.title}" is ${held}; ${what} once it is done.`;
   return rec;
+}
+
+// --- The decision on a stopped recording (app/decide.ts) ----------------------------------------
+/** Save into the folder from Settings; the permission is re-requested inside the click. */
+async function saveStopped(id: string): Promise<Outcome> {
+  await ensureExportPermission().catch(() => undefined);
+  const rec = await decide(id, 'save');
+  return savedOutcome(rec);
+}
+
+/** Save as…: Chrome's folder picker inside the click, the handle stored for this recording only. */
+async function saveStoppedAs(id: string): Promise<Outcome> {
+  let dir: FileSystemDirectoryHandle;
+  try {
+    dir = await window.showDirectoryPicker({ id: 'rescribe-save-as', mode: 'readwrite' });
+  } catch (err) {
+    if ((err as DOMException).name === 'AbortError') return undefined;
+    return fail(`Could not choose a folder: ${describe(err)}`);
+  }
+  await setRecordingExportRoot(id, dir);
+  const rec = await decide(id, 'save-as');
+  return savedOutcome(rec);
+}
+
+function savedOutcome(rec: Recording | undefined): Outcome {
+  if (!rec) return undefined;
+  if (rec.error) return fail(`Recorded, but ${rec.error}`);
+  return `Saved to ${rec.exportRoot ? `${rec.exportRoot}/` : ''}${rec.exportPath}/.`;
+}
+
+async function discardStopped(id: string): Promise<Outcome> {
+  const rec = await getRecording(id);
+  await decide(id, 'discard');
+  return `Discarded "${rec?.title ?? id}". Nothing was exported.`;
 }
 
 /** Why the exported video could not be confirmed, for a refusal line. */
@@ -406,48 +434,6 @@ async function removeExportedMedia(): Promise<Outcome> {
 }
 
 // --- Widgets ------------------------------------------------------------------------------------
-/**
- * A destructive action as an in-page two-step: the first click arms the button (its label becomes
- * the question), the second runs it; a click anywhere else, or ARM_MS, disarms. Never
- * window.confirm, which blocks the tab and any automation driving it.
- */
-function confirmButton(
-  label: string,
-  question: string,
-  cls: string,
-  run: () => void,
-): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.className = cls;
-  b.textContent = label;
-  let timer: number | undefined;
-  let armedAt = 0;
-  const onOutside = (e: Event): void => {
-    if (e.target !== b) disarm();
-  };
-  const disarm = (): void => {
-    b.classList.remove('armed');
-    b.textContent = label;
-    window.clearTimeout(timer);
-    document.removeEventListener('click', onOutside, true);
-  };
-  b.addEventListener('click', () => {
-    if (!b.classList.contains('armed')) {
-      b.classList.add('armed');
-      b.textContent = question;
-      armedAt = performance.now();
-      timer = window.setTimeout(disarm, ARM_MS);
-      // Deferred: the arming click is still propagating and would disarm at once.
-      window.setTimeout(() => document.addEventListener('click', onOutside, true), 0);
-      return;
-    }
-    if (performance.now() - armedAt < ARM_GUARD_MS) return; // the second half of a double-click
-    disarm();
-    run();
-  });
-  return b;
-}
-
 /** The id whose title is being edited. While set, `renderList` defers: a wholesale re-render would
  * remove the focused input, Chromium fires `blur` on removal, and blur saves a half-typed title. */
 let editing: string | undefined;
@@ -541,7 +527,8 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
   if (inv.bytes > 0) meta.append(span('size', `${formatBytes(inv.bytes)} local`));
   li.append(titleRow, meta);
 
-  if (rec.exportPath) li.append(div('path', `${rec.exportPath}/`));
+  if (rec.exportPath)
+    li.append(div('path', `${rec.exportRoot ? `${rec.exportRoot}/` : ''}${rec.exportPath}/`));
   if (rec.status === 'transcribing' || isTranscribing(rec.id))
     li.append(
       div(
@@ -565,6 +552,41 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
 
   const actions = document.createElement('div');
   actions.className = 'actions';
+  if (rec.status === 'stopped') {
+    // Waiting for the human: the same three choices as the stop dialog, nothing else. Nothing
+    // has been exported and nothing is transcribed until one of them is clicked.
+    li.append(
+      div('hint pending', 'Not saved yet: save it, save it into another folder, or discard it.'),
+    );
+    const save = document.createElement('button');
+    save.className = 'save';
+    save.textContent = 'Save';
+    save.title = 'Save the video into the export folder from Settings and transcribe it';
+    save.addEventListener(
+      'click',
+      () => void runAction([rec.id], 'Saving…', li, () => saveStopped(rec.id)),
+    );
+    const saveAs = document.createElement('button');
+    saveAs.className = 'save-as';
+    saveAs.textContent = 'Save as…';
+    saveAs.title = 'Choose a folder for this recording only; the Settings folder stays';
+    saveAs.addEventListener(
+      'click',
+      () => void runAction([rec.id], 'Saving…', li, () => saveStoppedAs(rec.id)),
+    );
+    actions.append(
+      save,
+      saveAs,
+      confirmButton(
+        'Discard',
+        `Discard "${rec.title}"? Nothing was exported.`,
+        'discard',
+        () => void runAction([rec.id], 'Discarding…', li, () => discardStopped(rec.id)),
+      ),
+    );
+    li.append(actions);
+    return li;
+  }
   // Whatever is on disk can be saved, a failed recording's playable video included.
   const exportable = inv.video || inv.artifacts.length > 0;
   if (exportable) {

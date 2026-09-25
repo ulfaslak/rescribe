@@ -1,12 +1,21 @@
 // The export folder (File System Access API). The human's directory handle lives in IndexedDB
-// `handles` under `export`; each recording gets `<template>/` inside it, named by
-// src/lib/pathtemplate.ts, with " (2)", " (3)"… on collision. App-tab only.
-import { idb } from '../lib/idb.ts';
+// `handles` under `export` (handles.ts); a recording saved with "Save as…" has a folder of its
+// own under `export:<id>`, and `rootFor` says which one a recording uses. Each recording gets
+// `<template>/` inside its folder, named by src/lib/pathtemplate.ts, with " (2)", " (3)"… on
+// collision. App-tab only, except `ensureExportPermission`, `getExportRoot`, `setExportRoot` and
+// `setRecordingExportRoot`, which the stop dialog calls inside its own clicks.
 import { candidateName, renderPathTemplate } from '../lib/pathtemplate.ts';
 import type { Container, Recording } from '../lib/types.ts';
+import { getExportRoot, getRecordingExportRoot } from './handles.ts';
 import { listArtifacts, readArtifact } from './store.ts';
 
-export const EXPORT_HANDLE_KEY = 'export';
+export {
+  EXPORT_HANDLE_KEY,
+  getExportRoot,
+  setExportRoot,
+  getRecordingExportRoot,
+  setRecordingExportRoot,
+} from './handles.ts';
 
 /** `missing`: the recording's directory or its video is not under the current export folder. */
 export type ExportFailure = 'no-folder' | 'permission' | 'io' | 'missing';
@@ -24,21 +33,54 @@ export class ExportError extends Error {
   }
 }
 
-export function getExportRoot(): Promise<FileSystemDirectoryHandle | undefined> {
-  return idb.get<FileSystemDirectoryHandle>('handles', EXPORT_HANDLE_KEY);
+/**
+ * The folder a recording is exported under: its own (`exportRoot` set, handle under
+ * `export:<id>`) or the one from Settings. A recording that names its own folder but has no
+ * handle for it is an error, not a fallback: the video would land in a folder the row does not
+ * show.
+ */
+export async function rootFor(
+  rec: Pick<Recording, 'id' | 'exportRoot'>,
+): Promise<FileSystemDirectoryHandle> {
+  if (rec.exportRoot !== undefined) {
+    const own = await getRecordingExportRoot(rec.id);
+    if (!own)
+      throw new ExportError(
+        'no-folder',
+        `The folder "${rec.exportRoot}" chosen for this recording is no longer known to Rescribe.`,
+      );
+    return own;
+  }
+  const root = await getExportRoot();
+  if (!root) throw new ExportError('no-folder', 'No export folder chosen in Settings.');
+  return root;
 }
 
-export function setExportRoot(handle: FileSystemDirectoryHandle): Promise<void> {
-  return idb.set('handles', EXPORT_HANDLE_KEY, handle);
+/** `rootFor` with the permission checked: the folder is there and may be written to. */
+async function writableRoot(
+  rec: Pick<Recording, 'id' | 'exportRoot'>,
+): Promise<FileSystemDirectoryHandle> {
+  const root = await rootFor(rec);
+  if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted')
+    throw new ExportError('permission', 'Rescribe needs permission to write to the export folder.');
+  return root;
 }
 
 /**
- * Make sure we may write to the export folder. `requestPermission` only prompts inside a user
- * gesture, so call this from the Stop click, before the recorder stops. Returns 'none' when no
+ * Make sure we may write to the export folder: the recording's own when given one that has it,
+ * else the one from Settings. `requestPermission` only prompts inside a user gesture, so call
+ * this from the click that leads to the export (Stop, Save, Save now). Returns 'none' when no
  * folder was chosen.
  */
-export async function ensureExportPermission(): Promise<PermissionState | 'none'> {
-  const root = await getExportRoot();
+export async function ensureExportPermission(
+  rec?: Pick<Recording, 'id' | 'exportRoot'>,
+): Promise<PermissionState | 'none'> {
+  let root: FileSystemDirectoryHandle | undefined;
+  try {
+    root = rec ? await rootFor(rec) : await getExportRoot();
+  } catch {
+    root = undefined;
+  }
   if (!root) return 'none';
   const state = await root.queryPermission({ mode: 'readwrite' });
   if (state === 'granted') return state;
@@ -88,18 +130,15 @@ function wrap(err: unknown): ExportError {
 }
 
 /**
- * The recording's directory in the export folder. Reuses `rec.exportPath` when set, otherwise
+ * The recording's directory in its export folder (`rootFor`). Reuses `rec.exportPath` when set, otherwise
  * creates `<template>/` (nested when the template contains `/`), suffixing the last segment on
  * collision. Returns the handle and the relative path to store as `exportPath`.
  */
 export async function getExportDirectory(
-  rec: Pick<Recording, 'startedAt' | 'title' | 'exportPath'>,
+  rec: Pick<Recording, 'id' | 'exportRoot' | 'startedAt' | 'title' | 'exportPath'>,
   pathTemplate: string,
 ): Promise<{ dir: FileSystemDirectoryHandle; path: string }> {
-  const root = await getExportRoot();
-  if (!root) throw new ExportError('no-folder', 'No export folder chosen in Settings.');
-  if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted')
-    throw new ExportError('permission', 'Rescribe needs permission to write to the export folder.');
+  const root = await writableRoot(rec);
   try {
     const segments = rec.exportPath
       ? rec.exportPath.split('/')
@@ -162,10 +201,7 @@ export async function writeExportFile(
 export async function findExportDirectory(rec: Recording): Promise<FileSystemDirectoryHandle> {
   if (!rec.exportPath)
     throw new ExportError('missing', 'the video has not been saved to the export folder yet');
-  const root = await getExportRoot();
-  if (!root) throw new ExportError('no-folder', 'No export folder chosen in Settings.');
-  if ((await root.queryPermission({ mode: 'readwrite' })) !== 'granted')
-    throw new ExportError('permission', 'Rescribe needs permission to write to the export folder.');
+  const root = await writableRoot(rec);
   try {
     let dir = root;
     for (const seg of rec.exportPath.split('/')) dir = await dir.getDirectoryHandle(seg);

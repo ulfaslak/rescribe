@@ -1,6 +1,8 @@
 // The recorder. One instance per recording, app-tab only. Owns the MediaRecorder, the audio graph
 // (graph.ts), the AudioWorklet taps and the storage writer; drives the Recording record through
-// `recording → recorded | failed` and exports the video on stop (ARCHITECTURE § Pipeline 1–2).
+// `recording → stopped | failed` (ARCHITECTURE § Pipeline 1–2). The export is not its job: a
+// `stopped` recording waits for the human's decision (app/decide.ts), and `finalize` below is
+// what that decision, a library row or the crash recovery calls.
 //
 // Memory is bounded by what is in flight: one MediaRecorder chunk per second being turned into an
 // ArrayBuffer, and one 200 ms PCM block per channel. Everything is transferred to the storage
@@ -73,13 +75,12 @@ export interface StartOptions {
   mic?: Captured;
   title: string;
   container: Container;
-  /** Settings.pathTemplate at start; the export directory is named from it on stop. */
-  pathTemplate: string;
   /** Shown on the recording, e.g. that the microphone was unavailable. */
   note?: string;
 }
 
-export type RecorderPhase = 'recording' | 'stopping' | 'exporting' | 'done';
+/** `stopped` is the last phase: the record is at `stopped` (media complete on disk) or `failed`. */
+export type RecorderPhase = 'recording' | 'stopping' | 'stopped';
 export type RecorderListener = (rec: Recording, phase: RecorderPhase) => void;
 
 interface Level {
@@ -90,7 +91,6 @@ interface Level {
 export class Recorder {
   recording: Recording;
   private readonly listener: RecorderListener;
-  private readonly pathTemplate: string;
   private readonly streams: MediaStream[];
   private readonly mixCtx: AudioContext;
   private readonly tapCtx: AudioContext;
@@ -111,7 +111,6 @@ export class Recorder {
   private constructor(init: {
     recording: Recording;
     listener: RecorderListener;
-    pathTemplate: string;
     streams: MediaStream[];
     mixCtx: AudioContext;
     tapCtx: AudioContext;
@@ -122,7 +121,6 @@ export class Recorder {
   }) {
     this.recording = init.recording;
     this.listener = init.listener;
-    this.pathTemplate = init.pathTemplate;
     this.streams = init.streams;
     this.mixCtx = init.mixCtx;
     this.tapCtx = init.tapCtx;
@@ -210,7 +208,6 @@ export class Recorder {
       recorder = new Recorder({
         recording,
         listener,
-        pathTemplate: opts.pathTemplate,
         streams,
         mixCtx,
         tapCtx,
@@ -331,7 +328,10 @@ export class Recorder {
     );
   }
 
-  /** Stop, finalize and export. Idempotent: every call resolves to the same final record. */
+  /**
+   * Stop: drain, release, close the files, mark `stopped` (or `failed`). Nothing is exported;
+   * that is the decision's job. Idempotent: every call resolves to the same final record.
+   */
   stop(): Promise<Recording> {
     this.stopping ??= this.doStop();
     return this.stopping;
@@ -404,14 +404,12 @@ export class Recorder {
           `${this.gapCount} render gap${this.gapCount > 1 ? 's' : ''} padded with silence (${pcmSeconds(this.gaps.paddedFrames * 2).toFixed(1)} s).`,
         );
       const note = [this.recording.note, ...notes].filter(Boolean).join(' ');
-      const updated = await updateRecording(this.recording.id, {
+      this.recording = await updateRecording(this.recording.id, {
+        status: 'stopped',
         endedAt,
         levels: this.levelsDb(),
         ...(note ? { note } : {}),
       });
-      this.recording = await finalize(updated, this.pathTemplate, (rec) =>
-        this.listener(rec, 'exporting'),
-      );
     } catch (err) {
       this.recording = await updateRecording(this.recording.id, {
         status: 'failed',
@@ -419,17 +417,19 @@ export class Recorder {
         error: message(err),
       }).catch(() => ({ ...this.recording, status: 'failed' as const, error: message(err) }));
     }
-    this.listener(this.recording, 'done');
+    this.listener(this.recording, 'stopped');
     return this.recording;
   }
 }
 
 /**
- * Pipeline step 2 for a recording whose files are complete on disk: export the video to the
- * chosen folder and mark `recorded` (a `done` recording, re-exported from "Save now", stays
- * `done`). An export failure still marks `recorded` (the media is safe in OPFS) with `error` set
- * and `exportPath` unset; the list then offers "Save now", which runs this again from a click (so
- * the folder permission can be re-requested) and then `exportArtifacts`.
+ * Pipeline step 2 for a recording whose files are complete on disk: export the video to its
+ * folder (`rootFor`: the one from Settings, or its own after "Save as…") and mark `recorded` (a
+ * `done` recording, re-exported from "Save now", stays `done`). An export failure still marks
+ * `recorded` (the media is safe in OPFS) with `error` set and `exportPath` unset; the list then
+ * offers "Save now", which runs this again from a click (so the folder permission can be
+ * re-requested) and then `exportArtifacts`. Called by the decision (app/decide.ts), the library
+ * and the crash recovery below; never by the recorder.
  */
 export async function finalize(
   rec: Recording,

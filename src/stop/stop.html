@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rescribe</title>
+    <link rel="stylesheet" href="stop.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <span id="state" class="pill">…</span>
+        <span id="elapsed" class="elapsed"></span>
+      </header>
+      <h1 id="title">Rescribe</h1>
+      <p id="where" class="hint"></p>
+      <div class="actions">
+        <button id="save" class="primary" disabled>Save</button>
+        <button id="save-as" disabled>Save as…</button>
+        <span id="discard-slot"></span>
+      </div>
+      <p id="status" class="hint" aria-live="polite"></p>
+      <p id="footer" class="hint"></p>
+    </main>
+    <script type="module" src="stop.js"></script>
+  </body>
+</html>

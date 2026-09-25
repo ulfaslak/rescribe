@@ -1,7 +1,8 @@
 // The app tab. Owns all state: the recorder, storage, settings, the library list. The service
 // worker only pokes it with messages. See ARCHITECTURE § Runtime topology.
-import type { AppStatus, Message } from '../lib/messages.ts';
+import type { AppStatus, DecideResult, Decision, Message, PendingInfo } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
+import { formatDuration } from '../lib/format.ts';
 import { loadSettings, saveSettings } from '../lib/settings.ts';
 import type { Recording, Settings } from '../lib/types.ts';
 import {
@@ -14,8 +15,9 @@ import {
 import type { Captured } from '../recorder/capture.ts';
 import { exportVideoName, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
-import { getRecording } from '../storage/store.ts';
-import { describeSources, formatDuration, renderList } from './library.ts';
+import { getRecording, listRecordings } from '../storage/store.ts';
+import { decide, onDecision } from './decide.ts';
+import { describeSources, renderList } from './library.ts';
 import {
   isPipelineBusy,
   onPipelineProgress,
@@ -40,28 +42,74 @@ const describe = (err: unknown): string => (err instanceof Error ? err.message :
 /** A start is under way, from its first capture to the recorder running; one at a time. */
 let starting = false;
 let ticker: number | undefined;
+/**
+ * The recording the stop dialog is about when nothing is live: the newest one at `stopped`,
+ * waiting for the human's decision (`refreshPending`). The status is `stopped` while it is set.
+ */
+let pendingId: string | undefined;
+/** The live recording whose stop was asked for together with a decision (`applyDecision`). */
+let deciding: string | undefined;
+/** Decisions being applied (an export in flight), whatever recording they are on. */
+let applying = 0;
 
 /**
  * `status` is the recorder's state and what `query-status` answers, so a toolbar click can still
  * start a recording while a transcription runs. The pill and the badge show that transcription
- * when nothing is being recorded.
+ * when nothing is being recorded. `stopped`: a recording waits for the decision (badge `SAVE`);
+ * `recorded`: busy for a moment (the recorder draining, an export running).
  */
 function setStatus(next: AppStatus): void {
   status = next;
   refreshStatus();
 }
 
+const PILL_CLASS: Partial<Record<AppStatus, string>> = {
+  recording: 'recording',
+  stopped: 'pending',
+  transcribing: 'processing',
+};
+
 function refreshStatus(): void {
   const shown: AppStatus = status === 'idle' && isPipelineBusy() ? 'transcribing' : status;
   const pill = $<HTMLSpanElement>('#status');
   pill.textContent = shown;
-  pill.className = `pill ${shown === 'recording' ? 'recording' : shown === 'transcribing' ? 'processing' : ''}`;
+  pill.className = `pill ${PILL_CLASS[shown] ?? ''}`;
   $<HTMLButtonElement>('#stop').disabled = status !== 'recording';
   $<HTMLButtonElement>('#record-screen').disabled = status !== 'idle';
   void send({
     type: 'badge',
-    state: shown === 'recording' ? 'recording' : shown === 'transcribing' ? 'processing' : 'idle',
+    state:
+      shown === 'recording'
+        ? 'recording'
+        : shown === 'stopped'
+          ? 'pending'
+          : shown === 'transcribing'
+            ? 'processing'
+            : 'idle',
   });
+}
+
+/**
+ * Nothing live and no decision in flight: the newest `stopped` recording, if any, is what the
+ * stop dialog and the badge are about, and the status says so. Called after every stop and
+ * every decision, and on startup (a recording left `stopped` by a closed tab is still waiting).
+ */
+async function refreshPending(): Promise<void> {
+  if (recorder || applying > 0) return;
+  const stopped = (await listRecordings()).filter((r) => r.status === 'stopped');
+  pendingId = stopped[0]?.id;
+  if (pendingId) {
+    const rec = stopped[0]!;
+    setStatus('stopped');
+    note(
+      `"${rec.title}" (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}) is not saved yet: Save, Save as… or Discard it from its row below, or from the toolbar button.`,
+    );
+  } else setStatus('idle');
+}
+
+/** The human's decision is needed: the service worker opens the stop dialog. */
+function askToSave(): void {
+  void send({ type: 'ask-to-save' });
 }
 
 function note(text: string, isError = false): void {
@@ -97,7 +145,7 @@ async function micWillPrompt(): Promise<boolean> {
 function onMessage(
   msg: Message,
   sender: chrome.runtime.MessageSender,
-  sendResponse: (res: AppStatus) => void,
+  sendResponse: (res: AppStatus | PendingInfo | DecideResult | undefined) => void,
 ): boolean {
   switch (msg.type) {
     case 'query-status':
@@ -106,6 +154,28 @@ function onMessage(
     case 'toggle-recording':
       void onToggleRecording(msg);
       return false;
+    case 'query-pending':
+      void pendingInfo().then((info) => sendResponse(info));
+      return true;
+    case 'decide':
+      void applyDecision(msg.id, msg.action).then((result) => {
+        try {
+          sendResponse(result);
+        } catch {
+          // the dialog closed meanwhile
+        }
+      });
+      return true;
+    case 'call-ended': {
+      // Only from the recorded tab (toolbar path) or a tab that contributed events (picker
+      // path), and only while recording: the human is asked, the recording goes on.
+      const from = sender.tab?.id;
+      const ours =
+        from !== undefined &&
+        (recordedTabId !== undefined ? from === recordedTabId : contributingTabs.has(from));
+      if (recorder && status === 'recording' && ours) askToSave();
+      return false;
+    }
     case 'speaker':
     case 'roster':
     case 'adapter-diagnostic': {
@@ -139,8 +209,9 @@ function onMessage(
   }
 }
 
+// A `stopped` recording waits on disk and is picked up again on the next open: no warning for it.
 window.addEventListener('beforeunload', (e) => {
-  if (status !== 'idle' || isPipelineBusy()) e.preventDefault();
+  if (status === 'recording' || status === 'recorded' || isPipelineBusy()) e.preventDefault();
 });
 
 // --- Recording ----------------------------------------------------------------------------
@@ -268,7 +339,6 @@ async function startRecording(
         mic: mic.mic,
         title,
         container: settings.container,
-        pathTemplate: settings.pathTemplate,
         note: mic.missing ? 'Microphone unavailable at start; recorded without it.' : undefined,
       },
       onRecorderChange,
@@ -281,10 +351,7 @@ async function startRecording(
   }
 }
 
-function onRecorderChange(
-  rec: Recording,
-  phase: 'recording' | 'stopping' | 'exporting' | 'done',
-): void {
+function onRecorderChange(rec: Recording, phase: 'recording' | 'stopping' | 'stopped'): void {
   switch (phase) {
     case 'recording':
       setStatus('recording');
@@ -297,22 +364,90 @@ function onRecorderChange(
       setStatus('recorded');
       note('Finishing…');
       break;
-    case 'exporting':
-      note(`Saving ${exportVideoName(rec.container)}…`);
-      break;
-    case 'done':
+    case 'stopped':
       recorder = undefined;
       recordedTabId = undefined;
       contributingTabs.clear();
-      setStatus('idle');
-      if (rec.status === 'failed') note(`Recording failed: ${rec.error ?? 'unknown error'}`, true);
-      else if (rec.error) note(`Recorded, but ${rec.error}`, true);
-      else note(`Saved to ${rec.exportPath ?? '?'}/`);
-      // Exported or not: the artifacts go to OPFS first and follow the video when it is saved.
-      if (rec.status === 'recorded') void autoTranscribe(rec.id);
+      if (rec.status === 'failed') {
+        note(`Recording failed: ${rec.error ?? 'unknown error'}`, true);
+        void refreshPending();
+      } else if (deciding === rec.id) {
+        // `applyDecision` asked for this stop and goes on with the decision.
+      } else {
+        // The stream died (Stop sharing, the captured tab closed): the recording waits for the
+        // human. Nothing is exported and nothing transcribed until they say so.
+        pendingId = rec.id;
+        setStatus('stopped');
+        note(
+          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}). Save, Save as… or Discard it from its row below.`,
+        );
+        askToSave();
+      }
       break;
   }
   void renderList();
+}
+
+/** What the stop dialog shows: the live recording, else the newest one waiting `stopped`. */
+async function pendingInfo(): Promise<PendingInfo | undefined> {
+  const live = recorder?.recording;
+  if (live && status === 'recording')
+    return { id: live.id, title: live.title, startedAt: live.startedAt, live: true };
+  if (!pendingId || applying > 0) return undefined;
+  const rec = await getRecording(pendingId);
+  if (!rec || rec.status !== 'stopped') return undefined;
+  return {
+    id: rec.id,
+    title: rec.title,
+    startedAt: rec.startedAt,
+    endedAt: rec.endedAt,
+    live: false,
+  };
+}
+
+/**
+ * The decision, from the stop dialog, the Stop button or a row: stop the recorder first when the
+ * recording is the live one (its stop ends at `stopped`), then `decide` (app/decide.ts). The
+ * export runs with the status at `recorded` (busy); the outcome goes to the status line and,
+ * through `onDecision`, starts the transcription.
+ */
+async function applyDecision(id: string, action: Decision): Promise<DecideResult> {
+  const r = recorder;
+  if (r && r.recording.id === id) {
+    if (deciding !== undefined) return { ok: false, message: 'The recording is already stopping.' };
+    deciding = id;
+    let stopped: Recording;
+    try {
+      stopped = await r.stop();
+    } finally {
+      deciding = undefined;
+    }
+    if (stopped.status !== 'stopped') {
+      await refreshPending();
+      return { ok: false, message: `Recording failed: ${stopped.error ?? 'unknown error'}` };
+    }
+  }
+  applying++;
+  try {
+    if (!recorder) setStatus('recorded');
+    const out = await decide(id, action, (rec) => {
+      if (!recorder) note(`Saving ${exportVideoName(rec.container)}…`);
+    });
+    if (!out) return { ok: true, message: 'Discarded.' };
+    if (out.error) return { ok: true, message: `Recorded, but ${out.error}` };
+    return { ok: true, message: `Saved to ${describePath(out)}` };
+  } catch (err) {
+    return { ok: false, message: describe(err) };
+  } finally {
+    applying--;
+    await refreshPending();
+    void renderList();
+  }
+}
+
+/** `<folder>/<path>/` with the recording's own folder in front when it has one. */
+function describePath(rec: Recording): string {
+  return `${rec.exportRoot ? `${rec.exportRoot}/` : ''}${rec.exportPath ?? '?'}/`;
 }
 
 // --- Transcription (steps 3–5 live in pipeline.ts; this is the status line around them) --------
@@ -338,12 +473,13 @@ async function runPipeline(id: string): Promise<void> {
   }
 }
 
+/** Stop in the app tab: stop and save into the folder from Settings, in one click. */
 async function onStop(): Promise<void> {
   const r = recorder;
   if (!r) return;
   // Inside the click: the folder permission prompt needs a user gesture.
   await ensureExportPermission().catch(() => undefined);
-  await r.stop();
+  await applyDecision(r.recording.id, 'save');
 }
 
 // --- Settings -----------------------------------------------------------------------------
@@ -434,6 +570,21 @@ async function main(): Promise<void> {
   }
   chrome.runtime.onMessage.addListener(onMessage);
   setStatus('idle');
+  // Every decision, wherever it was made (the stop dialog, Stop, a row): the status line says
+  // what happened and a saved recording is transcribed (the artifacts go to OPFS first and follow
+  // the video when it is saved, exported or not).
+  onDecision((ev) => {
+    if (ev.phase === 'started') {
+      if (!recorder && status === 'idle') setStatus('recorded');
+      return;
+    }
+    const rec = ev.rec;
+    if (ev.action === 'discard') note(`Discarded "${ev.before.title}".`);
+    else if (!rec) note('');
+    else if (rec.error) note(`Recorded, but ${rec.error}`, true);
+    else note(`Saved to ${describePath(rec)}`);
+    if (rec?.status === 'recorded') void autoTranscribe(rec.id);
+  });
   // The Record section's status line follows the pipeline while nothing is being recorded. The
   // list shows the stored record, so it is rendered again whenever the pipeline moves a
   // recording (queued: marked `transcribing`; done) and at every phase in between.
@@ -475,6 +626,8 @@ async function main(): Promise<void> {
   for (const rec of interrupted) void runPipeline(rec.id);
   for (const rec of recovered) if (rec.status === 'recorded') void autoTranscribe(rec.id);
   if (interrupted.length > 0) await renderList();
+  // A recording left `stopped` (the tab closed before the human decided) is still waiting.
+  await refreshPending();
   // Startup is complete (recovery included); the e2e harness waits for this.
   document.body.dataset['ready'] = 'owner';
 }
