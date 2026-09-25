@@ -3,7 +3,7 @@
 import type { AppStatus, DecideResult, Decision, Message, PendingInfo } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
-import { loadSettings, saveSettings } from '../lib/settings.ts';
+import { loadSettings, saveSettings, toFrameRate } from '../lib/settings.ts';
 import type { Recording, Settings } from '../lib/types.ts';
 import {
   captureDisplay,
@@ -291,7 +291,7 @@ async function onToggleRecording(
     const mic = await acquireMic(settings);
     let display: Captured;
     try {
-      display = await captureTab(msg.streamId, msg.tabTitle);
+      display = await captureTab(msg.streamId, settings.frameRate, msg.tabTitle);
     } catch (err) {
       if (mic.mic) stopAll(mic.mic.stream);
       note(`Couldn't capture that tab: ${String(err)}`, true);
@@ -306,20 +306,24 @@ async function onToggleRecording(
   }
 }
 
-/** "Record screen…": Chrome's picker, from a click in this tab. The picker first: it needs the gesture. */
+/**
+ * "Record screen…": Chrome's picker, from a click in this tab. The picker needs the click's
+ * transient activation, which outlives the settings read by seconds; the microphone comes after
+ * the picker.
+ */
 async function onRecordScreen(): Promise<void> {
   if (!canStart()) return;
   starting = true;
   try {
+    const settings = await loadSettings();
     let display: Captured;
     try {
-      display = await captureDisplay();
+      display = await captureDisplay(settings.frameRate);
     } catch (err) {
       if (err instanceof CaptureCancelled) note('');
       else note(`Couldn't start: ${String(err)}`, true);
       return;
     }
-    const settings = await loadSettings();
     const mic = await acquireMic(settings);
     await startRecording(display, mic, settings, 'Screen recording');
   } finally {
@@ -359,6 +363,7 @@ async function startRecording(
         mic: mic.mic,
         title,
         container: settings.container,
+        frameRate: settings.frameRate,
         note: mic.missing ? 'Microphone unavailable at start; recorded without it.' : undefined,
       },
       onRecorderChange,
@@ -569,6 +574,7 @@ function bindSettings(settings: Settings): void {
   (fields.namedItem('pathTemplate') as HTMLInputElement).value = settings.pathTemplate;
   (fields.namedItem('myName') as HTMLInputElement).value = settings.myName;
   (fields.namedItem('container') as HTMLSelectElement).value = settings.container;
+  (fields.namedItem('frameRate') as HTMLSelectElement).value = String(settings.frameRate);
   (fields.namedItem('micByDefault') as HTMLInputElement).checked = settings.micByDefault;
   (fields.namedItem('model') as HTMLSelectElement).value = settings.model;
   (fields.namedItem('backend') as HTMLSelectElement).value = settings.backend;
@@ -584,7 +590,8 @@ function bindSettings(settings: Settings): void {
       await saveSettings({
         pathTemplate: String(data.get('pathTemplate') || '{date} {time} {title}'),
         myName: String(data.get('myName') || 'Me'),
-        container: data.get('container') === 'webm' ? 'webm' : 'mp4',
+        container: data.get('container') === 'mp4' ? 'mp4' : 'webm',
+        frameRate: toFrameRate(data.get('frameRate')),
         micByDefault: data.get('micByDefault') === 'on',
         model: String(data.get('model') || settings.model),
         backend: data.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',

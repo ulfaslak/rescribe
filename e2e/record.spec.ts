@@ -1,7 +1,7 @@
-// The vertical slice, picker path: Record screen… → 3 s with fake devices → Stop → recording.mp4
-// in the export folder, PCM channels in OPFS, the Recording at `recorded`. The toolbar path needs
-// a real click on the toolbar button (LIVE_CHECKS); everything downstream of "a MediaStream
-// exists" is shared with this path.
+// The vertical slice, picker path: Record screen… → 3 s with fake devices → Stop → recording.webm
+// (or .mp4 with that option) in the export folder, PCM channels in OPFS, the Recording at
+// `recorded`. The toolbar path needs a real click on the toolbar button (LIVE_CHECKS); everything
+// downstream of "a MediaStream exists" is shared with this path.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -135,26 +135,42 @@ async function opfsBytes(page: Page, segments: string[]): Promise<Buffer> {
   return Buffer.from(b64, 'base64');
 }
 
-function ffprobe(file: string): { codecs: string[]; duration: number; format: string } {
+interface Probe {
+  codecs: string[];
+  /** From the header when it has one (`headerDuration`), else the last audio packet's time. */
+  duration: number;
+  /** NaN when the container carries no duration (a WebM exported without its header patched). */
+  headerDuration: number;
+  format: string;
+  videoFrames: number;
+  audioChannels: number;
+}
+
+function ffprobe(file: string): Probe {
   const run = (args: string[]) =>
     JSON.parse(
       execFileSync('ffprobe', ['-v', 'error', '-print_format', 'json', ...args, file]).toString(),
     ) as {
-      streams?: Array<{ codec_name: string }>;
+      streams?: Array<{ codec_name: string; codec_type: string; channels?: number }>;
       format?: { duration?: string; format_name: string };
       packets?: Array<{ pts_time?: string }>;
     };
   const probe = run(['-show_streams', '-show_format']);
-  let duration = Number(probe.format?.duration);
+  const headerDuration = Number(probe.format?.duration);
+  let duration = headerDuration;
   if (!Number.isFinite(duration)) {
-    // A MediaRecorder WebM is a live stream: no duration in the header. Take the last packet.
+    // A live-stream WebM: no duration in the header. Take the last packet.
     const packets = run(['-show_packets', '-select_streams', 'a:0']).packets ?? [];
     duration = Math.max(0, ...packets.map((p) => Number(p.pts_time)).filter(Number.isFinite));
   }
+  const audio = (probe.streams ?? []).find((s) => s.codec_type === 'audio');
   return {
     codecs: (probe.streams ?? []).map((s) => s.codec_name),
     duration,
+    headerDuration,
     format: probe.format?.format_name ?? '',
+    videoFrames: (run(['-show_packets', '-select_streams', 'v:0']).packets ?? []).length,
+    audioChannels: audio?.channels ?? 0,
   };
 }
 
@@ -201,7 +217,7 @@ function expectPcmLength(bytes: number, seconds: number, what: string): void {
   expect(bytes, what).toBeLessThan(expected * 1.2);
 }
 
-test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twice without collision', async ({
+test('picker path: 3 s → recording.webm (av1+opus, 5 fps, with its duration), PCM channels, recorded; twice without collision', async ({
   context,
   extensionId,
 }) => {
@@ -209,13 +225,22 @@ test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twi
   const page = await openApp(context, extensionId);
   await clearRecordings(page);
   await seedExportFolder(page);
-  // No {time}: the second recording renders the same folder name and must get a suffix.
-  await setSettings(page, { container: 'mp4', pathTemplate: '{date} {title}', micByDefault: true });
+  // No {time}: the second recording renders the same folder name and must get a suffix. The
+  // stored settings are an unversioned object with the old default container, as every profile
+  // from before #27 has: the migration drops it and the recording must come out as the new default.
+  await setSettings(page, {
+    container: 'mp4',
+    settingsVersion: undefined,
+    pathTemplate: '{date} {title}',
+    micByDefault: true,
+  });
   await page.reload();
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
   await expect(page.locator('#folder-name')).toHaveText(EXPORT_DIR);
   await expect(page.locator('#mic')).toBeChecked();
+  await expect(page.locator('select[name="container"]')).toHaveValue('webm');
+  await expect(page.locator('select[name="frameRate"]')).toHaveValue('5');
 
   const clickedAt = await record(page, 3);
   const [rec] = await recordings(page);
@@ -223,8 +248,9 @@ test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twi
   expect(rec).toBeDefined();
   expect(rec!.status).toBe('recorded');
   expect(rec!.error).toBeUndefined();
+  expect(rec!.note).toBeUndefined();
   expect(rec!.exportPath).toMatch(/^\d{4}-\d{2}-\d{2} Screen recording$/);
-  expect(rec!.container).toBe('mp4');
+  expect(rec!.container).toBe('webm');
   expect(rec!.sources.map((s) => s.channel).sort()).toEqual(['display', 'mic']);
   const startDelta = rec!.startedAt - clickedAt;
   console.log(`startedAt − click = ${startDelta} ms`);
@@ -249,16 +275,25 @@ test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twi
   expect(Math.abs((rec!.levels?.mic ?? -999) - micDb)).toBeLessThan(1);
   // No render gaps were padded on a healthy run (a false positive would write a clock-gap line).
   expect(await opfsSize(page, [...opfs, 'events.jsonl'])).toBe(0);
-  const videoBytes = await opfsSize(page, [...opfs, 'video.mp4']);
+  const videoBytes = await opfsSize(page, [...opfs, 'video.webm']);
   expect(videoBytes).toBeGreaterThan(10_000);
 
-  const file = await saveExport(page, rec!, 'record.mp4');
+  const file = await saveExport(page, rec!, 'record.webm');
   const probe = ffprobe(file);
   console.log('ffprobe', JSON.stringify(probe));
-  expect(probe.codecs).toEqual(expect.arrayContaining(['h264', 'aac']));
-  expect(probe.duration).toBeGreaterThan(2);
-  expect(probe.duration).toBeLessThan(5);
-  expect(await opfsSize(page, [EXPORT_DIR, rec!.exportPath!, 'recording.mp4'])).toBe(videoBytes);
+  expect(probe.codecs).toEqual(expect.arrayContaining(['av1', 'opus']));
+  // The exported header carries the recording's duration (MediaRecorder writes none): what a
+  // player shows as the length, and what makes the exported file 11 bytes longer than the OPFS one.
+  expect(probe.headerDuration).toBeGreaterThan(2);
+  expect(probe.headerDuration).toBeLessThan(5);
+  expect(Math.abs(probe.headerDuration - seconds)).toBeLessThan(0.01);
+  expect(await opfsSize(page, [EXPORT_DIR, rec!.exportPath!, 'recording.webm'])).toBe(
+    videoBytes + 11,
+  );
+  // Captured at 5 fps (Settings default), mixed to mono.
+  expect(probe.videoFrames).toBeGreaterThan(0);
+  expect(probe.videoFrames).toBeLessThanOrEqual(Math.ceil(probe.duration) * 5 + 2);
+  expect(probe.audioChannels).toBe(1);
 
   // The list shows it.
   const item = page.locator(`.recording-item[data-id="${rec!.id}"]`);
@@ -272,39 +307,15 @@ test('picker path: 3 s → recording.mp4 (h264+aac), PCM channels, recorded; twi
   expect(second!.id).not.toBe(rec!.id);
   expect(second!.status).toBe('recorded');
   expect(second!.exportPath).toBe(`${rec!.exportPath} (2)`);
-  expect(await opfsSize(page, [EXPORT_DIR, second!.exportPath!, 'recording.mp4'])).toBeGreaterThan(
+  expect(await opfsSize(page, [EXPORT_DIR, second!.exportPath!, 'recording.webm'])).toBeGreaterThan(
     10_000,
   );
   expect(await opfsSize(page, ['recordings', second!.id, 'mic.pcm'])).toBeGreaterThan(0);
 });
 
-test('webm container: vp9 + opus', async ({ context, extensionId }) => {
+test('mp4 option: h264 + aac, exported as recorded', async ({ context, extensionId }) => {
   await openTarget(context);
   const page = await openApp(context, extensionId);
-  await clearRecordings(page);
-  await seedExportFolder(page);
-  await setSettings(page, { container: 'webm', pathTemplate: '{date} {time} {title}' });
-  await page.reload();
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
-  await expect(page.locator('#status')).toHaveText('idle');
-
-  await record(page, 2);
-  const [rec] = await recordings(page);
-  expect(rec!.status).toBe('recorded');
-  expect(rec!.container).toBe('webm');
-  const probe = ffprobe(await saveExport(page, rec!, 'record.webm'));
-  console.log('ffprobe', JSON.stringify(probe));
-  expect(probe.codecs).toEqual(expect.arrayContaining(['vp9', 'opus']));
-  expect(probe.duration).toBeGreaterThan(1);
-  expect(probe.duration).toBeLessThan(4);
-});
-
-test('app tab closed mid-recording: data is on disk, recovered and exported on next open', async ({
-  context,
-  extensionId,
-}) => {
-  await openTarget(context);
-  let page = await openApp(context, extensionId);
   await clearRecordings(page);
   await seedExportFolder(page);
   await setSettings(page, { container: 'mp4', pathTemplate: '{date} {time} {title}' });
@@ -312,29 +323,89 @@ test('app tab closed mid-recording: data is on disk, recovered and exported on n
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#status')).toHaveText('idle');
 
-  await page.click('#record-screen');
-  await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
-  await page.waitForTimeout(3500);
-  const killedAt = Date.now();
-  await page.close({ runBeforeUnload: false });
-
-  page = await openApp(context, extensionId);
-  await expect(page.locator('#record-status')).toContainText('Recovered 1 interrupted recording');
+  await record(page, 2);
   const [rec] = await recordings(page);
-  console.log(JSON.stringify(rec));
   expect(rec!.status).toBe('recorded');
-  expect(rec!.note).toMatch(/Interrupted/);
-  expect(rec!.exportPath).toBeDefined();
-  // endedAt comes from the PCM length: within a second of when the tab died.
-  expect(Math.abs(rec!.endedAt! - killedAt)).toBeLessThan(1000);
-  const opfs = ['recordings', rec!.id];
-  const seconds = (rec!.endedAt! - rec!.startedAt) / 1000;
-  expectPcmLength(await opfsSize(page, [...opfs, 'mic.pcm']), seconds, 'mic.pcm');
-  const probe = ffprobe(await saveExport(page, rec!, 'recovered.mp4'));
+  expect(rec!.container).toBe('mp4');
+  const videoBytes = await opfsSize(page, ['recordings', rec!.id, 'video.mp4']);
+  expect(videoBytes).toBeGreaterThan(10_000);
+  expect(await opfsSize(page, [EXPORT_DIR, rec!.exportPath!, 'recording.mp4'])).toBe(videoBytes);
+  const probe = ffprobe(await saveExport(page, rec!, 'record.mp4'));
   console.log('ffprobe', JSON.stringify(probe));
-  expect(probe.codecs).toEqual(expect.arrayContaining(['h264']));
-  expect(probe.duration).toBeGreaterThan(1);
+  expect(probe.codecs).toEqual(expect.arrayContaining(['h264', 'aac']));
+  expect(probe.headerDuration).toBeGreaterThan(1);
+  expect(probe.headerDuration).toBeLessThan(4);
+  expect(probe.audioChannels).toBe(1);
 });
+
+test('30 fps setting: more frames per second reach the file than at the default', async ({
+  context,
+  extensionId,
+}) => {
+  await openTarget(context);
+  const page = await openApp(context, extensionId);
+  await clearRecordings(page);
+  await seedExportFolder(page);
+  await setSettings(page, {
+    container: 'webm',
+    frameRate: 30,
+    pathTemplate: '{date} {time} {title}',
+  });
+  await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+  await expect(page.locator('select[name="frameRate"]')).toHaveValue('30');
+
+  await record(page, 2);
+  const [rec] = await recordings(page);
+  expect(rec!.status).toBe('recorded');
+  const probe = ffprobe(await saveExport(page, rec!, 'record-30fps.webm'));
+  console.log('ffprobe', JSON.stringify(probe));
+  expect(probe.videoFrames).toBeGreaterThan(probe.duration * 10);
+});
+
+// INVARIANTS "on disk within seconds": a WebM chunk arrives per timeslice with keyframes 10 s
+// apart (the first at 0 s, so 3.5 s of a killed recording decodes); an MP4 fragment arrives only
+// at a keyframe, so that container runs with a keyframe per timeslice.
+for (const container of ['webm', 'mp4'] as const)
+  test(`app tab closed mid-recording (${container}): data is on disk, recovered and exported on next open`, async ({
+    context,
+    extensionId,
+  }) => {
+    await openTarget(context);
+    let page = await openApp(context, extensionId);
+    await clearRecordings(page);
+    await seedExportFolder(page);
+    await setSettings(page, { container, pathTemplate: '{date} {time} {title}' });
+    await page.reload();
+    await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
+    await expect(page.locator('#status')).toHaveText('idle');
+
+    await page.click('#record-screen');
+    await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+    await page.waitForTimeout(3500);
+    const killedAt = Date.now();
+    await page.close({ runBeforeUnload: false });
+
+    page = await openApp(context, extensionId);
+    await expect(page.locator('#record-status')).toContainText('Recovered 1 interrupted recording');
+    const [rec] = await recordings(page);
+    console.log(JSON.stringify(rec));
+    expect(rec!.status).toBe('recorded');
+    expect(rec!.note).toMatch(/Interrupted/);
+    expect(rec!.exportPath).toBeDefined();
+    // endedAt comes from the PCM length: within a second of when the tab died.
+    expect(Math.abs(rec!.endedAt! - killedAt)).toBeLessThan(1000);
+    const opfs = ['recordings', rec!.id];
+    const seconds = (rec!.endedAt! - rec!.startedAt) / 1000;
+    expectPcmLength(await opfsSize(page, [...opfs, 'mic.pcm']), seconds, 'mic.pcm');
+    const probe = ffprobe(await saveExport(page, rec!, `recovered.${container}`));
+    console.log('ffprobe', JSON.stringify(probe));
+    expect(probe.codecs).toEqual(expect.arrayContaining([container === 'webm' ? 'av1' : 'h264']));
+    // Everything up to the last chunk written before the kill decodes.
+    expect(probe.duration).toBeGreaterThan(seconds - 1.5);
+    // The recovered export carries its duration too (from the PCM length).
+    expect(Math.abs(probe.headerDuration - seconds)).toBeLessThan(0.01);
+  });
 
 test('display track ends mid-recording (Stop sharing, tab closed): the recording waits stopped, the stop dialog opens, Save from it exports a playable video', async ({
   context,

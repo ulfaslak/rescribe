@@ -100,12 +100,24 @@ export interface Turn {
   segments: LabelledSegment[];
 }
 
+/** Frames per second the display is captured at (DECISIONS § Capture: 5 by default). */
+export type FrameRate = 5 | 10 | 30;
+export const FRAME_RATES: readonly FrameRate[] = [5, 10, 30];
+
+/**
+ * Bumped when a stored setting must be read against a new default; `migrateSettings` in
+ * lib/settings.ts carries a stored object from each older version to this one.
+ */
+export const SETTINGS_VERSION = 1;
+
 export interface Settings {
   /** Directory name template under the export folder. Tokens: {date} {time} {title}. */
   pathTemplate: string;
   /** Speaker label for the microphone channel. */
   myName: string;
+  /** Video format (DECISIONS § Storage and output: WebM by default, MP4 for QuickTime). */
   container: Container;
+  frameRate: FrameRate;
   micByDefault: boolean;
   /** parakeet.js model key. */
   model: string;
@@ -113,14 +125,18 @@ export interface Settings {
   backend: Backend;
   /** Run the transcription pipeline as soon as a recording stops. Off: the library's re-run. */
   autoTranscribe: boolean;
+  /** The version the stored object was written at; see `SETTINGS_VERSION`. */
+  settingsVersion: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   pathTemplate: '{date} {time} {title}',
   myName: 'Me',
-  container: 'mp4',
+  container: 'webm',
+  frameRate: 5,
   micByDefault: true,
   model: 'parakeet-tdt-0.6b-v3',
   backend: 'wasm',
   autoTranscribe: true,
+  settingsVersion: SETTINGS_VERSION,
 };

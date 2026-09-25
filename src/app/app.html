@@ -70,10 +70,18 @@
             <input name="myName" placeholder="Me" />
           </label>
           <label>
-            <span>Video container</span>
+            <span>Video format</span>
             <select name="container">
-              <option value="mp4">MP4 (H.264 + AAC)</option>
-              <option value="webm">WebM (VP9 + Opus)</option>
+              <option value="webm">WebM (AV1 + Opus): small files; Brave, Chrome, VLC</option>
+              <option value="mp4">MP4 (H.264 + AAC): larger files; also QuickTime</option>
+            </select>
+          </label>
+          <label>
+            <span>Frame rate</span>
+            <select name="frameRate">
+              <option value="5">5 fps: calls and slides, the smallest files</option>
+              <option value="10">10 fps</option>
+              <option value="30">30 fps: smooth motion, the largest files</option>
             </select>
           </label>
           <label class="check">
