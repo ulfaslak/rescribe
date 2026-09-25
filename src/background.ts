@@ -111,14 +111,16 @@ async function openStopDialog(): Promise<void> {
           top: Math.max(0, (anchor.top ?? 0) + 72),
         }
       : {};
-  await chrome.windows.create({
-    url: STOP_URL,
-    type: 'popup',
-    width: STOP_WIDTH,
-    height: STOP_HEIGHT,
-    focused: true,
-    ...placed,
-  });
+  const create = { url: STOP_URL, type: 'popup' as const, width: STOP_WIDTH, height: STOP_HEIGHT };
+  try {
+    await chrome.windows.create({ ...create, focused: true, ...placed });
+  } catch (err) {
+    // Chrome refuses bounds that are not mostly on a visible screen ("Invalid value for
+    // bounds"): a browser window half off-screen, a display that went away, headless. Chrome's
+    // own placement then; the dialog matters more than where it lands.
+    console.warn('[rescribe] stop dialog at the computed position refused; default placement', err);
+    await chrome.windows.create({ ...create, focused: true });
+  }
 }
 
 const BADGE: Record<BadgeState, { text: string; color: string; title: string }> = {

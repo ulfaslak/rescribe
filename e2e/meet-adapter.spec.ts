@@ -10,7 +10,7 @@ interface Ev {
   at: number;
 }
 
-test('Meet adapter: roster, speaking intervals stamped at change time, traps of the real page', async ({
+test('Meet adapter: roster, speaking intervals stamped at change time, traps of the real page, call-ended once the tiles stay gone', async ({
   context,
 }) => {
   const page = await context.newPage();
@@ -21,7 +21,8 @@ test('Meet adapter: roster, speaking intervals stamped at change time, traps of 
   });
   await page.goto('file://' + path.resolve('e2e/fixtures/fake-meet.html'));
   await page.addScriptTag({ path: path.resolve('dist/content/meet.js') });
-  await page.waitForTimeout(6800);
+  // The tiles go at 8000 ms; call-ended follows CALL_ENDED_AFTER_MS (5 s) later.
+  await page.waitForTimeout(14_000);
   const { events, t0 } = await page.evaluate(() => {
     const w = window as unknown as { __events: Ev[]; __t0: number };
     return { events: w.__events, t0: w.__t0 };
@@ -32,7 +33,8 @@ test('Meet adapter: roster, speaking intervals stamped at change time, traps of 
   // Roster: one entry per participant despite the duplicated self tile; chips and menu text ignored.
   const rosters = rel.filter((e) => e.type === 'roster');
   expect(rosters[0]?.names).toEqual(['Anna', 'Bo']);
-  expect(rosters.at(-1)?.names).toEqual(['Anna']);
+  expect(rosters.at(-2)?.names).toEqual(['Anna']);
+  expect(rosters.at(-1)?.names).toEqual([]);
 
   const sp = rel.filter((e) => e.type === 'speaker');
   expect(sp.map((e) => `${e.name}:${e.speaking}`)).toEqual([
@@ -56,4 +58,12 @@ test('Meet adapter: roster, speaking intervals stamped at change time, traps of 
   near(sp[4]!.at, 5200, 300);
   near(sp[5]!.at, 5600, 400);
   expect(rel.some((e) => e.type === 'adapter-diagnostic')).toBe(false);
+
+  // One call-ended, stamped at the moment the tiles went (not at its detection 5 s later), and
+  // nothing before the tiles had been gone for the whole window.
+  const ended = rel.filter((e) => e.type === 'call-ended');
+  expect(ended).toHaveLength(1);
+  near(ended[0]!.at, 8000, 400);
+  const rosterEmptyAt = rosters.at(-1)!.at;
+  expect(ended[0]!.at).toBeGreaterThanOrEqual(rosterEmptyAt - 1);
 });

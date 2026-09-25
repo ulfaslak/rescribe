@@ -1,7 +1,7 @@
 // Playwright fixtures: launch Chromium with the built extension and Chrome's fake media devices.
 // See AGENTS/DNA/DEVELOPMENT.md § "The e2e harness".
 import { test as base, chromium, type BrowserContext } from '@playwright/test';
-import { rmSync } from 'node:fs';
+import { globSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 /** Title of the page a test opens for getDisplayMedia to auto-select (see the flag below). */
@@ -18,6 +18,17 @@ export const test = base.extend<{ context: BrowserContext; extensionId: string }
     // extension's service worker script in it and serves the stale copy after a rebuild
     // (ENVIRONMENT_NOTES § "A reused profile runs the old service worker"). Drop that cache.
     rmSync(path.join(profile, 'Default', 'Service Worker'), { recursive: true, force: true });
+    // A run killed mid-way leaves session-restore state; the next launch then restores the old
+    // tabs and Playwright never sees a `page` event for tabs the extension opens
+    // (ENVIRONMENT_NOTES § "A killed run poisons the profile's session restore").
+    for (const f of globSync(
+      path.join(
+        profile,
+        'Default',
+        '{Session_*,Tabs_*,Sessions,Last Session,Current Session,Last Tabs,Current Tabs}',
+      ),
+    ))
+      rmSync(f, { recursive: true, force: true });
     const context = await chromium.launchPersistentContext(profile, {
       channel: process.env['CHROME_CHANNEL'] ?? 'chromium',
       headless: !headed,

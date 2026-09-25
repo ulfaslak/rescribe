@@ -3,7 +3,7 @@
 // record.spec.ts predates this file and carries its own copies of the first half.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { BrowserContext, Page } from '@playwright/test';
+import type { BrowserContext, Page, Worker } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect } from './fixtures.ts';
 import type { Recording } from '../src/lib/types.ts';
 
@@ -26,6 +26,18 @@ export async function ready(page: Page): Promise<void> {
 
 export async function openApp(context: BrowserContext, extensionId: string): Promise<Page> {
   const page = await context.newPage();
+  // Keep every display stream reachable from the test, to end its track mid-recording
+  // (`endDisplayTrack`): Chrome fires `ended` when the source goes away; stop() alone does not.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __displayStreams: MediaStream[] };
+    w.__displayStreams = [];
+    const orig = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getDisplayMedia = async (c?: DisplayMediaStreamOptions) => {
+      const s = await orig(c);
+      w.__displayStreams.push(s);
+      return s;
+    };
+  });
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') console.log(`[page ${m.type()}]`, m.text());
   });
@@ -278,4 +290,71 @@ export function wordHitRate(text: string): number {
       .toLowerCase()
       .match(/[a-z']+/g) ?? [];
   return words.filter((w) => got.includes(w)).length / words.length;
+}
+
+/** End the current recording's display track as Chrome's "Stop sharing" bar or a closed tab would. */
+export async function endDisplayTrack(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __displayStreams: MediaStream[] };
+    for (const t of w.__displayStreams.at(-1)!.getVideoTracks()) {
+      t.stop();
+      t.dispatchEvent(new Event('ended'));
+    }
+  });
+}
+
+// --- The service worker and the stop dialog -----------------------------------------------------
+export async function serviceWorker(context: BrowserContext): Promise<Worker> {
+  return context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+}
+
+export const stopDialogUrl = (extensionId: string): string =>
+  `chrome-extension://${extensionId}/stop/stop.html`;
+
+/** The stop dialog pages open right now (the popup window's page, in the same context). */
+export function stopDialogs(context: BrowserContext, extensionId: string): Page[] {
+  return context.pages().filter((p) => p.url() === stopDialogUrl(extensionId));
+}
+
+/** The next stop dialog to open, or one already open. */
+export async function waitForStopDialog(
+  context: BrowserContext,
+  extensionId: string,
+  timeout = 10_000,
+): Promise<Page> {
+  const open = stopDialogs(context, extensionId)[0];
+  if (open) return open;
+  const page = await context.waitForEvent('page', {
+    predicate: (p) => p.url() === stopDialogUrl(extensionId),
+    timeout,
+  });
+  await page.waitForLoadState();
+  return page;
+}
+
+/**
+ * Escape in the stop dialog closes its window from the keydown, so the press itself can report
+ * a closed target; that it closed is what the caller asserts afterwards.
+ */
+export async function escape(dialog: Page): Promise<void> {
+  await dialog.keyboard.press('Escape').catch(() => undefined);
+  await expect.poll(() => dialog.isClosed(), { timeout: 5000 }).toBe(true);
+}
+
+/**
+ * The toolbar click, through the service worker's hook, with a Tab-shaped object. Without a
+ * real click `getMediaStreamId` refuses the target, so a start fails; the routing (open the app
+ * tab, focus it, open the stop dialog) is what this exercises.
+ */
+export async function toolbarClick(
+  worker: Worker,
+  tab: { id: number; url: string; title?: string },
+): Promise<void> {
+  await worker.evaluate(
+    (tab) =>
+      (
+        globalThis as unknown as { rescribe: { onToggle: (t: object) => Promise<void> } }
+      ).rescribe.onToggle(tab),
+    tab,
+  );
 }

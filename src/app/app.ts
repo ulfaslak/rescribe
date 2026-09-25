@@ -16,7 +16,7 @@ import type { Captured } from '../recorder/capture.ts';
 import { exportVideoName, Recorder, recoverInterrupted } from '../recorder/recorder.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { getRecording, listRecordings } from '../storage/store.ts';
-import { decide, onDecision } from './decide.ts';
+import { decide, isDeciding, onDecision } from './decide.ts';
 import { describeSources, renderList } from './library.ts';
 import {
   isPipelineBusy,
@@ -379,7 +379,7 @@ function onRecorderChange(rec: Recording, phase: 'recording' | 'stopping' | 'sto
         pendingId = rec.id;
         setStatus('stopped');
         note(
-          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}). Save, Save as… or Discard it from its row below.`,
+          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}), not saved yet: Save, Save as… or Discard it from its row below, or from the toolbar button.`,
         );
         askToSave();
       }
@@ -393,7 +393,7 @@ async function pendingInfo(): Promise<PendingInfo | undefined> {
   const live = recorder?.recording;
   if (live && status === 'recording')
     return { id: live.id, title: live.title, startedAt: live.startedAt, live: true };
-  if (!pendingId || applying > 0) return undefined;
+  if (!pendingId || applying > 0 || isDeciding(pendingId)) return undefined;
   const rec = await getRecording(pendingId);
   if (!rec || rec.status !== 'stopped') return undefined;
   return {
@@ -573,9 +573,11 @@ async function main(): Promise<void> {
   // Every decision, wherever it was made (the stop dialog, Stop, a row): the status line says
   // what happened and a saved recording is transcribed (the artifacts go to OPFS first and follow
   // the video when it is saved, exported or not).
+  // A decision from a row (not through `applyDecision`) moves the status the same way: busy
+  // while it runs, then whatever is pending next.
   onDecision((ev) => {
     if (ev.phase === 'started') {
-      if (!recorder && status === 'idle') setStatus('recorded');
+      if (!recorder) setStatus('recorded');
       return;
     }
     const rec = ev.rec;
@@ -583,7 +585,9 @@ async function main(): Promise<void> {
     else if (!rec) note('');
     else if (rec.error) note(`Recorded, but ${rec.error}`, true);
     else note(`Saved to ${describePath(rec)}`);
-    if (rec?.status === 'recorded') void autoTranscribe(rec.id);
+    void refreshPending().then(() => {
+      if (rec?.status === 'recorded') void autoTranscribe(rec.id);
+    });
   });
   // The Record section's status line follows the pipeline while nothing is being recorded. The
   // list shows the stored record, so it is rendered again whenever the pipeline moves a

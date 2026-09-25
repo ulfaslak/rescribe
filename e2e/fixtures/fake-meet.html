@@ -31,7 +31,8 @@
       const tiles = document.querySelectorAll('[data-participant-id]');
       const meter = (tile) => tile.querySelector('[jsname="QgSmzd"]');
       // Speaking = the meter class wobbles every 100 ms. Schedule (ms after load):
-      //   Anna 500–2000; Bo 3000–4500; Bo again from 5200, and at 5600 Bo's tile is removed mid-speech.
+      //   Anna 500–2000; Bo 3000–4500; Bo again from 5200, and at 5600 Bo's tile is removed mid-speech;
+      //   at 8000 every tile goes (the human left the call), and stays gone.
       function wobble(m, from, to) {
         setTimeout(() => {
           let i = 0;
@@ -48,6 +49,9 @@
       wobble(meter(tiles[2]), 3000, 4500);
       wobble(meter(tiles[2]), 5200, 7000);
       setTimeout(() => document.getElementById('bo').remove(), 5600);
+      setTimeout(() => {
+        for (const t of document.querySelectorAll('[data-participant-id]')) t.remove();
+      }, 8000);
     </script>
   </body>
 </html>

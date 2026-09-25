@@ -13,6 +13,7 @@ import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage
 import { setRecordingExportRoot } from '../storage/handles.ts';
 import { confirmButton } from '../ui/confirm.ts';
 
+const APP_URL = chrome.runtime.getURL('app/app.html');
 const REFRESH_MS = 1000;
 const CLOSE_AFTER_OK_MS = 1500;
 const CLOSE_AFTER_ERROR_MS = 5000;
@@ -27,15 +28,44 @@ const $ = <T extends Element>(sel: string): T => {
 let info: PendingInfo | undefined;
 /** Set once a decision was sent or the dialog is on its way out: no more refreshes. */
 let finished = false;
+/** The owning app tab, once found. */
+let appTabId: number | undefined;
 
-async function query(): Promise<PendingInfo | undefined> {
+/**
+ * The app tab that owns the recorder: the one that answers `query-status` (a duplicate never
+ * listens). Messages go to it by tab id, never broadcast: a broadcast also reaches the service
+ * worker, whose listener answers nothing, and Chrome then settles the call with `undefined`
+ * before the app tab's asynchronous answer arrives (seen in the e2e, 2026-09-25).
+ */
+async function appTab(): Promise<number | undefined> {
+  if (appTabId !== undefined) return appTabId;
+  for (const t of await chrome.tabs.query({ url: APP_URL })) {
+    if (t.id === undefined) continue;
+    const status = await chrome.tabs
+      .sendMessage(t.id, { type: 'query-status' } satisfies Message)
+      .catch(() => undefined);
+    if (status !== undefined) {
+      appTabId = t.id;
+      return t.id;
+    }
+  }
+  return undefined;
+}
+
+/** Ask the owning app tab; undefined when there is none or it does not answer. */
+async function ask<T>(msg: Message): Promise<T | undefined> {
+  const id = await appTab();
+  if (id === undefined) return undefined;
   try {
-    const res = (await chrome.runtime.sendMessage({ type: 'query-pending' } satisfies Message)) as
-      PendingInfo | undefined;
-    return res ?? undefined;
+    return (await chrome.tabs.sendMessage(id, msg)) as T | undefined;
   } catch {
+    appTabId = undefined;
     return undefined;
   }
+}
+
+function query(): Promise<PendingInfo | undefined> {
+  return ask<PendingInfo>({ type: 'query-pending' });
 }
 
 async function close(): Promise<void> {
@@ -117,16 +147,7 @@ async function send(action: Decision): Promise<void> {
   finished = true;
   setEnabled(false);
   status(action === 'discard' ? 'Discarding…' : 'Saving…');
-  let res: DecideResult | undefined;
-  try {
-    res = (await chrome.runtime.sendMessage({
-      type: 'decide',
-      id: info.id,
-      action,
-    } satisfies Message)) as DecideResult | undefined;
-  } catch {
-    res = undefined;
-  }
+  const res = await ask<DecideResult>({ type: 'decide', id: info.id, action });
   if (!res) status('The Rescribe tab did not answer; it holds the recording.', true);
   else status(res.message, !res.ok);
   setTimeout(() => void close(), res?.ok ? CLOSE_AFTER_OK_MS : CLOSE_AFTER_ERROR_MS);
