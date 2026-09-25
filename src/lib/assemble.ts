@@ -157,21 +157,29 @@ export function assembleTranscript(input: AssembleInput): Assembled {
   const adapterEvents = events.filter(
     (e): e is AdapterEvent => e.type === 'speaker' || e.type === 'roster',
   );
+  // The microphone identifies the human's own tile (DECISIONS § Audio channels). Without a mic
+  // channel there is nothing to judge by and only the label rule applies.
+  const hasMic = recording.sources.some((src) => src.channel === 'mic');
   const platform = eventsToEvidence(adapterEvents, recording.startedAt, endedAt, {
     selfLabel: settings.myName,
-    micSpeech: segments
-      .filter((s) => s.channel === 'mic')
-      .map(({ start, end }) => ({ start, end })),
+    ...(hasMic
+      ? {
+          micSpeech: segments
+            .filter((s) => s.channel === 'mic')
+            .map(({ start, end }) => ({ start, end })),
+        }
+      : {}),
   });
 
   // Layers (DECISIONS § Audio channels): platform events, then channel identity. Channel identity
   // spans the whole recording, so a display segment with no platform interval near it reads as
   // the remote speaker and a mic segment always reads as the human. With exactly one remote
-  // participant the display channel can only be that person (Meet's indicator misses most of a
-  // listener's "mm-hmm" while the human talks: 181 of 304 remote segments in the call of
-  // 2026-09-25); with more, or none known, it is the generic label.
-  const remote = platform.participants.filter((name) => name !== settings.myName);
-  const displayIdentity = remote.length === 1 ? remote[0]! : DISPLAY_FALLBACK;
+  // tile of substance, and a roster in the log to vouch for who was there, the display channel
+  // can only be that person (Meet's indicator misses most of a listener's "mm-hmm" while the
+  // human talks: 181 of 304 remote segments in the call of 2026-09-25); with more, or none
+  // known, it is the generic label.
+  const displayIdentity =
+    platform.rosterSeen && platform.remotes.length === 1 ? platform.remotes[0]! : DISPLAY_FALLBACK;
   const identity: SpeakerInterval[] = [
     channelIdentity('mic', settings.myName, duration),
     channelIdentity('display', displayIdentity, duration),

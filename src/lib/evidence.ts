@@ -128,6 +128,12 @@ export const SELF_MIN_SECONDS = 5;
  * 2026-09-25) that are nobody.
  */
 export const MIN_PRESENCE_SECONDS = 10;
+/**
+ * Tile labels that are a status, not a person: Meet's tile for the human's own shared screen
+ * ("You are presenting", 2026-09-25). English; extend on observation. A remote's share is
+ * "Name (Presentation)", caught by `isPresentationOf`.
+ */
+export const PRESENTATION_LABELS: ReadonlySet<string> = new Set(['You are presenting']);
 
 export interface PlatformEvidence {
   /** Display-channel platform intervals, cleaned, clipped to the recording, sorted by start. */
@@ -140,8 +146,16 @@ export interface PlatformEvidence {
    * and on screen under `MIN_PRESENCE_SECONDS`). Never an id string.
    */
   participants: string[];
-  /** The human's tile when `micSpeech` identified one. */
+  /** The human's tile when `micSpeech` identified exactly one. */
   self?: SelfTile;
+  /**
+   * Remote tiles of substance, one label per tile (an unresolved one under `unresolvedLabel`,
+   * a rejoin under a new id twice), plus roster-only names with presence. What "the one remote
+   * participant" is counted on.
+   */
+  remotes: string[];
+  /** Whether the log holds a roster at all; without one nobody's presence is known. */
+  rosterSeen: boolean;
 }
 
 /** Seconds of overlap between two interval lists. */
@@ -204,6 +218,8 @@ export function eventsToEvidence(
 
   /** Participant id → the last display name seen for it that is not the id itself. */
   const nameOf = new Map<string, string>();
+  /** Every display name ever seen per id (a name that resolves mid-call is one person). */
+  const namesById = new Map<string, Set<string>>();
   const ids = new Set<string>();
   /** Participant ids and roster names in the order they were first seen. */
   const order: Array<{ id: string } | { name: string }> = [];
@@ -219,7 +235,12 @@ export function eventsToEvidence(
       ids.add(ev.id);
       order.push({ id: ev.id });
     }
-    if (ev.name !== ev.id) nameOf.set(ev.id, ev.name);
+    if (ev.name !== ev.id) {
+      nameOf.set(ev.id, ev.name);
+      const names = namesById.get(ev.id) ?? new Set<string>();
+      names.add(ev.name);
+      namesById.set(ev.id, names);
+    }
     toggles.push({
       t: toRecordingSeconds(ev.at, startedAtMs),
       speaker: ev.id,
@@ -254,30 +275,45 @@ export function eventsToEvidence(
   }
   /** Seconds each id was reported speaking, clipped to the recording. */
   const secondsById = new Map<string, number>();
+  /** Ids that spoke for real: at least one interval survives the same cleaning as the evidence. */
+  const spokeIds = new Set<string>();
+  const cleaning = {
+    minDuration: opts.clean?.minDuration,
+    mergeGap: opts.clean?.mergeGap,
+    lead: 0,
+  };
   for (const [id, list] of byId) {
     secondsById.set(
       id,
       list.reduce((sum, iv) => sum + (iv.end - iv.start), 0),
     );
+    if (cleanIntervals(list, cleaning).length > 0) spokeIds.add(id);
   }
 
-  // Self by microphone: per id, how much of its speaking coincides with mic speech.
+  // Self by microphone: per id, how much of its speaking coincides with mic speech. Exactly one
+  // tile may qualify: two that do (a colleague in the same room, on their own laptop, whom the
+  // microphone hears through the air) are both kept, and the label rule alone applies.
   const selfIds = new Set<string>();
   let self: SelfTile | undefined;
   if (opts.micSpeech) {
+    const candidates: Array<{ id: string; tile: SelfTile }> = [];
     for (const [id, list] of byId) {
       const seconds = secondsById.get(id) ?? 0;
-      if (seconds < SELF_MIN_SECONDS) continue;
+      if (seconds < SELF_MIN_SECONDS - EPSILON) continue;
       const share = overlapSeconds(list, opts.micSpeech) / seconds;
-      if (share < SELF_MIC_SHARE) continue;
-      selfIds.add(id);
-      if (self === undefined || seconds > self.seconds) {
-        self = {
+      if (share < SELF_MIC_SHARE - EPSILON) continue;
+      candidates.push({
+        id,
+        tile: {
           name: nameOf.get(id) ?? unresolvedLabel,
           micShare: round3(Math.min(1, share)),
           seconds: round3(seconds),
-        };
-      }
+        },
+      });
+    }
+    if (candidates.length === 1) {
+      selfIds.add(candidates[0]!.id);
+      self = candidates[0]!.tile;
     }
   }
   const isSelfId = (id: string): boolean => selfIds.has(id) || selfNames.has(nameOf.get(id) ?? '');
@@ -301,9 +337,11 @@ export function eventsToEvidence(
   }
   const allNames = new Set<string>(nameOf.values());
   for (const entry of order) if ('name' in entry && !ids.has(entry.name)) allNames.add(entry.name);
+  const isPresentation = (name: string): boolean =>
+    PRESENTATION_LABELS.has(name) || isPresentationOf(name, allNames);
 
   // Substance: seconds on screen per name from the roster snapshots (each holds until the next),
-  // and seconds reported speaking per name over its ids.
+  // and whether the name spoke for real over its ids.
   const presence = new Map<string, number>();
   const sortedRosters = [...rosters].sort((a, b) => a.t - b.t);
   sortedRosters.forEach((r, i) => {
@@ -312,30 +350,58 @@ export function eventsToEvidence(
     if (span <= 0) return;
     for (const n of new Set(r.names)) presence.set(n, (presence.get(n) ?? 0) + span);
   });
-  const spokenByName = new Map<string, number>();
-  for (const [id, seconds] of secondsById) {
+  const spokeNames = new Set<string>();
+  for (const id of spokeIds) {
     const name = nameOf.get(id);
-    if (name !== undefined) spokenByName.set(name, (spokenByName.get(name) ?? 0) + seconds);
+    if (name !== undefined) spokeNames.add(name);
   }
-  const minSpoken = (opts.clean?.minDuration ?? 0.3) - EPSILON;
   const minPresence = Math.min(MIN_PRESENCE_SECONDS, duration / 2) - EPSILON;
-  const hasSubstance = (name: string, id?: string): boolean =>
-    (id !== undefined && (secondsById.get(id) ?? 0) >= minSpoken) ||
-    (spokenByName.get(name) ?? 0) >= minSpoken ||
-    (presence.get(name) ?? 0) >= minPresence;
+  const hasSubstance = (name: string | undefined, id?: string): boolean =>
+    (id !== undefined && spokeIds.has(id)) ||
+    (name !== undefined && (spokeNames.has(name) || (presence.get(name) ?? 0) >= minPresence));
 
+  // Participants: one label per person. A roster name that was ever an id's name is that person
+  // under the id's current name (a name that resolved mid-call), and the id, not the roster
+  // line, counts it as a remote; a roster name equal to an id string is the id unresolved.
+  // Remotes: one entry per tile, unresolved tiles included, so that "exactly one remote" is a
+  // count of people, not of labels.
+  const currentNameOf = new Map<string, string>();
+  for (const [id, names] of namesById) {
+    const current = nameOf.get(id);
+    if (current !== undefined) for (const n of names) currentNameOf.set(n, current);
+  }
   const participants: string[] = [];
+  const remotes: string[] = [];
   const add = (label: string | undefined): void => {
     if (label !== undefined && !participants.includes(label)) participants.push(label);
   };
   for (const entry of order) {
-    const name =
-      'id' in entry ? nameOf.get(entry.id) : ids.has(entry.name) ? undefined : entry.name;
-    if (name === undefined || isPresentationOf(name, allNames)) continue;
-    if (!hasSubstance(name, 'id' in entry ? entry.id : undefined)) continue;
-    const isSelf = 'id' in entry ? isSelfId(entry.id) : selfDisplayNames.has(name);
-    add(isSelf ? opts.selfLabel : name);
+    if ('id' in entry) {
+      const name = nameOf.get(entry.id);
+      if (name !== undefined && isPresentation(name)) continue;
+      if (!hasSubstance(name, entry.id)) continue;
+      if (isSelfId(entry.id)) {
+        add(opts.selfLabel);
+        continue;
+      }
+      remotes.push(name ?? unresolvedLabel);
+      add(name);
+    } else {
+      if (ids.has(entry.name)) continue;
+      const ofId = currentNameOf.get(entry.name);
+      const name = ofId ?? entry.name;
+      if (isPresentation(name) || !hasSubstance(name)) continue;
+      if (selfDisplayNames.has(name)) {
+        add(opts.selfLabel);
+        continue;
+      }
+      if (ofId === undefined && !remotes.includes(name)) remotes.push(name);
+      add(name);
+    }
   }
 
-  return self === undefined ? { intervals, participants } : { intervals, participants, self };
+  const rosterSeen = rosters.length > 0;
+  return self === undefined
+    ? { intervals, participants, remotes, rosterSeen }
+    : { intervals, participants, self, remotes, rosterSeen };
 }

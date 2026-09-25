@@ -480,7 +480,12 @@ test('a self tile first seen unresolved and later as You loses all its intervals
 });
 
 test('no events, or an empty recording, yields nothing', () => {
-  assert.deepEqual(eventsToEvidence([], T0, T0 + 10_000), { intervals: [], participants: [] });
+  assert.deepEqual(eventsToEvidence([], T0, T0 + 10_000), {
+    intervals: [],
+    participants: [],
+    remotes: [],
+    rosterSeen: false,
+  });
   const { intervals } = eventsToEvidence([sp(0, 'p1', 'Anna', true)], T0, T0);
   assert.deepEqual(intervals, []);
 });
@@ -624,4 +629,86 @@ test('a participant known only from speaker events counts by what they said', ()
   ];
   const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
   assert.deepEqual(out.participants, ['Anna']);
+});
+
+// --- what "the one remote participant" is counted on ------------------------------------------
+
+test('remotes are counted per tile, unresolved and rejoined ones included; rosterSeen says whether anyone vouched', () => {
+  const events = [
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+    sp(4000, 'p2', 'p2', true),
+    sp(5000, 'p2', 'p2', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(out.remotes, ['Anna', 'Speaker']);
+  assert.deepEqual(out.participants, ['Anna']);
+  assert.equal(out.rosterSeen, false);
+  const withRoster = eventsToEvidence(
+    [roster(0, ['Anna']), ...events.slice(0, 2)],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(withRoster.remotes, ['Anna']);
+  assert.equal(withRoster.rosterSeen, true);
+});
+
+test('two tiles both matching the microphone: neither is self, both keep their evidence', () => {
+  // A colleague in the same room on their own laptop: the microphone hears both.
+  const events = [
+    sp(1000, 'me', 'Ulf Aslak', true),
+    sp(7000, 'me', 'Ulf Aslak', false),
+    sp(1000, 'bo', 'Bo', true),
+    sp(7000, 'bo', 'Bo', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 1, end: 7 }],
+  });
+  assert.equal(out.self, undefined);
+  assert.deepEqual(spans(out.intervals).sort(), [
+    ['Bo', 1, 7],
+    ['Ulf Aslak', 1, 7],
+  ]);
+  assert.deepEqual(out.participants, ['Ulf Aslak', 'Bo']);
+  assert.deepEqual(out.remotes, ['Ulf Aslak', 'Bo']);
+});
+
+test('a name that resolves mid-call is one person, listed once under the current name', () => {
+  const events = [
+    roster(0, ['Anna', 'Bo']),
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+    sp(5000, 'p1', 'Anna Smith', true),
+    sp(7000, 'p1', 'Anna Smith', false),
+    roster(5000, ['Anna Smith', 'Bo']),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, noLead);
+  assert.deepEqual(out.participants, ['Anna Smith', 'Bo']);
+  assert.deepEqual(out.remotes, ['Bo', 'Anna Smith']);
+});
+
+test('two blips that merge into one interval are substance', () => {
+  const events = [
+    sp(1000, 'p1', 'Bo', true),
+    sp(1100, 'p1', 'Bo', false),
+    sp(1350, 'p1', 'Bo', true),
+    sp(1450, 'p1', 'Bo', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(spans(out.intervals), [['Bo', 1, 1.45]]);
+  assert.deepEqual(out.participants, ['Bo']);
+});
+
+test('the presenting status tile is never a participant, however long it stays', () => {
+  const events = [
+    roster(0, ['You', 'Anna', 'You are presenting']),
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 1_200_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.remotes, ['Anna']);
 });

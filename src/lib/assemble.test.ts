@@ -208,6 +208,54 @@ test('with one remote participant the display channel is that person, not "Speak
   );
 });
 
+test('the one-remote rule needs a roster line and counts tiles, not labels', () => {
+  // No roster in the log (a recording started into a stable call): nobody vouched for who was
+  // there, so a listener the indicator missed may exist; the display stays "Speaker".
+  const noRoster = assembleTranscript({
+    recording,
+    settings,
+    segments: [...segments, seg('display', 7, 7.5, 'mm-hmm')],
+    events: [sp(3100, 'p1', 'Anna', true), sp(5000, 'p1', 'Anna', false)],
+    rescribeVersion: '0.1.0',
+  });
+  assert.equal(noRoster.labelled[4]!.speaker, 'Speaker');
+  assert.deepEqual(noRoster.meta.participants, ['Anna']);
+  // A remote who shares "my name": two remote tiles, whatever the labels collapse to.
+  const shared = assembleTranscript({
+    recording,
+    settings: { ...settings, myName: 'Anna' },
+    segments: [...segments, seg('display', 7, 7.5, 'mm-hmm')],
+    events,
+    rescribeVersion: '0.1.0',
+  });
+  assert.deepEqual(shared.meta.participants, ['Anna', 'Bo']);
+  assert.equal(shared.labelled[4]!.speaker, 'Speaker');
+});
+
+test('without a microphone source the self tile is judged by its label alone', () => {
+  // Documented limitation (DEFERRED): mic off and Meet naming the tile by full name leaks.
+  const noMic: Recording = {
+    ...recording,
+    sources: [{ channel: 'display', kind: 'tab', label: 'Meet' }],
+  };
+  const ev: EventLine[] = [
+    { type: 'roster', platform: 'meet', at: T0 + 100, names: ['Ulf Aslak', 'Anna'] },
+    sp(500, 'me', 'Ulf Aslak', true),
+    sp(8000, 'me', 'Ulf Aslak', false),
+    sp(3100, 'p1', 'Anna', true),
+    sp(5000, 'p1', 'Anna', false),
+  ];
+  const out = assembleTranscript({
+    recording: noMic,
+    settings,
+    segments: segments.filter((s) => s.channel === 'display'),
+    events: ev,
+    rescribeVersion: '0.1.0',
+  });
+  assert.equal(out.meta.selfTile, undefined);
+  assert.ok(out.json.intervals.some((iv) => iv.speaker === 'Ulf Aslak'));
+});
+
 test('clock-gap and diagnostic lines never become evidence; gaps are surfaced in meta', () => {
   const out = assembleTranscript({
     recording,

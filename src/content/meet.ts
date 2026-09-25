@@ -1,7 +1,8 @@
 // Google Meet platform adapter (content script, runs in Meet's page as an isolated world).
 //
 // Emits to the extension:
-//   roster             the participant names currently on screen (on change)
+//   roster             the participant names currently on screen (on change, and every 30 s
+//                      while there are tiles)
 //   speaker            a participant started/stopped speaking, stamped at the change itself
 //   adapter-diagnostic when the page has tiles but no usable speaking signal, or no tiles at all
 //   call-ended         the tiles went away and stayed away (the human left the call or it ended;
@@ -54,10 +55,11 @@ const CALL_ENDED_AFTER_MS = 5000;
 /** Text inside these, within a tile, is UI chrome (menu items such as "Reframe"), never a name. */
 const NAME_EXCLUDE =
   'button, [role="button"], [role="menu"], [role="menuitem"], [role="tooltip"], [aria-hidden="true"]';
-/** Short status chips Meet renders next to a name, and the label of the human's own presentation
- * tile ("You are presenting", 2026-09-25). "You" is Meet's label for the human's own tile and stays. */
-const NAME_STOPLIST =
-  /^(muted|unmuted|pinned|host|co-host|presenting|you are presenting|hd|sd|live|new)$/i;
+/** Short status chips Meet renders next to a name. "You" is Meet's label for the human's own tile and stays. */
+const NAME_STOPLIST = /^(muted|unmuted|pinned|host|co-host|presenting|hd|sd|live|new)$/i;
+/** The roster is re-sent this often while tiles are on screen, so a recording started into a
+ * stable call still holds one (the app keeps only what arrives while recording). */
+const ROSTER_EVERY_MS = 30_000;
 
 const harness = document.documentElement.hasAttribute('data-rescribe-harness');
 /** The last messages this adapter emitted, so a calibration report can show its own behaviour. */
@@ -139,6 +141,7 @@ const activity = new ChangeActivity(ACTIVITY_WINDOW_MS);
 /** Participants currently reported as speaking, with the name used at the start. */
 const speaking = new Map<string, string>();
 let lastRoster = '';
+let lastRosterAt = 0;
 let signalMissingSince: number | undefined;
 let lastDiagnostic = Number.NEGATIVE_INFINITY;
 /** Tiles have been seen since the last call-ended: a call is (or was just) on. */
@@ -187,8 +190,9 @@ function poll(): void {
 
   const names = [...new Set(found.map(tileName).filter((n): n is string => !!n))];
   const rosterKey = [...names].sort().join('\u0000');
-  if (rosterKey !== lastRoster) {
+  if (rosterKey !== lastRoster || (names.length > 0 && now - lastRosterAt >= ROSTER_EVERY_MS)) {
     lastRoster = rosterKey;
+    lastRosterAt = now;
     send({ type: 'roster', platform: PLATFORM, at: now, names });
   }
 
