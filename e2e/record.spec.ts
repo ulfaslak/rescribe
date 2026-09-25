@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
+import { escape, stopDialogs, waitForStopDialog } from './helpers.ts';
 import type { Recording } from '../src/lib/types.ts';
 import { exportVideoName } from '../src/recorder/recorder.ts';
 
@@ -335,7 +336,7 @@ test('app tab closed mid-recording: data is on disk, recovered and exported on n
   expect(probe.duration).toBeGreaterThan(1);
 });
 
-test('display track ends mid-recording (Stop sharing, tab closed): same as Stop', async ({
+test('display track ends mid-recording (Stop sharing, tab closed): the recording waits stopped, the stop dialog opens, Save from it exports a playable video', async ({
   context,
   extensionId,
 }) => {
@@ -359,8 +360,18 @@ test('display track ends mid-recording (Stop sharing, tab closed): same as Stop'
       t.dispatchEvent(new Event('ended'));
     }
   });
+  // No decision was made: nothing is exported, the human is asked (e2e/stop-dialog.spec.ts has
+  // the rest of that path). Save from the dialog exports.
+  await expect(page.locator('#status')).toHaveText('stopped', { timeout: 30_000 });
+  let [rec] = await recordings(page);
+  expect(rec!.status).toBe('stopped');
+  expect(rec!.exportPath).toBeUndefined();
+  const dialog = await waitForStopDialog(context, extensionId);
+  await expect(dialog.locator('#state')).toHaveText('ended');
+  await dialog.click('#save');
   await expect(page.locator('#status')).toHaveText('idle', { timeout: 30_000 });
-  const [rec] = await recordings(page);
+  await expect.poll(() => stopDialogs(context, extensionId).length, { timeout: 10_000 }).toBe(0);
+  [rec] = await recordings(page);
   console.log(JSON.stringify(rec));
   expect(rec!.status).toBe('recorded');
   expect(rec!.exportPath).toBeDefined();
@@ -370,10 +381,16 @@ test('display track ends mid-recording (Stop sharing, tab closed): same as Stop'
   expect(probe.duration).toBeGreaterThan(1);
 });
 
-test('no export folder chosen: recorded, not exported, media kept; Save now exports it later', async ({
+test('no export folder chosen: Stop asks for one and keeps recording; the share ending leaves it waiting; Save from the row exports once a folder exists', async ({
   context,
   extensionId,
 }) => {
+  // The picker cannot be driven: here it is cancelled.
+  await context.addInitScript(() => {
+    window.showDirectoryPicker = async () => {
+      throw new DOMException('cancelled', 'AbortError');
+    };
+  });
   await openTarget(context);
   const page = await openApp(context, extensionId);
   await clearRecordings(page);
@@ -395,20 +412,38 @@ test('no export folder chosen: recorded, not exported, media kept; Save now expo
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'owner', { timeout: 15_000 });
   await expect(page.locator('#folder-name')).toHaveText('No folder chosen');
 
-  await record(page, 2);
-  const [rec] = await recordings(page);
-  console.log(JSON.stringify(rec));
-  expect(rec!.status).toBe('recorded');
-  expect(rec!.exportPath).toBeUndefined();
-  expect(rec!.error).toMatch(/No export folder/);
-  expect(await opfsSize(page, ['recordings', rec!.id, 'video.mp4'])).toBeGreaterThan(10_000);
-  await expect(page.locator('#record-status')).toContainText('No export folder');
+  // Stop with no folder: the picker (cancelled here), the recording untouched. Never a
+  // recording marked "recorded, not exported" from a Save.
+  await page.click('#record-screen');
+  await expect(page.locator('#status')).toHaveText('recording', { timeout: 15_000 });
+  await page.waitForTimeout(2000);
+  await page.click('#stop');
+  await expect(page.locator('#record-status')).toContainText('Choose a folder to save to');
+  await expect(page.locator('#status')).toHaveText('recording');
+  let [rec] = await recordings(page);
+  expect(rec!.status).toBe('recording');
 
-  // The row offers Save now; once a folder exists, the click exports without re-recording.
+  // The share ends: it waits, with the media kept; Save from the row once a folder exists.
+  await page.evaluate(() => {
+    const w = window as unknown as { __displayStreams: MediaStream[] };
+    for (const t of w.__displayStreams[0]!.getVideoTracks()) {
+      t.stop();
+      t.dispatchEvent(new Event('ended'));
+    }
+  });
+  await expect(page.locator('#status')).toHaveText('stopped', { timeout: 30_000 });
+  await escape(await waitForStopDialog(context, extensionId));
+  [rec] = await recordings(page);
+  console.log(JSON.stringify(rec));
+  expect(rec!.status).toBe('stopped');
+  expect(rec!.exportPath).toBeUndefined();
+  expect(rec!.error).toBeUndefined();
+  expect(await opfsSize(page, ['recordings', rec!.id, 'video.mp4'])).toBeGreaterThan(10_000);
   const row = page.locator(`.recording-item[data-id="${rec!.id}"]`);
-  await expect(row.locator('button.save-now')).toBeVisible();
+  await expect(row.locator('button.save')).toBeVisible();
+  await expect(row.locator('button.save-now')).toHaveCount(0);
   await seedExportFolder(page);
-  await row.locator('button.save-now').click();
+  await row.locator('button.save').click();
   await expect(row.locator('.path')).toHaveText(/Screen recording\/$/, { timeout: 15_000 });
   const [saved] = await recordings(page);
   expect(saved!.id).toBe(rec!.id);
@@ -419,6 +454,7 @@ test('no export folder chosen: recorded, not exported, media kept; Save now expo
     10_000,
   );
   await expect(row.locator('button.save-now')).toHaveCount(0);
+  await expect(page.locator('#status')).toHaveText('idle');
 });
 
 test('a second app tab is inert: no badge change, no second recording', async ({
@@ -545,17 +581,26 @@ test('toolbar click: a Meet tab keeps the app tab in the background, any other t
   const target = await openTarget(context);
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
   const appUrl = `chrome-extension://${extensionId}/app/app.html`;
-  type Created = { id: number; active: boolean; pinned: boolean };
+  type Created = { id: number; active: boolean; pinned: boolean; url: string };
   type Hooked = { rescribe: { onToggle: (tab: object) => Promise<void> }; __created: Created[] };
   const targetId = await worker.evaluate(async (title) => {
     const g = globalThis as unknown as Hooked;
     g.__created = [];
     chrome.tabs.onCreated.addListener((t) =>
-      g.__created.push({ id: t.id!, active: t.active, pinned: t.pinned }),
+      g.__created.push({
+        id: t.id!,
+        active: t.active,
+        pinned: t.pinned,
+        url: t.pendingUrl ?? t.url ?? '',
+      }),
     );
     return (await chrome.tabs.query({ title }))[0]!.id!;
   }, CAPTURE_TARGET_TITLE);
-  const created = () => worker.evaluate(() => (globalThis as unknown as Hooked).__created);
+  // The app tabs created (the stop dialog's popup window has a tab of its own, not counted).
+  const created = async () =>
+    (await worker.evaluate(() => (globalThis as unknown as Hooked).__created)).filter(
+      (t) => t.url === appUrl,
+    );
   const toggle = (url: string) =>
     worker.evaluate(
       ({ id, url }) =>
@@ -594,15 +639,20 @@ test('toolbar click: a Meet tab keeps the app tab in the background, any other t
   await expect(app.locator('#record-status')).toContainText("Couldn't capture that tab (");
   expect(await recordings(app)).toHaveLength(before);
 
-  // While recording, a click on a Meet tab focuses the app tab (Stop lives there), starts nothing.
+  // While recording, a click on any tab opens the stop dialog, leaves the app tab where it is
+  // and starts nothing; closing the dialog keeps recording (e2e/stop-dialog.spec.ts has the rest).
   await app.click('#record-screen');
   await expect(app.locator('#status')).toHaveText('recording', { timeout: 15_000 });
   await worker.evaluate((id) => chrome.tabs.update(id, { active: true }), targetId);
   expect(await activeTab(made[1]!.id)).toBe(false);
   await toggle('https://meet.google.com/abc-defg-hij');
-  await expect.poll(() => activeTab(made[1]!.id), { timeout: 5000 }).toBe(true);
+  const dialog = await waitForStopDialog(context, extensionId);
+  await expect(dialog.locator('#state')).toHaveText('recording');
+  expect(await activeTab(made[1]!.id)).toBe(false);
   await expect(app.locator('#status')).toHaveText('recording');
   expect(await created()).toHaveLength(2);
+  await escape(dialog);
+  await expect(app.locator('#status')).toHaveText('recording');
   await app.click('#stop');
   await expect(app.locator('#status')).toHaveText('idle', { timeout: 30_000 });
   expect(await recordings(app)).toHaveLength(before + 1);

@@ -4,6 +4,9 @@
 //   roster             the participant names currently on screen (on change)
 //   speaker            a participant started/stopped speaking, stamped at the change itself
 //   adapter-diagnostic when the page has tiles but no usable speaking signal, or no tiles at all
+//   call-ended         the tiles went away and stayed away (the human left the call or it ended;
+//                      Meet keeps the tab on a "You left the meeting" page, so the tab capture
+//                      does not end by itself), stamped at the moment they went
 //
 // Meet's markup is obfuscated and changes, so detection is data-driven and narrow:
 //   TILE_SELECTOR  finds participant tiles.
@@ -46,6 +49,8 @@ const ACTIVITY_WINDOW_MS = 700;
 const POLL_MS = 250;
 const DIAGNOSTIC_AFTER_MS = 60_000;
 const DIAGNOSTIC_EVERY_MS = 300_000;
+/** No tiles for this long after there were some: the call ended (a layout change is shorter). */
+const CALL_ENDED_AFTER_MS = 5000;
 /** Text inside these, within a tile, is UI chrome (menu items such as "Reframe"), never a name. */
 const NAME_EXCLUDE =
   'button, [role="button"], [role="menu"], [role="menuitem"], [role="tooltip"], [aria-hidden="true"]';
@@ -134,6 +139,9 @@ const speaking = new Map<string, string>();
 let lastRoster = '';
 let signalMissingSince: number | undefined;
 let lastDiagnostic = Number.NEGATIVE_INFINITY;
+/** Tiles have been seen since the last call-ended: a call is (or was just) on. */
+let inCall = false;
+let tilesGoneSince: number | undefined;
 
 function start(id: string, tile: HTMLElement, at: number): void {
   if (speaking.has(id)) return;
@@ -193,6 +201,20 @@ function poll(): void {
     }
   }
   for (const id of [...speaking.keys()]) if (!present.has(id)) speaking.delete(id);
+
+  // The call ended: tiles were there, then none for CALL_ENDED_AFTER_MS. Once per call; the
+  // tiles coming back (a rejoin) arm it again.
+  if (found.length > 0) {
+    inCall = true;
+    tilesGoneSince = undefined;
+  } else if (inCall) {
+    tilesGoneSince ??= now;
+    if (now - tilesGoneSince >= CALL_ENDED_AFTER_MS) {
+      inCall = false;
+      send({ type: 'call-ended', platform: PLATFORM, at: tilesGoneSince });
+      tilesGoneSince = undefined;
+    }
+  }
 
   const meters = found.filter((t) => meterOf(t)).length;
   const missing = found.length === 0 || meters === 0;

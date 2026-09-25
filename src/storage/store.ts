@@ -1,8 +1,10 @@
 // The storage client for recording metadata (IndexedDB `recordings`, keyed by id) and the media in
 // OPFS (layout in opfs.ts). App-tab only. Transcription and the library call these; the recorder
-// owns the `recording → recorded | failed` transitions.
+// owns the `recording → stopped | failed` transitions and the decision (app/decide.ts) the step
+// to `recorded`.
 import { idb } from '../lib/idb.ts';
 import { int16ToFloat32 } from '../lib/pcm.ts';
+import { deleteRecordingExportRoot } from './handles.ts';
 import type { ChannelId, Container, Recording } from '../lib/types.ts';
 import {
   EVENTS_FILE,
@@ -137,10 +139,14 @@ export async function deleteMedia(id: string): Promise<number> {
   return freed;
 }
 
-/** Delete the whole OPFS directory (media, events, artifacts) and the record. Exported files stay. */
+/**
+ * Delete the whole OPFS directory (media, events, artifacts), the record and, when the recording
+ * had a folder of its own (Save as…), its handle. Exported files stay.
+ */
 export async function deleteRecording(id: string): Promise<void> {
   await removeRecordingDir(id);
   await idb.del('recordings', id);
+  await deleteRecordingExportRoot(id);
 }
 
 export interface StorageUsage {

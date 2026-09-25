@@ -5,8 +5,12 @@ import type { AppStatus, BadgeState, Message } from './lib/messages.ts';
 import { platformOf } from './lib/platform.ts';
 
 const APP_URL = chrome.runtime.getURL('app/app.html');
+const STOP_URL = chrome.runtime.getURL('stop/stop.html');
 const READY_TIMEOUT_MS = 5000;
 const RELOAD_TIMEOUT_MS = 8000;
+/** The stop dialog window (stop/stop.html): small, near the top right of the browser window. */
+const STOP_WIDTH = 420;
+const STOP_HEIGHT = 300;
 
 /** Ask one app tab for its status. Undefined when it is not listening (loading, discarded, a duplicate). */
 async function tabStatus(tabId: number): Promise<AppStatus | undefined> {
@@ -81,9 +85,57 @@ async function ensureAppTab(focus: boolean): Promise<chrome.tabs.Tab | undefined
   return keep;
 }
 
+/**
+ * The stop dialog: one small popup window over the browser window the human is in. Opened on a
+ * toolbar click while `recording` or `stopped`, and on the app tab's `ask-to-save` (the call
+ * ended, the share ended). One at a time: an open one is focused instead, found by URL rather
+ * than remembered, because this worker is ephemeral and forgets between events.
+ */
+async function openStopDialog(): Promise<void> {
+  const open = (await chrome.tabs.query({ url: STOP_URL }))[0];
+  if (open?.windowId !== undefined) {
+    try {
+      await chrome.windows.update(open.windowId, { focused: true, drawAttention: true });
+      return;
+    } catch {
+      // closed between the query and the update
+    }
+  }
+  const anchor = await chrome.windows
+    .getLastFocused({ windowTypes: ['normal'] })
+    .catch(() => undefined);
+  const placed =
+    anchor?.left !== undefined && anchor.width !== undefined
+      ? {
+          left: Math.max(0, anchor.left + anchor.width - STOP_WIDTH - 24),
+          top: Math.max(0, (anchor.top ?? 0) + 72),
+        }
+      : {};
+  const create = { url: STOP_URL, type: 'popup' as const, width: STOP_WIDTH, height: STOP_HEIGHT };
+  try {
+    await chrome.windows.create({ ...create, focused: true, ...placed });
+  } catch (err) {
+    // Chrome refuses bounds that are not mostly on a visible screen ("Invalid value for
+    // bounds"): a browser window half off-screen, a display that went away, headless. Chrome's
+    // own placement then; the dialog matters more than where it lands.
+    console.warn('[rescribe] stop dialog at the computed position refused; default placement', err);
+    await chrome.windows.create({ ...create, focused: true });
+  }
+}
+
 const BADGE: Record<BadgeState, { text: string; color: string; title: string }> = {
   idle: { text: '', color: '#000000', title: 'Rescribe: record this tab' },
-  recording: { text: 'REC', color: '#d93025', title: 'Rescribe: recording (click to open)' },
+  recording: {
+    text: 'REC',
+    color: '#d93025',
+    title: 'Rescribe: recording (click to save, save as or discard)',
+  },
+  pending: {
+    text: 'SAVE',
+    color: '#e37400',
+    title:
+      'Rescribe: a recording is waiting in the Rescribe tab (save, save as or discard); a click here still records this tab',
+  },
   processing: { text: '…', color: '#1a73e8', title: 'Rescribe: transcribing (click to open)' },
   error: {
     text: '!',
@@ -100,8 +152,11 @@ async function setBadge(state: BadgeState): Promise<void> {
 }
 
 /**
- * The toolbar button. Idle: start recording the clicked tab (plus mic) through the app tab.
- * Otherwise: bring the app tab forward, where Stop lives. Misclicks must not stop a recording.
+ * The toolbar button. Idle, or a recording waiting `stopped` (it never blocks a new one; its
+ * dialog is a click on the app tab or its row away): start recording the clicked tab (plus mic)
+ * through the app tab. Recording: open the stop dialog, where Save, Save as… and Discard live;
+ * closing it keeps recording, so a misclick stops nothing. Anything else (the recorder
+ * draining, an export running): bring the app tab forward.
  *
  * On a call platform tab (Meet, `lib/platform.ts`) the human stays in the call: the app tab is
  * opened, or left, in the background and the badge is the feedback. It comes forward on its own
@@ -122,9 +177,14 @@ async function setBadge(state: BadgeState): Promise<void> {
 async function onToggle(tab?: chrome.tabs.Tab): Promise<void> {
   const target = tab?.id !== undefined && tab.url !== APP_URL ? tab : undefined;
   const status = await queryStatus();
-  const stayInCall = status === 'idle' && platformOf(target?.url) !== undefined;
+  if (status === 'recording' || (status === 'stopped' && !target)) {
+    await openStopDialog();
+    return;
+  }
+  const canStart = status === 'idle' || status === 'stopped';
+  const stayInCall = canStart && platformOf(target?.url) !== undefined;
   const app = await ensureAppTab(!stayInCall);
-  if (app?.id === undefined || status !== 'idle' || !target?.id) return;
+  if (app?.id === undefined || !canStart || !target?.id) return;
   let streamId: string | undefined;
   let error: string | undefined;
   try {
@@ -150,8 +210,9 @@ chrome.action.onClicked.addListener((tab) => {
   void onToggle(tab);
 });
 
-// For DevTools and the e2e harness: the toolbar click with a Tab-shaped object (id, url, title).
-(globalThis as unknown as { rescribe: unknown }).rescribe = { onToggle };
+// For DevTools and the e2e harness: the toolbar click with a Tab-shaped object (id, url, title),
+// and the stop dialog on its own.
+(globalThis as unknown as { rescribe: unknown }).rescribe = { onToggle, openStopDialog };
 
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'toggle-recording') void onToggle(tab ?? undefined);
@@ -160,6 +221,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
 chrome.runtime.onMessage.addListener((msg: Message) => {
   if (msg.type === 'badge') void setBadge(msg.state);
   else if (msg.type === 'focus-app') void ensureAppTab(true);
+  else if (msg.type === 'ask-to-save') void openStopDialog();
   return false;
 });
 

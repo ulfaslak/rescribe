@@ -188,6 +188,8 @@ async function enqueue(id: string, previous: Promise<unknown>): Promise<Recordin
   const rec = await getRecording(id);
   if (!rec) throw new Error(`recording ${id} not found`);
   if (rec.status === 'recording') throw new Error('the recording has not stopped');
+  if (rec.status === 'stopped')
+    throw new Error('the recording is waiting to be saved or discarded');
   // A failed run's message is stale now, but the reason must survive: it moves to the note. A
   // `recorded` record's error says why the video is not exported and stays until an export
   // succeeds.

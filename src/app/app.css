@@ -7,6 +7,7 @@
   --line: #e2e2e2;
   --accent: #1a73e8;
   --rec: #d93025;
+  --pending: #e37400;
   --ok: #188038;
   font-family:
     system-ui,
@@ -82,6 +83,11 @@ section {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
+}
+.pill.pending {
+  color: #fff;
+  background: var(--pending);
+  border-color: var(--pending);
 }
 button {
   font: inherit;
@@ -191,6 +197,16 @@ ul {
 .recording-item .pill.recorded {
   color: var(--accent);
   border-color: var(--accent);
+}
+.recording-item .pill.stopped,
+.hint.pending {
+  color: var(--pending);
+  border-color: var(--pending);
+}
+.recording-item button.save {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 .recording-item .pill.transcribing {
   color: #fff;

@@ -1,7 +1,7 @@
 // Playwright fixtures: launch Chromium with the built extension and Chrome's fake media devices.
 // See AGENTS/DNA/DEVELOPMENT.md § "The e2e harness".
 import { test as base, chromium, type BrowserContext } from '@playwright/test';
-import { rmSync } from 'node:fs';
+import { existsSync, globSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** Title of the page a test opens for getDisplayMedia to auto-select (see the flag below). */
@@ -18,6 +18,33 @@ export const test = base.extend<{ context: BrowserContext; extensionId: string }
     // extension's service worker script in it and serves the stale copy after a rebuild
     // (ENVIRONMENT_NOTES § "A reused profile runs the old service worker"). Drop that cache.
     rmSync(path.join(profile, 'Default', 'Service Worker'), { recursive: true, force: true });
+    // Chrome reopens pinned tabs at startup on its own (`pinned_tabs`, a protected preference
+    // in Secure Preferences), and the service worker creates the app tab pinned: the next
+    // launch would start with a ghost app tab (an error page under the app URL) that
+    // `chrome.tabs.query` sees, the service worker reloads instead of opening a tab, and
+    // Playwright never emits `page` for (ENVIRONMENT_NOTES § "The reused profile reopens the
+    // last run's pinned app tab"). The session files go too, so nothing else comes back. No
+    // braces in the patterns: Node's globSync does not expand them.
+    for (const name of ['Preferences', 'Secure Preferences']) {
+      const prefs = path.join(profile, 'Default', name);
+      if (!existsSync(prefs)) continue;
+      const json = JSON.parse(readFileSync(prefs, 'utf8')) as Record<string, unknown>;
+      if ('pinned_tabs' in json) {
+        delete json['pinned_tabs'];
+        writeFileSync(prefs, JSON.stringify(json));
+      }
+    }
+    for (const pattern of [
+      'Sessions',
+      'Session_*',
+      'Tabs_*',
+      'Last Session',
+      'Current Session',
+      'Last Tabs',
+      'Current Tabs',
+    ])
+      for (const f of globSync(path.join(profile, 'Default', pattern)))
+        rmSync(f, { recursive: true, force: true });
     const context = await chromium.launchPersistentContext(profile, {
       channel: process.env['CHROME_CHANNEL'] ?? 'chromium',
       headless: !headed,
@@ -33,6 +60,17 @@ export const test = base.extend<{ context: BrowserContext; extensionId: string }
       ],
     });
     await use(context);
+    // Close the app tabs the service worker pinned before the browser goes, so Chrome has no
+    // pinned tab to bring back (the launch-time strip above is the belt for a run that died).
+    const worker = context.serviceWorkers()[0];
+    if (worker)
+      await worker
+        .evaluate(async () => {
+          const url = chrome.runtime.getURL('app/app.html');
+          for (const t of await chrome.tabs.query({ url }))
+            if (t.id !== undefined) await chrome.tabs.remove(t.id).catch(() => undefined);
+        })
+        .catch(() => undefined);
     await context.close();
   },
   extensionId: async ({ context }, use) => {

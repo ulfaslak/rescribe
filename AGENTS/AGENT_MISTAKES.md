@@ -8,6 +8,34 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-09-25 · #24 · a cleanup shipped without checking it matched anything `[learned]`
+
+The e2e fixture got a glob to delete the profile's session-restore files, written with a brace pattern that Node's `globSync` does not expand; it matched nothing, and the routing test passing once after the "fix" was taken as proof. When the pattern was corrected the failure stayed, because session restore was not the cause either: Chrome reopens **pinned** tabs on its own, and the service worker pins the app tab. Two wrong diagnoses shipped as fixes before the tab list right at launch was looked at (one ghost app tab, present before any test code ran). Codified in `e2e/fixtures.ts` (`pinned_tabs` stripped from Preferences, one plain pattern per session file) and ENVIRONMENT_NOTES § "The reused profile reopens the last run's pinned app tab". Rule: a cleanup or a filter is verified by what it matched and by the state after it, never by the next test going green; and the first question about a ghost is where it came from, not how to delete it.
+
+### 2026-09-25 · #24 · a status answered before the state behind it was read `[learned]`
+
+The app tab registered its `query-status` listener first thing in `main()` and read what was waiting on disk (`refreshPending`) last, after settings, the library walk and the crash recovery; the service worker starts its toolbar path the moment the tab answers, so a stale `idle` let a start race the pending state, and the loser was silent (the guard in `startRecording` dropped both streams with no note). Found by the adversarial review. Codified in `app.ts` `main()` (`refreshPending` before the listener, a note and `comeForward` on the guard) and pinned by "a recording waiting stopped never blocks a new one" in `e2e/stop-dialog.spec.ts`. Rule: whatever answers a question from another context must have read its inputs before it starts answering.
+
+### 2026-09-25 · #24 · an empty answer read as "nothing there" `[learned]`
+
+`pendingInfo` answered nothing during the recorder's drain (the live record was neither `recording` nor yet `stopped`), and the dialog closed itself on the first empty poll; a share that died under an open dialog made it vanish and a second one open, or none when the two raced. Found by the adversarial review. Codified in `app.ts` `pendingInfo` (the live record is answered until it is `stopped`, unless a decision took it) and `stop.ts` (two empty polls before closing), pinned by "the share ends while the dialog is open" in `e2e/stop-dialog.spec.ts`. Same family as the #2 part 2 entry below, absence of input read as success.
+
+### 2026-09-25 · #24 · one entry point asked, the others assumed `[learned]`
+
+The stop dialog's Save picked a folder when none was chosen; the row's Save and the app tab's Stop did not and quietly produced a `recorded` recording with "Not exported" and a transcription under way, which is what the new `stopped` state and no-trace Discard exist to avoid. Found by the adversarial review. Codified in `decide.ts` (`save` refuses without a folder), `library.ts` `saveStopped` and `app.ts` `onStop` (the picker first, cancelled leaves everything untouched) and DECISIONS § Form factor (a Save without a folder chosen picks one first), pinned by "no export folder chosen" in `e2e/record.spec.ts`.
+
+### 2026-09-25 · #24 · an API's refusal treated as impossible `[learned]`
+
+`openStopDialog` computed a position for the popup window from the last focused window and passed it to `chrome.windows.create` with no catch; Chrome refuses bounds that are mostly off-screen, so in headless Chromium (and on a desktop with a browser window half off a display) no dialog ever opened and the rejection vanished into a `void` promise, while the badge said `REC` as if all was well. Found by every stop-dialog e2e timing out on the window. Codified in `background.ts` (default placement on refusal) and ENVIRONMENT_NOTES § "`chrome.windows.create` refuses bounds off the visible screen". Rule: a positioned window, a permission request, a picker: anything Chrome may refuse for reasons outside the code gets a fallback, not a `void`.
+
+### 2026-09-25 · #24 · two entry points, one bookkeeping path `[learned]`
+
+The decision on a stopped recording could be taken from the dialog (through `applyDecision`, which refreshed the status and the badge afterwards) or from the row (through `decide` directly, which did not), so a Save clicked on the row exported the video and left the pill on `stopped` and the badge on `SAVE`. Found by the "share ends" e2e. Codified by moving the refresh into the `onDecision` listener in `app.ts`, so every entry point shares it, and pinned by the row-Save half of that test.
+
+### 2026-09-25 · #24 · a race diagnosed from the symptom, then written into the code `[not codified]`
+
+Two tests failed with the dialog "closing on its own" and Discard "doing nothing"; I attributed both to a broadcast `sendMessage` racing the service worker's non-answer, rewrote the dialog to message the app tab by id, and wrote that race into a comment and a commit message as something "seen in the e2e". The next run failed identically: the real causes were Playwright reporting a page closed *during* the Escape press that closed it, and the two-step button's own double-click guard swallowing a confirm 300 ms after arming. The targeted messaging stayed because it is the right shape (only the owner may answer), the false claim was removed. Already named as a pattern (#12 "prose claim asserted, not verified"); this is the second instance. What would codify it: a CLAUDE.md line under self-testing, "before writing a cause into a comment, make the test fail on that cause and pass on its fix".
+
 ### 2026-09-24 · #22 · a tab moved to the background, the start path still written for a visible one `[learned]`
 
 Leaving the app tab hidden on a Meet click was a one-line routing change, but the start path had three assumptions that only held for a visible tab: a note is seen (a missing-microphone note was shown, then overwritten by the ticking clock a second later, after yanking the human out of the call for it), a permission prompt shows (Chrome queues prompts from hidden tabs; the tab-capture id was consumed first, so a queued prompt would have muted the call with nobody hearing it), and a second click reaches a guard (`starting` was set after the first await, and a click landing after the start finished met a stale `idle`). Found by the adversarial review. Rule: when a change alters *where the human is looking*, re-read every line that assumes they can see or act, not just the line that moved them.

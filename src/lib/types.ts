@@ -15,7 +15,12 @@ export interface Source {
   label?: string;
 }
 
-export type RecordingStatus = 'recording' | 'recorded' | 'transcribing' | 'done' | 'failed';
+/**
+ * `stopped`: the media is complete on disk and nothing has been exported; the recording waits
+ * for the human's decision (save, save elsewhere, discard). `recorded`: the export was attempted.
+ */
+export type RecordingStatus =
+  'recording' | 'stopped' | 'recorded' | 'transcribing' | 'done' | 'failed';
 
 export type Container = 'mp4' | 'webm';
 
@@ -27,7 +32,13 @@ export interface Recording {
   sources: Source[];
   status: RecordingStatus;
   container: Container;
-  /** Relative path of the export directory under the chosen folder, once the video is in it. */
+  /**
+   * The name of the folder this recording was saved under with "Save as…", when it was not the
+   * folder from Settings; its handle lives in IndexedDB `handles` under `export:<id>`
+   * (src/storage/handles.ts). Display only: the handle is the truth.
+   */
+  exportRoot?: string;
+  /** Relative path of the export directory under its folder, once the video is in it. */
   exportPath?: string;
   /**
    * Why it failed; or, on a recording that did not fail, why it is not fully exported: a
