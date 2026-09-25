@@ -5,15 +5,20 @@
 // folder handle, stored under `export:<id>` for the app tab (storage/handles.ts), and its one
 // prompt is the folder permission, requested inside its own click because the app tab, hidden
 // behind the call, cannot prompt. Closing the window decides nothing: a live recording goes on.
+// A save also opens the processing tab (progress/) at once, which follows the export and the
+// transcription; this window stays until the export answers, says where the video went, and
+// closes.
 import { formatDuration } from '../lib/format.ts';
 import type { DecideResult, Decision, Message, PendingInfo } from '../lib/messages.ts';
+import { send as post } from '../lib/messages.ts';
 import { renderPathTemplate } from '../lib/pathtemplate.ts';
 import { loadSettings } from '../lib/settings.ts';
 import { ensureExportPermission, getExportRoot, setExportRoot } from '../storage/export.ts';
 import { setRecordingExportRoot } from '../storage/handles.ts';
+import { askApp } from '../ui/apptab.ts';
 import { confirmButton } from '../ui/confirm.ts';
+import { closeThisWindow } from '../ui/popup.ts';
 
-const APP_URL = chrome.runtime.getURL('app/app.html');
 const REFRESH_MS = 1000;
 const CLOSE_AFTER_OK_MS = 1500;
 const CLOSE_AFTER_ERROR_MS = 5000;
@@ -30,55 +35,13 @@ let info: PendingInfo | undefined;
 let finished = false;
 /** Empty answers in a row; one is a hiccup (the app tab between two states), two is an answer. */
 let misses = 0;
-/** The owning app tab, once found. */
-let appTabId: number | undefined;
-
-/**
- * The app tab that owns the recorder: the one that answers `query-status` (a duplicate never
- * listens). Messages go to it by tab id, as the service worker's do (background.ts
- * `tabStatus`), not broadcast: a broadcast would also reach the service worker and any
- * duplicate app tab, and only the owner may answer for the recording.
- */
-async function appTab(): Promise<number | undefined> {
-  if (appTabId !== undefined) return appTabId;
-  for (const t of await chrome.tabs.query({ url: APP_URL })) {
-    if (t.id === undefined) continue;
-    const status = await chrome.tabs
-      .sendMessage(t.id, { type: 'query-status' } satisfies Message)
-      .catch(() => undefined);
-    if (status !== undefined) {
-      appTabId = t.id;
-      return t.id;
-    }
-  }
-  return undefined;
-}
-
-/** Ask the owning app tab; undefined when there is none or it does not answer. */
-async function ask<T>(msg: Message): Promise<T | undefined> {
-  const id = await appTab();
-  if (id === undefined) return undefined;
-  try {
-    return (await chrome.tabs.sendMessage(id, msg)) as T | undefined;
-  } catch {
-    appTabId = undefined;
-    return undefined;
-  }
-}
-
 function query(): Promise<PendingInfo | undefined> {
-  return ask<PendingInfo>({ type: 'query-pending' });
+  return askApp<PendingInfo>({ type: 'query-pending' });
 }
 
 async function close(): Promise<void> {
   finished = true;
-  try {
-    const win = await chrome.windows.getCurrent();
-    if (win.id !== undefined) await chrome.windows.remove(win.id);
-    else window.close();
-  } catch {
-    window.close();
-  }
+  await closeThisWindow();
 }
 
 function status(text: string, isError = false): void {
@@ -151,7 +114,12 @@ async function send(action: Decision): Promise<void> {
   finished = true;
   setEnabled(false);
   status(action === 'discard' ? 'Discarding…' : 'Saving…');
-  const res = await ask<DecideResult>({ type: 'decide', id: info.id, action });
+  // A save: the processing tab opens now and follows the export and the transcription; this
+  // window waits for the export's answer like a discard does, then closes. Not closed at once:
+  // tearing the window down within milliseconds of Save as… storing its folder handle crashes
+  // Chrome for Testing (ENVIRONMENT_NOTES), and the answer is worth its line here anyway.
+  if (action !== 'discard') void post({ type: 'open-progress', id: info.id });
+  const res = await askApp<DecideResult>({ type: 'decide', id: info.id, action });
   if (!res) status('The Rescribe tab did not answer; it holds the recording.', true);
   else status(res.message, !res.ok);
   setTimeout(() => void close(), res?.ok ? CLOSE_AFTER_OK_MS : CLOSE_AFTER_ERROR_MS);

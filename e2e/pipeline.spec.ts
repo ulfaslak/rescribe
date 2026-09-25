@@ -9,11 +9,12 @@
 // the microphone (ENVIRONMENT_NOTES), so display segments exist and read as "Speaker"; platform
 // attribution of real display speech is src/lib/assemble.test.ts and LIVE_CHECKS.
 import type { BrowserContext, Page } from '@playwright/test';
-import { expect, test } from './fixtures.ts';
+import { CAPTURE_TARGET_TITLE, expect, test } from './fixtures.ts';
 import {
   badgeText,
   clearExportFolder,
   clearRecordings,
+  escape,
   exported,
   EXPORT_DIR,
   getSettings,
@@ -23,6 +24,7 @@ import {
   opfsText,
   OTHER_EXPORT_DIR,
   patchRecording,
+  progressUrl,
   ready,
   recordings,
   removeOpfs,
@@ -32,7 +34,10 @@ import {
   setSettings,
   startRecording,
   stopRecording,
+  toolbarClick,
+  waitForProgressPage,
   waitForRecording,
+  waitForStartDialog,
   wordHitRate,
 } from './helpers.ts';
 import { watchNetwork, type NetworkWatch } from './privacy.ts';
@@ -89,9 +94,11 @@ test('record → transcribe: transcript.md/json and meta.json next to the video,
   const [started] = await recordings(page);
   expect(started).toBeDefined();
   expect(['recorded', 'transcribing']).toContain(started!.status);
-  // The recorder is idle (Record is enabled) while the pill and the badge show the pipeline.
+  // The recorder is idle (Record is enabled) while the pill shows the pipeline; the badge shows
+  // nothing for it (the processing tab is its feedback).
   await expect(page.locator('#status')).toHaveText('transcribing');
-  await expect.poll(() => badgeText(page)).toBe('…');
+  await page.waitForTimeout(500);
+  expect(await badgeText(page)).toBe('');
 
   const rec = await waitForRecording(page, started!.id, settled, { label: 'transcribe' });
   const elapsed = Date.now() - stoppedAt;
@@ -557,6 +564,28 @@ test('recording while transcribing: query-status stays idle for the toolbar, bot
   expect(await worker.evaluate(() => chrome.runtime.sendMessage({ type: 'query-status' }))).toBe(
     'idle',
   );
+  // The click itself opens the start dialog, which says what runs in the background and shows
+  // it on request; nothing records until Start (the click used to start at once).
+  const targetId = await worker.evaluate(
+    async (title) => (await chrome.tabs.query({ title }))[0]!.id!,
+    CAPTURE_TARGET_TITLE,
+  );
+  await toolbarClick(worker, { id: targetId, url: 'https://meet.google.com/abc-defg-hij' });
+  const dialog = await waitForStartDialog(context, extensionId);
+  await expect(dialog.locator('#background-text')).toContainText(
+    'Transcribing “Screen recording” in the background',
+    { timeout: 15_000 },
+  );
+  await dialog.click('#background-open');
+  const progress = await waitForProgressPage(context, extensionId);
+  expect(progress.url()).toBe(`${progressUrl(extensionId)}?id=${a!.id}`);
+  await expect(progress.locator('#headline')).toHaveText(
+    /Transcribing|Downloading|Loading|Waiting/,
+  );
+  await progress.close();
+  await escape(dialog);
+  await expect(page.locator('#status')).toHaveText('transcribing');
+  expect(await recordings(page)).toHaveLength(1);
   await startRecording(page);
   await expect.poll(() => badgeText(page)).toBe('REC');
   await page.waitForTimeout(2000);

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rescribe</title>
+    <link rel="stylesheet" href="start.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="../icons/icon-32.png" alt="" width="24" height="24" />
+        <span class="brand">Rescribe</span>
+      </header>
+      <section class="card target">
+        <span class="label">Record</span>
+        <span id="target-title" class="value">…</span>
+        <span id="target-host" class="hint"></span>
+      </section>
+      <label class="card field">
+        <span class="label">Microphone</span>
+        <select id="mic" disabled></select>
+      </label>
+      <div class="card field">
+        <span class="label">Save to</span>
+        <span class="row">
+          <span id="folder" class="value">…</span>
+          <button type="button" id="change-folder">Change…</button>
+        </span>
+      </div>
+      <button id="start" class="primary" disabled>Start Capture</button>
+      <p id="status" class="hint" aria-live="polite"></p>
+      <p id="background" class="hint" hidden>
+        <span id="background-text"></span>
+        <button type="button" id="background-open" class="link"></button>
+      </p>
+    </main>
+    <script type="module" src="start.js"></script>
+  </body>
+</html>
