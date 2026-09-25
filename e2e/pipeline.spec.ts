@@ -580,7 +580,7 @@ test('recording while transcribing: query-status stays idle for the toolbar, bot
   const progress = await waitForProgressPage(context, extensionId);
   expect(progress.url()).toBe(`${progressUrl(extensionId)}?id=${a!.id}`);
   await expect(progress.locator('#headline')).toHaveText(
-    /Transcribing|Downloading|Loading|Waiting/,
+    /Waiting to transcribe|Downloading the speech model|Loading the speech model|Transcribing (Ulf’s microphone|the call)|Working out who said what|Writing the transcript files/,
   );
   await progress.close();
   await escape(dialog);

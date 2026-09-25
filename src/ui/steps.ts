@@ -109,8 +109,12 @@ export function renderSteps(root: HTMLElement, p: PipelineProgress, opts: StepsO
 
   const foot = el('div', 'steps-foot');
   const at = stepOf(p);
-  if (opts.headline) foot.append(el('span', 'steps-headline', p.message));
-  if (at) foot.append(el('span', 'steps-step', `step ${at.index} of ${at.count}`));
+  // The row has no headline of its own: its foot leads with the headline and the step. The
+  // processing tab says both above the widget.
+  if (opts.headline) {
+    foot.append(el('span', 'steps-headline', p.message));
+    if (at) foot.append(el('span', 'steps-step', `step ${at.index} of ${at.count}`));
+  }
   const running = p.steps[runningIndex(p.steps)];
   if (!vertical && running?.kind === 'channel' && running.detail)
     foot.append(el('span', 'steps-where', running.detail));
