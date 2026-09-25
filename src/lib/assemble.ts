@@ -5,7 +5,7 @@
 // (another "my name") without transcribing again.
 import type { Backend } from './asr/engine.ts';
 import { attribute, channelIdentity } from './attribution.ts';
-import { eventsToEvidence, type AdapterEvent } from './evidence.ts';
+import { eventsToEvidence, type AdapterEvent, type SelfTile } from './evidence.ts';
 import type { Message } from './messages.ts';
 import { renderMarkdown, toJson, toTurns, type TranscriptJson } from './transcript.ts';
 import type {
@@ -115,6 +115,8 @@ export interface TranscriptMetaFile {
   sources: Source[];
   /** From the platform adapter's roster and speaker events; empty without one. */
   participants: string[];
+  /** The human's own platform tile, found by its overlap with microphone speech; absent when none was. */
+  selfTile?: SelfTile;
   model: string;
   backend: Backend;
   container: Recording['container'];
@@ -155,20 +157,36 @@ export function assembleTranscript(input: AssembleInput): Assembled {
   const adapterEvents = events.filter(
     (e): e is AdapterEvent => e.type === 'speaker' || e.type === 'roster',
   );
+  // The microphone identifies the human's own tile (DECISIONS § Audio channels). Without a mic
+  // channel there is nothing to judge by and only the label rule applies.
+  const hasMic = recording.sources.some((src) => src.channel === 'mic');
   const platform = eventsToEvidence(adapterEvents, recording.startedAt, endedAt, {
     selfLabel: settings.myName,
+    ...(hasMic
+      ? {
+          micSpeech: segments
+            .filter((s) => s.channel === 'mic')
+            .map(({ start, end }) => ({ start, end })),
+        }
+      : {}),
   });
 
   // Layers (DECISIONS § Audio channels): platform events, then channel identity. Channel identity
   // spans the whole recording, so a display segment with no platform interval near it reads as
-  // the generic remote speaker and a mic segment always reads as the human.
+  // the remote speaker and a mic segment always reads as the human. With exactly one remote
+  // tile of substance, and a roster in the log to vouch for who was there, the display channel
+  // can only be that person (Meet's indicator misses most of a listener's "mm-hmm" while the
+  // human talks: 181 of 304 remote segments in the call of 2026-09-25); with more, or none
+  // known, it is the generic label.
+  const displayIdentity =
+    platform.rosterSeen && platform.remotes.length === 1 ? platform.remotes[0]! : DISPLAY_FALLBACK;
   const identity: SpeakerInterval[] = [
     channelIdentity('mic', settings.myName, duration),
-    channelIdentity('display', DISPLAY_FALLBACK, duration),
+    channelIdentity('display', displayIdentity, duration),
   ];
   const intervals = [...platform.intervals, ...identity];
   const labelled = attribute(segments, intervals, {
-    fallback: { mic: settings.myName, display: DISPLAY_FALLBACK },
+    fallback: { mic: settings.myName, display: displayIdentity },
   });
   const turns = toTurns(labelled);
   const meta = {
@@ -197,6 +215,7 @@ export function assembleTranscript(input: AssembleInput): Assembled {
       endedAt,
       sources: recording.sources,
       participants: platform.participants,
+      ...(platform.self !== undefined ? { selfTile: platform.self } : {}),
       model: settings.model,
       backend: settings.backend,
       container: recording.container,

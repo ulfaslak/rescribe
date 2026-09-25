@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanIntervals, eventsToEvidence, MEET_LEAD } from './evidence.ts';
+import {
+  cleanIntervals,
+  eventsToEvidence,
+  MEET_LEAD,
+  MIN_PRESENCE_SECONDS,
+  SELF_MIN_SECONDS,
+} from './evidence.ts';
 import { attribute } from './attribution.ts';
 import type { AdapterEvent } from './evidence.ts';
 import type { SpeakerInterval } from './types.ts';
@@ -474,7 +480,12 @@ test('a self tile first seen unresolved and later as You loses all its intervals
 });
 
 test('no events, or an empty recording, yields nothing', () => {
-  assert.deepEqual(eventsToEvidence([], T0, T0 + 10_000), { intervals: [], participants: [] });
+  assert.deepEqual(eventsToEvidence([], T0, T0 + 10_000), {
+    intervals: [],
+    participants: [],
+    remotes: [],
+    rosterSeen: false,
+  });
   const { intervals } = eventsToEvidence([sp(0, 'p1', 'Anna', true)], T0, T0);
   assert.deepEqual(intervals, []);
 });
@@ -495,4 +506,267 @@ test('output is sorted by start across participants', () => {
     ['Anna', 1, 3],
     ['Bo', 5, 8],
   ]);
+});
+
+// --- self by microphone -----------------------------------------------------------------------
+
+test('the self tile is the id whose speaking coincides with microphone speech, whatever its label', () => {
+  // Meet named the human's tile "Ulf Aslak" (2026-09-25); the label rule alone would keep it.
+  const events = [
+    roster(0, ['Ulf Aslak', 'Anna']),
+    sp(1000, 'me', 'Ulf Aslak', true),
+    sp(3000, 'me', 'Ulf Aslak', false),
+    sp(5000, 'me', 'Ulf Aslak', true),
+    sp(8000, 'me', 'Ulf Aslak', false),
+    sp(3000, 'p1', 'Anna', true),
+    sp(5000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [
+      { start: 1, end: 3 },
+      { start: 5, end: 8 },
+    ],
+  });
+  assert.deepEqual(spans(out.intervals), [['Anna', 3, 5]]);
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.self, { name: 'Ulf Aslak', micShare: 1, seconds: 5 });
+});
+
+test('a remote participant talking over the human is not self', () => {
+  // Anna speaks 6 s, 2 of them while the human talks: a third, well under the half required.
+  const events = [sp(2000, 'p1', 'Anna', true), sp(8000, 'p1', 'Anna', false)];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 2, end: 4 }],
+  });
+  assert.deepEqual(spans(out.intervals), [['Anna', 2, 8]]);
+  assert.deepEqual(out.participants, ['Anna']);
+  assert.equal(out.self, undefined);
+});
+
+test('a tile that spoke too little to judge is kept unless its label says self', () => {
+  const short = SELF_MIN_SECONDS * 1000 - 500;
+  const events = [
+    sp(1000, 'me', 'You', true),
+    sp(2000, 'me', 'You', false),
+    sp(3000, 'p1', 'Ulf Aslak', true),
+    sp(3000 + short, 'p1', 'Ulf Aslak', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 0, end: 20 }],
+  });
+  assert.deepEqual(spans(out.intervals), [['Ulf Aslak', 3, 3 + short / 1000]]);
+  assert.deepEqual(out.participants, ['Ulf', 'Ulf Aslak']);
+  assert.equal(out.self, undefined);
+});
+
+test('without micSpeech only the label identifies the self tile', () => {
+  const events = [sp(1000, 'me', 'Ulf Aslak', true), sp(8000, 'me', 'Ulf Aslak', false)];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(spans(out.intervals), [['Ulf Aslak', 1, 8]]);
+  assert.equal(out.self, undefined);
+});
+
+test('presentation tiles are not participants; their intervals keep their label', () => {
+  const events = [
+    roster(0, [
+      'Carolina Pinheiro',
+      'Carolina Pinheiro (Presentation)',
+      'Ulf Aslak (Your Presentation)',
+      'Ulf Aslak',
+    ]),
+    sp(1000, 'me', 'Ulf Aslak', true),
+    sp(7000, 'me', 'Ulf Aslak', false),
+    sp(2000, 'pres', 'Carolina Pinheiro (Presentation)', true),
+    sp(3000, 'pres', 'Carolina Pinheiro (Presentation)', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 1, end: 7 }],
+  });
+  assert.deepEqual(spans(out.intervals), [['Carolina Pinheiro (Presentation)', 2, 3]]);
+  assert.deepEqual(out.participants, ['Carolina Pinheiro', 'Ulf']);
+});
+
+test('a tile on screen for a moment that never spoke is not a participant; a silent one present for the call is', () => {
+  // "You are presenting" flashed for three seconds with a 40 ms meter blip (2026-09-25); Bo
+  // never spoke but sat in the call.
+  const events = [
+    roster(0, ['You', 'Anna', 'Bo']),
+    roster(4000, ['You', 'Anna', 'Bo', 'You are presenting']),
+    sp(4100, 'x', 'You are presenting', true),
+    sp(4140, 'x', 'You are presenting', false),
+    roster(7000, ['You', 'Anna', 'Bo']),
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(out.participants, ['Ulf', 'Anna', 'Bo']);
+  assert.ok(MIN_PRESENCE_SECONDS > 3);
+});
+
+test('on a short recording, half of it on screen is enough presence', () => {
+  const { participants } = eventsToEvidence(
+    [roster(0, ['Anna']), roster(2000, ['Anna', 'Dee'])],
+    T0,
+    T0 + 6000,
+  );
+  assert.deepEqual(participants, ['Anna', 'Dee']);
+});
+
+test('a participant known only from speaker events counts by what they said', () => {
+  const events = [
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+    sp(5000, 'p2', 'Bo', true),
+    sp(5100, 'p2', 'Bo', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(out.participants, ['Anna']);
+});
+
+// --- what "the one remote participant" is counted on ------------------------------------------
+
+test('remotes are counted per tile, unresolved and rejoined ones included; rosterSeen says whether anyone vouched', () => {
+  const events = [
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+    sp(4000, 'p2', 'p2', true),
+    sp(5000, 'p2', 'p2', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(out.remotes, ['Anna', 'Speaker']);
+  assert.deepEqual(out.participants, ['Anna']);
+  assert.equal(out.rosterSeen, false);
+  const withRoster = eventsToEvidence(
+    [roster(0, ['Anna']), ...events.slice(0, 2)],
+    T0,
+    T0 + 10_000,
+    noLead,
+  );
+  assert.deepEqual(withRoster.remotes, ['Anna']);
+  assert.equal(withRoster.rosterSeen, true);
+});
+
+test('two tiles both matching the microphone: neither is self, both keep their evidence', () => {
+  // A colleague in the same room on their own laptop: the microphone hears both.
+  const events = [
+    sp(1000, 'me', 'Ulf Aslak', true),
+    sp(7000, 'me', 'Ulf Aslak', false),
+    sp(1000, 'bo', 'Bo', true),
+    sp(7000, 'bo', 'Bo', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 1, end: 7 }],
+  });
+  assert.equal(out.self, undefined);
+  assert.deepEqual(spans(out.intervals).sort(), [
+    ['Bo', 1, 7],
+    ['Ulf Aslak', 1, 7],
+  ]);
+  assert.deepEqual(out.participants, ['Ulf Aslak', 'Bo']);
+  assert.deepEqual(out.remotes, ['Ulf Aslak', 'Bo']);
+});
+
+test('a name that resolves mid-call is one person, listed once under the current name', () => {
+  const events = [
+    roster(0, ['Anna', 'Bo']),
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+    sp(5000, 'p1', 'Anna Smith', true),
+    sp(7000, 'p1', 'Anna Smith', false),
+    roster(5000, ['Anna Smith', 'Bo']),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, noLead);
+  assert.deepEqual(out.participants, ['Anna Smith', 'Bo']);
+  assert.deepEqual(out.remotes, ['Bo', 'Anna Smith']);
+});
+
+test('two blips that merge into one interval are substance', () => {
+  const events = [
+    sp(1000, 'p1', 'Bo', true),
+    sp(1100, 'p1', 'Bo', false),
+    sp(1350, 'p1', 'Bo', true),
+    sp(1450, 'p1', 'Bo', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, noLead);
+  assert.deepEqual(spans(out.intervals), [['Bo', 1, 1.45]]);
+  assert.deepEqual(out.participants, ['Bo']);
+});
+
+test('the presenting status tile is never a participant, however long it stays', () => {
+  const events = [
+    roster(0, ['You', 'Anna', 'You are presenting']),
+    sp(1000, 'p1', 'Anna', true),
+    sp(3000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 1_200_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.remotes, ['Anna']);
+});
+
+test('a self tile that rejoined under a new id is one person', () => {
+  const events = [
+    sp(1000, 'me1', 'Ulf Aslak', true),
+    sp(7000, 'me1', 'Ulf Aslak', false),
+    sp(10_000, 'me2', 'Ulf Aslak', true),
+    sp(16_000, 'me2', 'Ulf Aslak', false),
+    sp(8000, 'p1', 'Anna', true),
+    sp(9000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [
+      { start: 1, end: 7 },
+      { start: 10, end: 16 },
+    ],
+  });
+  assert.deepEqual(spans(out.intervals), [['Anna', 8, 9]]);
+  assert.deepEqual(out.self, { name: 'Ulf Aslak', micShare: 1, seconds: 12 });
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.remotes, ['Anna']);
+});
+
+test('an empty roster, or one outside the recording, does not count as seen', () => {
+  const events = [sp(1000, 'p1', 'Anna', true), sp(3000, 'p1', 'Anna', false)];
+  assert.equal(
+    eventsToEvidence([roster(9000, []), ...events], T0, T0 + 10_000, noLead).rosterSeen,
+    false,
+  );
+  assert.equal(
+    eventsToEvidence([roster(-5000, ['Anna']), ...events], T0, T0 + 10_000, noLead).rosterSeen,
+    false,
+  );
+  assert.equal(
+    eventsToEvidence([roster(0, ['Anna']), ...events], T0, T0 + 10_000, noLead).rosterSeen,
+    true,
+  );
+});
+
+test("the presenting status tile's intervals are dropped, a remote's presentation keeps its label", () => {
+  const events = [
+    roster(0, ['You', 'Anna']),
+    sp(1000, 'x', 'You are presenting', true),
+    sp(3000, 'x', 'You are presenting', false),
+    sp(4000, 'ap', 'Anna (Presentation)', true),
+    sp(6000, 'ap', 'Anna (Presentation)', false),
+    sp(7000, 'p1', 'Anna', true),
+    sp(8000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(spans(out.intervals), [
+    ['Anna (Presentation)', 4, 6],
+    ['Anna', 7, 8],
+  ]);
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.remotes, ['Anna']);
 });
