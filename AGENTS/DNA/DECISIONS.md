@@ -79,3 +79,4 @@ Release is manual: build `main` in the primary clone, reload the extension in Ch
 ## Naming
 
 The product and repo are "Rescribe". The human's own speaker label defaults to "Me" and is a setting.
+Transcription progress speaks in the human's terms: the job is steps, named in every view as the speech model, the microphone as the human (by the name from Settings), the call, who said what and the transcript files, with one bar for the whole job. Not channel ids, region counts or a bar per channel: a bar that filled once per channel read as the same job run twice (2026-09-25, #31, the human).

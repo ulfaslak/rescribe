@@ -7,6 +7,13 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 ---
 
 
+### The transcription steps on a real call in Brave
+
+**Trigger**: progress as steps (#31) merged and the extension reloaded at `brave://extensions`; the next real call transcribed, ten minutes or longer, watched from Save to Done.
+**Steps**: after Save in the stop window, keep the processing tab that opens in view and open the Rescribe tab next to it. Watch the row and the tab through the run. Note the step count shown at the start and at the end, the order of the running steps, the `at m:ss of m:ss` position on each channel step, the `about N min left` once it appears, and the time it actually took from then.
+**Success criteria**: the same numbered steps in the row, the tab and the Record line, in this order: Speech model (only when the model had to be loaded), `<my name>’s microphone`, The call, Who said what, Transcript files; the count never changes during the run; the position on a channel step climbs through the recording and the segment fills once, then the next step takes over (it must be obvious that the call is a second step, not the microphone again); the time left is within a factor of two of the truth once it shows; nowhere the words `mic`, `display` or `regions`. The e2e walk (`e2e/progress.spec.ts`) checks all of this on a 40 s recording; only a long real call shows whether the pace and the time left hold up over minutes.
+**On failure**: a step count that changes, a segment that fills twice, or a time left far off: file it with the screenshots (the row and the tab at the moment) and the lengths of the two channels' speech (the `transcript.json` segments per channel).
+
 ### WebGPU transcription runs on the GPU in Brave
 
 **Trigger**: fired by part 2 of #2: the backend setting exists in Settings ("Speech engine backend").
