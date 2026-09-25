@@ -42,8 +42,11 @@ export function mountStartOverlay(src: string, id: string): void {
     }
   };
   window.addEventListener('message', onMessage);
-  // On <html>, not <body>: a transformed or clipped body would carry a fixed child with it.
-  document.documentElement.append(host);
+  // On <html>, not <body>: a transformed or clipped body would carry a fixed child with it. In
+  // fullscreen only the fullscreen element shows, so in there when it can hold children.
+  const full = document.fullscreenElement;
+  const leaf = full instanceof HTMLVideoElement || full instanceof HTMLCanvasElement;
+  (full && !leaf ? full : document.documentElement).append(host);
   frame.addEventListener('load', () => frame.focus(), { once: true });
 }
 

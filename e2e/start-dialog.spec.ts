@@ -323,6 +323,20 @@ test('on a web page the dialog is an overlay at the top right of that page, no w
   await site.keyboard.press('Escape');
   await expect.poll(hostBox).toBeUndefined();
 
+  // In fullscreen only the fullscreen element shows: the overlay goes in there.
+  await site.evaluate(() => document.body.requestFullscreen());
+  await expect.poll(() => site.evaluate(() => !!document.fullscreenElement)).toBe(true);
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(() => !!overlayFrame(), { timeout: 10_000 }).toBe(true);
+  expect(
+    await site.evaluate(
+      () => document.getElementById('rescribe-start-overlay')?.parentElement?.tagName,
+    ),
+  ).toBe('BODY');
+  await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
+  await expect.poll(hostBox).toBeUndefined();
+  await site.evaluate(() => document.exitFullscreen());
+
   // Change…: the picker is refused to a frame in another site's page; the Rescribe tab comes
   // forward instead, and the overlay stays.
   await toolbarClick(worker, { id: siteId, url: SITE, title: 'A web page' });
