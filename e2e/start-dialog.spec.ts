@@ -150,17 +150,18 @@ test('a save in the stop dialog opens the processing tab, which follows the expo
   expect(await opfsSize(page, exported(rec, 'transcript.md'))).toBeGreaterThan(0);
   expect(progressPages(context, extensionId)).toHaveLength(0);
 
-  // A second recording; this time the app tab closes mid-transcription: the page says paused,
+  // A second, longer recording (the model is cached now, so a short one would be done before
+  // the tab could close); this time the app tab closes mid-transcription: the page says paused,
   // Open Rescribe brings the app tab back, and the transcription runs to done.
   await startRecording(page);
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(15_000);
   const [second] = await recordings(page);
   await toolbarClick(worker, { id: targetId, url: MEET_URL });
   await (await waitForStopDialog(context, extensionId)).click('#save');
   const again = await waitForProgressPage(context, extensionId);
   expect(again.url()).toBe(`${progressUrl(extensionId)}?id=${second!.id}`);
   await expect(again.locator('#headline')).toHaveText(
-    /Waiting to transcribe|Downloading|Loading|Transcribing|Attributing/,
+    /Waiting to transcribe|Downloading|Loading|Transcribing/,
     { timeout: 60_000 },
   );
   const appUrl = `chrome-extension://${extensionId}/app/app.html`;
