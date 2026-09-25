@@ -121,6 +121,80 @@ test('the self tile ("You") is dropped from display evidence and shown under my 
   assert.deepEqual(out.meta.participants, ['Ulf', 'Anna', 'Bo']);
 });
 
+test('a self tile named after the human, not "You", is found by the microphone and dropped', () => {
+  // Meet labelled the human's tile with the full name in a 58-minute call on 2026-09-25: two
+  // thirds of the remote speaker's words were labelled as the human. The mic channel settles it.
+  const ev: EventLine[] = [
+    { type: 'roster', platform: 'meet', at: T0 + 100, names: ['Ulf Aslak', 'Anna', 'Bo'] },
+    sp(500, 'me', 'Ulf Aslak', true),
+    sp(2000, 'me', 'Ulf Aslak', false),
+    sp(3100, 'p1', 'Anna', true),
+    sp(5000, 'p1', 'Anna', false),
+    sp(6000, 'me', 'Ulf Aslak', true),
+    sp(8000, 'me', 'Ulf Aslak', false),
+    sp(9100, 'p2', 'Bo', true),
+    sp(11_000, 'p2', 'Bo', false),
+    sp(12_000, 'me', 'Ulf Aslak', true),
+    sp(16_000, 'me', 'Ulf Aslak', false),
+  ];
+  const out = assembleTranscript({
+    recording,
+    settings,
+    segments: [
+      seg('display', 0.5, 2, 'mm-hmm'),
+      ...segments,
+      seg('mic', 12, 16, 'and so on'),
+      seg('display', 13, 14, 'right'),
+    ],
+    events: ev,
+    rescribeVersion: '0.1.0',
+  });
+  assert.ok(!out.labelled.some((s) => s.speaker === 'Ulf Aslak'));
+  assert.ok(!out.json.intervals.some((iv) => iv.speaker === 'Ulf Aslak'));
+  assert.deepEqual(out.meta.participants, ['Ulf', 'Anna', 'Bo']);
+  assert.deepEqual(out.meta.selfTile, { name: 'Ulf Aslak', micShare: 1, seconds: 7.5 });
+  assert.ok(out.json.participants.includes('Ulf'));
+});
+
+test('with one remote participant the display channel is that person, not "Speaker"', () => {
+  // Anna is the only other participant; her "mm-hmm" while the human talks got no Meet interval.
+  const ev: EventLine[] = [
+    { type: 'roster', platform: 'meet', at: T0 + 100, names: ['You', 'Anna'] },
+    sp(3100, 'p1', 'Anna', true),
+    sp(5000, 'p1', 'Anna', false),
+  ];
+  const out = assembleTranscript({
+    recording,
+    settings,
+    segments: [...segments, seg('display', 7, 7.5, 'mm-hmm')],
+    events: ev,
+    rescribeVersion: '0.1.0',
+  });
+  assert.deepEqual(
+    out.labelled.map((s) => [s.speaker, s.evidence]),
+    [
+      ['Ulf', 'channel'],
+      ['Anna', 'platform'],
+      ['Ulf', 'channel'],
+      ['Anna', 'channel'],
+      ['Anna', 'channel'],
+    ],
+  );
+  assert.ok(!out.json.intervals.some((iv) => iv.speaker === 'Speaker'));
+  // Two remote participants: the generic label again for what no interval covers.
+  const two = assembleTranscript({
+    recording,
+    settings,
+    segments: [...segments, seg('display', 7, 7.5, 'mm-hmm')],
+    events,
+    rescribeVersion: '0.1.0',
+  });
+  assert.deepEqual(
+    two.labelled.map((s) => s.speaker),
+    ['Ulf', 'Anna', 'Ulf', 'Bo', 'Speaker'],
+  );
+});
+
 test('clock-gap and diagnostic lines never become evidence; gaps are surfaced in meta', () => {
   const out = assembleTranscript({
     recording,

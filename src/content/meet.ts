@@ -54,8 +54,10 @@ const CALL_ENDED_AFTER_MS = 5000;
 /** Text inside these, within a tile, is UI chrome (menu items such as "Reframe"), never a name. */
 const NAME_EXCLUDE =
   'button, [role="button"], [role="menu"], [role="menuitem"], [role="tooltip"], [aria-hidden="true"]';
-/** Short status chips Meet renders next to a name. "You" is Meet's label for the human's own tile and stays. */
-const NAME_STOPLIST = /^(muted|unmuted|pinned|host|co-host|presenting|hd|sd|live|new)$/i;
+/** Short status chips Meet renders next to a name, and the label of the human's own presentation
+ * tile ("You are presenting", 2026-09-25). "You" is Meet's label for the human's own tile and stays. */
+const NAME_STOPLIST =
+  /^(muted|unmuted|pinned|host|co-host|presenting|you are presenting|hd|sd|live|new)$/i;
 
 const harness = document.documentElement.hasAttribute('data-rescribe-harness');
 /** The last messages this adapter emitted, so a calibration report can show its own behaviour. */

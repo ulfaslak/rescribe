@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanIntervals, eventsToEvidence, MEET_LEAD } from './evidence.ts';
+import { cleanIntervals, eventsToEvidence, MEET_LEAD, SELF_MIN_SECONDS } from './evidence.ts';
 import { attribute } from './attribution.ts';
 import type { AdapterEvent } from './evidence.ts';
 import type { SpeakerInterval } from './types.ts';
@@ -495,4 +495,90 @@ test('output is sorted by start across participants', () => {
     ['Anna', 1, 3],
     ['Bo', 5, 8],
   ]);
+});
+
+// --- self by microphone -----------------------------------------------------------------------
+
+test('the self tile is the id whose speaking coincides with microphone speech, whatever its label', () => {
+  // Meet named the human's tile "Ulf Aslak" (2026-09-25); the label rule alone would keep it.
+  const events = [
+    roster(0, ['Ulf Aslak', 'Anna']),
+    sp(1000, 'me', 'Ulf Aslak', true),
+    sp(3000, 'me', 'Ulf Aslak', false),
+    sp(5000, 'me', 'Ulf Aslak', true),
+    sp(8000, 'me', 'Ulf Aslak', false),
+    sp(3000, 'p1', 'Anna', true),
+    sp(5000, 'p1', 'Anna', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [
+      { start: 1, end: 3 },
+      { start: 5, end: 8 },
+    ],
+  });
+  assert.deepEqual(spans(out.intervals), [['Anna', 3, 5]]);
+  assert.deepEqual(out.participants, ['Ulf', 'Anna']);
+  assert.deepEqual(out.self, { name: 'Ulf Aslak', micShare: 1, seconds: 5 });
+});
+
+test('a remote participant talking over the human is not self', () => {
+  // Anna speaks 6 s, 2 of them while the human talks: a third, well under the half required.
+  const events = [sp(2000, 'p1', 'Anna', true), sp(8000, 'p1', 'Anna', false)];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 2, end: 4 }],
+  });
+  assert.deepEqual(spans(out.intervals), [['Anna', 2, 8]]);
+  assert.deepEqual(out.participants, ['Anna']);
+  assert.equal(out.self, undefined);
+});
+
+test('a tile that spoke too little to judge is kept unless its label says self', () => {
+  const short = SELF_MIN_SECONDS * 1000 - 500;
+  const events = [
+    sp(1000, 'me', 'You', true),
+    sp(2000, 'me', 'You', false),
+    sp(3000, 'p1', 'Ulf Aslak', true),
+    sp(3000 + short, 'p1', 'Ulf Aslak', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 20_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 0, end: 20 }],
+  });
+  assert.deepEqual(spans(out.intervals), [['Ulf Aslak', 3, 3 + short / 1000]]);
+  assert.deepEqual(out.participants, ['Ulf', 'Ulf Aslak']);
+  assert.equal(out.self, undefined);
+});
+
+test('without micSpeech only the label identifies the self tile', () => {
+  const events = [sp(1000, 'me', 'Ulf Aslak', true), sp(8000, 'me', 'Ulf Aslak', false)];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, { ...noLead, selfLabel: 'Ulf' });
+  assert.deepEqual(spans(out.intervals), [['Ulf Aslak', 1, 8]]);
+  assert.equal(out.self, undefined);
+});
+
+test('presentation tiles are not participants; their intervals keep their label', () => {
+  const events = [
+    roster(0, [
+      'Carolina Pinheiro',
+      'Carolina Pinheiro (Presentation)',
+      'Ulf Aslak (Your Presentation)',
+      'Ulf Aslak',
+    ]),
+    sp(1000, 'me', 'Ulf Aslak', true),
+    sp(7000, 'me', 'Ulf Aslak', false),
+    sp(2000, 'pres', 'Carolina Pinheiro (Presentation)', true),
+    sp(3000, 'pres', 'Carolina Pinheiro (Presentation)', false),
+  ];
+  const out = eventsToEvidence(events, T0, T0 + 10_000, {
+    ...noLead,
+    selfLabel: 'Ulf',
+    micSpeech: [{ start: 1, end: 7 }],
+  });
+  assert.deepEqual(spans(out.intervals), [['Carolina Pinheiro (Presentation)', 2, 3]]);
+  assert.deepEqual(out.participants, ['Carolina Pinheiro', 'Ulf']);
 });

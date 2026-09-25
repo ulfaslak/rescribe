@@ -98,17 +98,66 @@ export interface EvidenceOptions {
   unresolvedLabel?: string;
   /** Interval cleaning. Defaults: minDuration 0.3, mergeGap 0.3, lead MEET_LEAD. */
   clean?: CleanOptions;
+  /**
+   * Recording-relative seconds of speech on the microphone channel (the recogniser's mic
+   * segments). The participant whose speaking coincides with it is the human, whatever the
+   * platform calls the tile: Meet showed "You" on 2026-09-24 and the full name on 2026-09-25.
+   * Without it only `selfNames` identifies the self tile.
+   */
+  micSpeech?: Array<{ start: number; end: number }>;
 }
+
+/** The human's own tile, as found by its overlap with microphone speech. */
+export interface SelfTile {
+  /** The display name the platform gave the tile. */
+  name: string;
+  /** Share of the tile's speaking time that coincides with microphone speech, 0–1. */
+  micShare: number;
+  /** Seconds the tile was reported speaking, clipped to the recording. */
+  seconds: number;
+}
+
+/** A tile is the human's when at least this share of its speaking coincides with mic speech. */
+export const SELF_MIC_SHARE = 0.5;
+/** Seconds a tile must have been reported speaking before its mic share is trusted. */
+export const SELF_MIN_SECONDS = 5;
 
 export interface PlatformEvidence {
   /** Display-channel platform intervals, cleaned, clipped to the recording, sorted by start. */
   intervals: SpeakerInterval[];
   /**
    * Resolved display names, one per participant id plus roster names, in first-seen order,
-   * deduplicated, with the self tile replaced by `selfLabel` or omitted. Never an id string.
+   * deduplicated, with the self tile replaced by `selfLabel` or omitted, and without
+   * presentation tiles (a name that is another participant's name plus a parenthesised suffix,
+   * Meet's "Anna (Presentation)"). Never an id string.
    */
   participants: string[];
+  /** The human's tile when `micSpeech` identified one. */
+  self?: SelfTile;
 }
+
+/** Seconds of overlap between two interval lists. */
+function overlapSeconds(
+  a: ReadonlyArray<{ start: number; end: number }>,
+  b: ReadonlyArray<{ start: number; end: number }>,
+): number {
+  let total = 0;
+  for (const x of a) {
+    for (const y of b) {
+      const o = Math.min(x.end, y.end) - Math.max(x.start, y.start);
+      if (o > 0) total += o;
+    }
+  }
+  return total;
+}
+
+/** "Anna (Presentation)" next to "Anna": a tile for a shared screen, not a person. */
+function isPresentationOf(name: string, names: ReadonlySet<string>): boolean {
+  const open = name.lastIndexOf(' (');
+  return open > 0 && name.endsWith(')') && names.has(name.slice(0, open));
+}
+
+const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 /**
  * Seconds Meet's speaking indicator trails speech onset (a few hundred ms in the calls observed
@@ -128,6 +177,12 @@ export const MEET_LEAD = 0.3;
  * closed). A lost stop stretches that turn to the participant's next stop. A lost start loses
  * that turn, except when the stop is the first toggle received for the id: that reads as
  * "already speaking when listening began" and opens from t=0.
+ *
+ * The human's own tile is found by evidence, not by label: the id whose speaking coincides with
+ * `micSpeech` (at least `SELF_MIC_SHARE` of its time, over at least `SELF_MIN_SECONDS`) is the
+ * human; its intervals are not display evidence, since the display channel never carries the
+ * human's voice, and it is listed under `selfLabel`. `selfNames` remains the fallback for a tile
+ * that spoke too little to judge or a call without `micSpeech`.
  */
 export function eventsToEvidence(
   events: AdapterEvent[],
@@ -174,14 +229,43 @@ export function eventsToEvidence(
     }
   }
 
-  const raw = togglesToIntervals('display', toggles, duration)
-    .filter((iv) => !selfNames.has(nameOf.get(iv.speaker) ?? ''))
-    .map((iv) => ({
-      ...iv,
-      speaker: nameOf.get(iv.speaker) ?? unresolvedLabel,
-      start: Math.max(0, iv.start),
-      end: Math.min(duration, iv.end),
-    }))
+  const clipped = togglesToIntervals('display', toggles, duration).map((iv) => ({
+    ...iv,
+    start: Math.max(0, iv.start),
+    end: Math.min(duration, iv.end),
+  }));
+
+  // Self by microphone: per id, how much of its speaking coincides with mic speech.
+  const selfIds = new Set<string>();
+  let self: SelfTile | undefined;
+  if (opts.micSpeech) {
+    const byId = new Map<string, SpeakerInterval[]>();
+    for (const iv of clipped) {
+      if (iv.end <= iv.start) continue;
+      const list = byId.get(iv.speaker) ?? [];
+      list.push(iv);
+      byId.set(iv.speaker, list);
+    }
+    for (const [id, list] of byId) {
+      const seconds = list.reduce((sum, iv) => sum + (iv.end - iv.start), 0);
+      if (seconds < SELF_MIN_SECONDS) continue;
+      const share = overlapSeconds(list, opts.micSpeech) / seconds;
+      if (share < SELF_MIC_SHARE) continue;
+      selfIds.add(id);
+      if (self === undefined || seconds > self.seconds) {
+        self = {
+          name: nameOf.get(id) ?? unresolvedLabel,
+          micShare: round3(Math.min(1, share)),
+          seconds: round3(seconds),
+        };
+      }
+    }
+  }
+  const isSelfId = (id: string): boolean => selfIds.has(id) || selfNames.has(nameOf.get(id) ?? '');
+
+  const raw = clipped
+    .filter((iv) => !isSelfId(iv.speaker))
+    .map((iv) => ({ ...iv, speaker: nameOf.get(iv.speaker) ?? unresolvedLabel }))
     .filter((iv) => iv.end > iv.start);
 
   const intervals = cleanIntervals(raw, {
@@ -191,6 +275,13 @@ export function eventsToEvidence(
 
   // A selfLabel equal to a remote participant's name collapses to one entry here, and that
   // participant's display intervals become indistinguishable from the mic channel's label.
+  const selfDisplayNames = new Set<string>(selfNames);
+  for (const id of selfIds) {
+    const name = nameOf.get(id);
+    if (name !== undefined) selfDisplayNames.add(name);
+  }
+  const allNames = new Set<string>(nameOf.values());
+  for (const entry of order) if ('name' in entry && !ids.has(entry.name)) allNames.add(entry.name);
   const participants: string[] = [];
   const add = (label: string | undefined): void => {
     if (label !== undefined && !participants.includes(label)) participants.push(label);
@@ -198,9 +289,10 @@ export function eventsToEvidence(
   for (const entry of order) {
     const name =
       'id' in entry ? nameOf.get(entry.id) : ids.has(entry.name) ? undefined : entry.name;
-    if (name === undefined) continue;
-    add(selfNames.has(name) ? opts.selfLabel : name);
+    if (name === undefined || isPresentationOf(name, allNames)) continue;
+    const isSelf = 'id' in entry ? isSelfId(entry.id) : selfDisplayNames.has(name);
+    add(isSelf ? opts.selfLabel : name);
   }
 
-  return { intervals, participants };
+  return self === undefined ? { intervals, participants } : { intervals, participants, self };
 }
