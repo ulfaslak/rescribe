@@ -8,15 +8,15 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
-### 2026-09-25 · stop dialog · an API's refusal treated as impossible `[learned]`
+### 2026-09-25 · #24 · an API's refusal treated as impossible `[learned]`
 
 `openStopDialog` computed a position for the popup window from the last focused window and passed it to `chrome.windows.create` with no catch; Chrome refuses bounds that are mostly off-screen, so in headless Chromium (and on a desktop with a browser window half off a display) no dialog ever opened and the rejection vanished into a `void` promise, while the badge said `REC` as if all was well. Found by every stop-dialog e2e timing out on the window. Codified in `background.ts` (default placement on refusal) and ENVIRONMENT_NOTES § "`chrome.windows.create` refuses bounds off the visible screen". Rule: a positioned window, a permission request, a picker: anything Chrome may refuse for reasons outside the code gets a fallback, not a `void`.
 
-### 2026-09-25 · stop dialog · two entry points, one bookkeeping path `[learned]`
+### 2026-09-25 · #24 · two entry points, one bookkeeping path `[learned]`
 
 The decision on a stopped recording could be taken from the dialog (through `applyDecision`, which refreshed the status and the badge afterwards) or from the row (through `decide` directly, which did not), so a Save clicked on the row exported the video and left the pill on `stopped` and the badge on `SAVE`. Found by the "share ends" e2e. Codified by moving the refresh into the `onDecision` listener in `app.ts`, so every entry point shares it, and pinned by the row-Save half of that test.
 
-### 2026-09-25 · stop dialog · a race diagnosed from the symptom, then written into the code `[not codified]`
+### 2026-09-25 · #24 · a race diagnosed from the symptom, then written into the code `[not codified]`
 
 Two tests failed with the dialog "closing on its own" and Discard "doing nothing"; I attributed both to a broadcast `sendMessage` racing the service worker's non-answer, rewrote the dialog to message the app tab by id, and wrote that race into a comment and a commit message as something "seen in the e2e". The next run failed identically: the real causes were Playwright reporting a page closed *during* the Escape press that closed it, and the two-step button's own double-click guard swallowing a confirm 300 ms after arming. The targeted messaging stayed because it is the right shape (only the owner may answer), the false claim was removed. Already named as a pattern (#12 "prose claim asserted, not verified"); this is the second instance. What would codify it: a CLAUDE.md line under self-testing, "before writing a cause into a comment, make the test fail on that cause and pass on its fix".
 
