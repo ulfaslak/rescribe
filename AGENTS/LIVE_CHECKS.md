@@ -119,7 +119,17 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 
 ### Index in Lawcel on a real call in Brave
 
-**Trigger**: routines merged; `npm run install-host` run in the primary clone; the extension reloaded at `brave://extensions` (it asks for no new prompt: `nativeMessaging` is granted to an unpacked extension on reload); `~/.rescribe/recordings` chosen as the folder in Settings (HUMAN_TODO). Then the next Lawcel call.
+**Trigger**: routines merged; `npm run install-host` run in the primary clone; the extension reloaded at `brave://extensions` (it asks for no new prompt: `nativeMessaging` is granted to an unpacked extension on reload); `~/.rescribe/recordings` chosen as the folder in Settings (HUMAN_TODO). Then the next Lawcel call, or a row not yet indexed (the 2026-10-19 Holm call). Not the 2026-10-23 Carolina row: it is already indexed, and a second run would index it again.
+
+**Already passed without Brave (2026-10-23):**
+
+- The installed wrapper was started the way the browser starts it: its manifest's path, the origin as the argument, one framed `run-routine` for the Carolina call, and a Dock app's bare environment (`PATH=/usr/bin:/bin:/usr/sbin:/sbin`, no shell profile, no terminal variables), while the Mac was locked.
+- The detached supervisor ran it to `done` in about 3 minutes (run `20261023-181824-index-in-lawcel-abcb`).
+- `claude -p` used the subscription (`apiKeySource: none`, Opus, the five file tools only).
+- The script pushed `609a852` to GitHub's `main`, fast-forwarded the clone past two newer commits, left its untracked files alone, and removed the worktree and the branch.
+
+What remains is Brave's part: that Brave starts the wrapper (macOS file protection on what the browser starts, see ENVIRONMENT_NOTES), the dialog, the row, the processing tab and the notification.
+
 **Steps**:
 
 1. Choosing the folder: in Settings, Choose folder…, then `⌘⇧G` in the picker, type `~/.rescribe/recordings`, Select. Settings shows `recordings`.
