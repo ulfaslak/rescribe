@@ -126,17 +126,17 @@ async function poll(): Promise<void> {
 }
 
 /**
- * On app start: the list of routines, a start whenever the pipeline finishes a recording, and
- * what a closed tab left: runs still going are followed, routines waiting on a transcript that
- * is in the folder now are started. `onChange` re-renders whatever shows the records.
+ * On app start, after the list of routines (`refreshRoutines`, awaited before the first render:
+ * the rows' buttons depend on it, and a render after the fact would swap a two-step button the
+ * human is halfway through): a start whenever the pipeline finishes a recording, and what a
+ * closed tab left: runs still going are followed, routines waiting on a transcript that is in the
+ * folder now are started. `onChange` re-renders whatever shows the records.
  */
 export async function initRoutines(onChange: () => void): Promise<void> {
   changed = onChange;
   onPipelineProgress((id, p) => {
     if (p.phase === 'done') void startWhenReady(id);
   });
-  await refreshRoutines();
-  changed();
   for (const rec of await listRecordings()) {
     if (rec.routine?.state === 'running') follow(rec.id);
     else if (rec.routine?.state === 'waiting') void startWhenReady(rec.id);

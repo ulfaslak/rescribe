@@ -77,15 +77,16 @@ async function fitWindow(): Promise<void> {
 
 /**
  * One button per routine the host offers, under Save: the same save, and the routine once the
- * transcript is in the folder. None, with the reason, when the host cannot be asked; disabled,
- * with the reason, when the Settings folder is not the one the host reads.
+ * transcript is in the folder. None, and a line saying why, when the host cannot be asked;
+ * disabled, with the reason, when the Settings folder is not the one the host reads.
  */
 async function renderRoutines(): Promise<void> {
   const [list, root] = await Promise.all([listRoutines(), getExportRoot()]);
   const note = $<HTMLElement>('#routines-note');
   routineBlocker = list.error ?? folderMismatch(list, root?.name);
-  note.hidden = routineBlocker === undefined || (!!list.error && list.routines.length === 0);
-  note.textContent = routineBlocker ?? '';
+  // Said even when there are no routines to show: a host that stopped answering is news.
+  note.hidden = routineBlocker === undefined;
+  note.textContent = list.error ? `No routines: ${list.error}` : (routineBlocker ?? '');
   for (const routine of list.routines) {
     const b = document.createElement('button');
     b.className = 'choice routine';

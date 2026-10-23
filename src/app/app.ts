@@ -46,7 +46,7 @@ import {
   recoverInterruptedTranscriptions,
   transcribeRecording,
 } from './pipeline.ts';
-import { initRoutines } from './routines.ts';
+import { initRoutines, refreshRoutines } from './routines.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -794,6 +794,8 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>('#record-screen').addEventListener('click', () => void onRecordScreen());
   $<HTMLButtonElement>('#stop').addEventListener('click', () => void onStop());
   await describeFolder();
+  // Before the first render: the rows offer the routines the host lists (app/routines.ts).
+  await refreshRoutines();
   await renderList();
   // A duplicate tab is inert (above), so a `recording` answer here can only come from an owner
   // tab that loaded in the same instant as this one; its recording must not be "recovered".

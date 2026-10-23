@@ -32,12 +32,27 @@ function unavailable(err: unknown): HostUnavailable {
   return new HostUnavailable(`The routine host did not answer: ${text}`);
 }
 
-async function ask(req: HostRequest): Promise<HostResponse> {
+/** The list is asked for on startup, before the first render: a host that hangs must not hold it up. */
+const LIST_TIMEOUT_MS = 3000;
+const RUN_TIMEOUT_MS = 15_000;
+
+async function ask(req: HostRequest, timeoutMs: number): Promise<HostResponse> {
   let res: unknown;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    res = await chrome.runtime.sendNativeMessage(NATIVE_HOST, req);
+    res = await Promise.race([
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, req),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`no answer within ${timeoutMs / 1000} s`)),
+          timeoutMs,
+        );
+      }),
+    ]);
   } catch (err) {
     throw unavailable(err);
+  } finally {
+    clearTimeout(timer);
   }
   if (!res || typeof res !== 'object' || !('ok' in res))
     throw new HostUnavailable('The routine host gave no answer.');
@@ -55,7 +70,7 @@ export interface RoutineList {
 /** The routines on offer; none, with the reason, when the host cannot be asked. */
 export async function listRoutines(): Promise<RoutineList> {
   try {
-    const res = await ask({ type: 'list-routines' });
+    const res = await ask({ type: 'list-routines' }, LIST_TIMEOUT_MS);
     if (!res.ok) return { routines: [], error: res.error };
     if (!('routines' in res)) return { routines: [], error: 'Unexpected answer from the host.' };
     return { routines: res.routines, recordings: res.recordings };
@@ -84,7 +99,7 @@ export function folderMismatch(list: RoutineList, root: string | undefined): str
 }
 
 async function runStatus(req: HostRequest): Promise<RunStatus> {
-  const res = await ask(req);
+  const res = await ask(req, RUN_TIMEOUT_MS);
   if (!res.ok) throw new Error(res.error);
   if (!('run' in res)) throw new Error('Unexpected answer from the host.');
   return res.run;
