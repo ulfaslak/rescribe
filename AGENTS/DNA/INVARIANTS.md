@@ -69,7 +69,7 @@ A routine the human picks for a recording (DECISIONS § Routines) hands its dire
 
 ### What was said on a call never reaches an agent that can run commands
 
-**Mechanism:** a routine that runs Claude Code on a transcript runs it `--restricted --strict-mcp-config` (no Bash or other code-running tools, no WebFetch, no MCP servers, no user settings, file tools confined to its working directory) and never with `bypassPermissions` or `--dangerously-skip-permissions`; the meeting's files are copied into that directory, and the script around it does the git work. `native/routines.test.ts` reads every routine's `run.sh` and fails on a `claude` call without the two flags, or on either bypass anywhere.
+**Mechanism:** a routine that runs Claude Code on a transcript runs it `--restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep` (no Bash or other code-running tools, no WebFetch or WebSearch, no SendMessage to other sessions, no MCP servers, no user settings, file tools confined to its working directory; `--restricted` alone still offered WebSearch and SendMessage, seen in a dry run's tool list) and never with `bypassPermissions` or `--dangerously-skip-permissions`; the meeting's files are copied into that directory, and the script around it does the git work. `native/routines.test.ts` reads every routine's `run.sh` and fails on a `claude` call without the two flags or with any other tool list, or on either bypass anywhere.
 **Incident:** adversarial review of the routines (2026-10-23): the first Index in Lawcel ran `bypassPermissions` with the home directory in reach, so anyone on a call could have had it read `.env` keys into a note it then pushed to a shared repository.
 
 ### A pick of a routine starts at most one run

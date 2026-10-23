@@ -11,7 +11,7 @@ A routine is a directory `routines/<id>/` with:
   - `RESCRIBE_RUN_ID`, `RESCRIBE_TITLE`.
   - `PATH` with `~/.local/bin` and Homebrew in front, and no `ANTHROPIC_API_KEY` (`claude` uses the subscription).
 
-What was said on a call is untrusted: anyone on it can address an agent that reads it. A routine that runs Claude Code runs it `--restricted --strict-mcp-config`, never with permissions bypassed, and does anything that needs a shell or the network in `run.sh` itself (`native/routines.test.ts` checks every routine).
+What was said on a call is untrusted: anyone on it can address an agent that reads it. A routine that runs Claude Code runs it `--restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep`, never with permissions bypassed, and does anything that needs a shell or the network in `run.sh` itself (`native/routines.test.ts` checks every routine).
 
 Exit 0 is done. The line the human reads (the notification, the row, the processing tab) is `$RESCRIBE_RUN_DIR/summary.txt` when the routine writes one, else the last line it printed; on a failure, always the last line printed.
 

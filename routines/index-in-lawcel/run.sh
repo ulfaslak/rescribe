@@ -4,8 +4,9 @@
 # and RESCRIBE_RUN_ID. The last line it prints is what the human reads when it fails.
 #
 # What was said on the call is not trusted: anyone on it can talk to the agent that reads it. So
-# Claude Code runs restricted (no shell, no web, no MCP, no user settings; file tools confined to
-# its working directory) in a worktree of its own, with the meeting's files copied into it, and
+# Claude Code runs restricted to the five file tools (no shell, no web search, no messages to
+# other sessions, no MCP, no user settings; file tools confined to its working directory) in a
+# worktree of its own, with the meeting's files copied into it, and
 # only writes markdown. This script does everything else: the transcript into place under the
 # name the agent chose, the commit, the rebase and the push, and the check that it landed. The
 # human's clone, which may be mid-edit, is only fast-forwarded at the end.
@@ -35,8 +36,8 @@ cp $RESCRIBE_RECORDING_DIR/transcript.md $RESCRIBE_RECORDING_DIR/meta.json $box/
 
 say "claude -p (restricted) in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $work
-claude -p "$(<$here/prompt.md)" --restricted --strict-mcp-config --permission-mode acceptEdits \
-  --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
+claude -p "$(<$here/prompt.md)" --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
+  --permission-mode acceptEdits --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
   fail "Claude Code exited with an error; see $RESCRIBE_RUN_DIR/trace.jsonl"
 
 name=$(first_line $box/name)

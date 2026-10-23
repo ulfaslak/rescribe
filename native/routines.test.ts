@@ -21,7 +21,7 @@ test('every routine directory is listed: a label and an executable run.sh', () =
   );
 });
 
-test('a routine that runs Claude Code runs it restricted, never with permissions bypassed', () => {
+test('a routine that runs Claude Code runs it restricted to the file tools, never with permissions bypassed', () => {
   for (const r of listRoutines(dir)) {
     const script = readFileSync(r.script, 'utf8')
       .split('\n')
@@ -30,8 +30,12 @@ test('a routine that runs Claude Code runs it restricted, never with permissions
       // continuation lines are one command
       .replace(/\\\n/g, ' ');
     assert.doesNotMatch(script, /bypassPermissions|dangerously-skip-permissions/, r.id);
-    for (const call of script.match(/^\s*claude\s.*$/gm) ?? [])
+    for (const call of script.match(/^\s*claude\s.*$/gm) ?? []) {
       for (const flag of ['--restricted', '--strict-mcp-config'])
         assert.ok(call.includes(flag), `${path.basename(r.dir)}: ${flag} missing in: ${call}`);
+      // Restricted mode alone still offers web search and messages to other sessions.
+      const tools = /--tools[ =]([\w,]+)/.exec(call)?.[1]?.split(',').sort();
+      assert.deepEqual(tools, ['Edit', 'Glob', 'Grep', 'Read', 'Write'], `${r.id}: ${call}`);
+    }
   }
 });
