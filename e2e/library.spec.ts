@@ -12,8 +12,10 @@ import {
   exported,
   openApp,
   openTarget,
+  opfsList,
   opfsSize,
   opfsText,
+  OTHER_EXPORT_DIR,
   patchRecording,
   recordings,
   removeOpfs,
@@ -817,4 +819,49 @@ test('a recording queued or running in the pipeline keeps its media through a co
     expect((await recording(page, id))!.mediaDeleted).toBe(true);
   }
   await expectStorageMatchesWalk(page);
+});
+
+test('a recording saved with Save as… before routines keeps its own folder: the row shows it and Re-export writes there, not into the Settings folder', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const [a] = await seed(page, 1);
+  // As Save as… left it: the folder's name on the record, its handle under `export:<id>`.
+  await page.evaluate(
+    async ({ id, other }) => {
+      const dir = await (
+        await navigator.storage.getDirectory()
+      ).getDirectoryHandle(other, {
+        create: true,
+      });
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open('rescribe');
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const tx = req.result.transaction('handles', 'readwrite');
+          tx.objectStore('handles').put(dir, `export:${id}`);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        };
+      });
+    },
+    { id: a!.id, other: OTHER_EXPORT_DIR },
+  );
+  await patchRecording(page, a!.id, { exportRoot: OTHER_EXPORT_DIR });
+  const settingsFolderBefore = await opfsList(page, [EXPORT_DIR]);
+  await page.reload();
+  await readyIdle(page);
+  const r = row(page, a!.id);
+  await expect(r.locator('.path')).toHaveText(`${OTHER_EXPORT_DIR}/${a!.exportPath}/`);
+  await r.locator('button.re-export').click();
+  await expect(page.locator('#library-status')).toHaveText(
+    `Saved recording.mp4 to ${a!.exportPath}/.`,
+    { timeout: 15_000 },
+  );
+  const video = await opfsSize(page, ['recordings', a!.id, 'video.mp4']);
+  expect(
+    await opfsSize(page, [OTHER_EXPORT_DIR, ...a!.exportPath!.split('/'), 'recording.mp4']),
+  ).toBe(video);
+  expect(await opfsList(page, [EXPORT_DIR])).toEqual(settingsFolderBefore);
 });

@@ -198,6 +198,7 @@ function onMessage(
       return true;
     case 'folder-changed':
       void describeFolder();
+      void renderList();
       return false;
     case 'decide':
       void applyDecision(msg.id, msg.action, msg.routine).then((result) => {
@@ -635,6 +636,8 @@ async function chooseFolder(): Promise<void> {
     const handle = await window.showDirectoryPicker({ id: 'rescribe-export', mode: 'readwrite' });
     await setExportRoot(handle);
     await describeFolder();
+    // The rows' routine buttons depend on which folder it is.
+    void renderList();
   } catch (err) {
     if ((err as DOMException).name === 'AbortError') {
       hint.textContent =

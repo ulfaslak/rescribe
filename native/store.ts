@@ -60,6 +60,13 @@ export function listRoutines(dir: string): Routine[] {
   const out: (Routine & { order: number })[] = [];
   for (const id of readdirSync(dir).sort()) {
     if (id.startsWith('.') || id.startsWith('_')) continue;
+    // The id goes into the run's id (lib.ts `isRunId`), so it has that shape or is not a routine.
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
+      process.stderr.write(
+        `[rescribe-host] routine ${id} skipped: name it in lowercase and dashes\n`,
+      );
+      continue;
+    }
     const rdir = path.join(dir, id);
     if (!statSync(rdir).isDirectory()) continue;
     const script = path.join(rdir, 'run.sh');

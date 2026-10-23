@@ -45,6 +45,7 @@ routine('fails', { label: 'Fails', order: 2 }, 'echo first; echo "the reason it 
 routine('slow', { label: 'Slow', order: 3 }, 'sleep 5');
 // Broken ones are not listed.
 routine('nolabel', {}, 'true');
+routine('Bad_Name', { label: 'Bad name' }, 'true');
 mkdirSync(path.join(routines, 'noscript'), { recursive: true });
 writeFileSync(path.join(routines, 'noscript', 'routine.json'), '{"label":"No script"}');
 
