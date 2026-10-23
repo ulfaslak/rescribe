@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-10-23 · routines · a render scheduled after the page said it was ready `[learned]`
+
+The routine list came from the native host after the app tab had rendered and set `data-ready`, and its arrival re-rendered the list, so a two-step button armed in that window was swapped for a fresh one and the confirming click armed it again: three library e2e tests that click Delete right after a reload failed in the first full run. Fixed by awaiting the list (with a timeout) before the first render (`app.ts` main, `app/routines.ts` `initRoutines`). Rule: data a row's buttons depend on is loaded before the first render; a later render is for state that changed, never for state that arrived late.
+
 ### 2026-09-25 · in-page start dialog · a web-accessible page trusted by its URL `[learned]`
 
 Making `start/start.html` web-accessible for the overlay also let any site frame it, and the service worker judged "is the dialog still open" by the URL of any frame it could see, so a site's own frame could start a capture of a tab whose click grant was still alive. The author tested only frames Rescribe itself injected; the adversarial review caught it. Fixed with a one-time key per dialog (INVARIANTS § "Only a start dialog the service worker opened can start a capture").
