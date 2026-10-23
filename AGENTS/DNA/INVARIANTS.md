@@ -10,7 +10,9 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ---
 
-### No audio, video or transcript ever leaves the machine
+### No audio, video or transcript ever leaves the machine through Rescribe
+
+A routine the human picks for a recording (DECISIONS § Routines) hands its directory to a program of theirs outside the browser, which may send the transcript elsewhere (Index in Lawcel runs Claude Code). That is the human's choice, made per recording, and not Rescribe's traffic: the extension passes the routine the recording's id, title and path, never its content.
 
 **Mechanism:** the only permitted network traffic is the one-time model download from `huggingface.co`: `ParakeetEngine.load` fetches each file with parakeet.js's `getModelFile`, which serves its IndexedDB cache before the network, so a cached model loads with zero requests (`e2e/transcribe.spec.ts` asserts that on a fresh worker). `e2e/privacy.ts` records every HTTP(S) request a Playwright context makes, the transcribe worker's included, and every WebSocket a page opens, and fails on any network host outside its pinned list: `huggingface.co` and `<region>.<cloud>.cdn.hf.co`, the CDN it redirects to (observed `us.aws.cdn.hf.co`). Every test in `e2e/pipeline.spec.ts` asserts it over a whole run: record, transcribe, export; `e2e/transcribe.spec.ts` over the worker alone. The ORT binaries come from `dist/vendor/ort/`: `load` sets `ort.env.wasm.wasmPaths` before parakeet.js can default to jsDelivr. The manifest declares no `host_permissions`.
 **Incident:** none. Seeded 2026-09-24 as the product's core promise.
@@ -49,3 +51,28 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 **Mechanism:** `start/start.html` is web-accessible (the overlay needs that), so any site can load it in a frame of its own. The service worker puts a one-time key in the URL of each dialog it opens (`background.ts` `issueStartKey`, kept in `chrome.storage.session` per tab) and counts a dialog as open, for Start Capture and for the toolbar toggle, only when its URL carries that tab's key (`startDialogs`); `start-capture` names the key, the key goes when the dialog is closed from the toolbar or its Start succeeds, and the page without it shows nothing and asks nothing of the app tab. `e2e/start-dialog.spec.ts` (the overlay test) frames the page from another site with a guessed key.
 **Incident:** 2026-09-25, the in-page start dialog's review: without the key, a site framing `start.html?tab=<id>` passed the "dialog still open" check, so a click in it recorded a tab whose click grant was still alive (the human had opened and closed the dialog there), and its frame made every toolbar click on that tab count as "close".
+
+### A routine runs only on a recording the host can vouch for
+
+**Mechanism:** the extension knows a recording's directory only by name (a folder handle has no path), so `native/store.ts` `resolveRecording` checks before a run starts that the Settings folder's name is the recordings folder's (`~/.rescribe/recordings`), that the export path resolves inside that folder, and that the directory's `meta.json` names the recording and sits next to `transcript.md`. Refused, the run never starts and the reason goes to the row. Run ids are checked by `isRunId` before they become paths. `native/host.test.ts` "refuses a recording it cannot vouch for" covers each case, `..` included; the routines e2e spec covers a refusal through the browser.
+**Incident:** none. Seeded 2026-10-23: Index in Lawcel pushes what it is given to a shared repository, so a run on the wrong recording would publish the wrong meeting.
+
+### A routine never runs with the human's API key
+
+**Mechanism:** `native/lib.ts` `routineEnv` builds every routine's environment from the browser's without `ANTHROPIC_API_KEY` (and without Claude Code's session variables), so `claude` in a routine bills the human's subscription. `native/lib.test.ts` asserts it on the function, and `native/host.test.ts` runs a routine under a host that has the key and asserts the routine's environment does not.
+**Incident:** none. Seeded 2026-10-23: the human's keys bill metered accounts, uncapped, and an automation must never spend them.
+
+### A run that stopped without finishing is reported failed, never running forever
+
+**Mechanism:** `status.json` carries the supervisor's pid while a run goes on; `native/store.ts` `currentStatus` turns a `running` status into `failed` and writes it back when that pid is gone or belongs to another user (reused after a restart), or when the run is five minutes past its routine's `timeoutMinutes`, by which time the supervisor has stopped it (SIGTERM to the group, SIGKILL after ten seconds) or is not there to say so. The app tab polls only `running` runs, so without this a row would poll and say "running" forever, with its routine buttons disabled. `native/host.test.ts` "a run whose supervisor is gone is failed" kills the supervisor, and "a run still running far past its time limit is failed" gives the run a live pid and an old start.
+**Incident:** adversarial review of the routines (2026-10-23): the first version took an EPERM pid for alive and had no time limit, so a pid reused by a system process after a restart kept a run `running` forever.
+
+### What was said on a call never reaches an agent that can run commands
+
+**Mechanism:** a routine that runs Claude Code on a transcript runs it `--restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep` (no Bash or other code-running tools, no WebFetch or WebSearch, no SendMessage to other sessions, no MCP servers, no user settings, file tools confined to its working directory; `--restricted` alone still offered WebSearch and SendMessage, seen in a dry run's tool list) and never with `bypassPermissions` or `--dangerously-skip-permissions`; the meeting's files are copied into that directory, and the script around it does the git work. `native/routines.test.ts` reads every routine's `run.sh` and fails on a `claude` call without the two flags or with any other tool list, or on either bypass anywhere.
+**Incident:** adversarial review of the routines (2026-10-23): the first Index in Lawcel ran `bypassPermissions` with the home directory in reach, so anyone on a call could have had it read `.env` keys into a note it then pushed to a shared repository.
+
+### A pick of a routine starts at most one run
+
+**Mechanism:** every `run-routine` carries a key for the pick (`src/lib/routines.ts` `runKey`: the recording's id, the routine, the epoch ms it was picked), stored in the run's `run.json`; `native/host.ts` answers a key it has seen (`store.ts` `findRun`) with that run's status instead of starting another. The app tab treats a start the host did not answer in time as unknown, not failed: the routine stays `waiting` and is asked again under the same key (`app/routines.ts` `startWhenReady`). `native/host.test.ts` "a start asked again under the same key gets the same run" asks twice and asserts one run.
+**Incident:** adversarial review of the routines (2026-10-23): a lost or slow answer marked the routine failed while the run went on outside the browser, and the retry the row offered would push the same meeting's notes a second time.

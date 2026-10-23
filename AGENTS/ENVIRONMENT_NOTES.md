@@ -76,4 +76,12 @@ The Claude browser extension was not connected in the kickoff session, so browse
 
 ### The gtr post-create hook has not run
 
-`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-09-25 (`feat/in-page-start`).
+`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-10-23 (`feat/routines`).
+
+### A native host under ~/Documents never starts (probed 2026-10-23, Chrome for Testing 153 through Playwright)
+
+A native messaging host whose executable, the wrapper script, lives under `~/Documents` (the e2e harness's first try, `.playwright/` in the checkout) fails at once: `sendNativeMessage` rejects with `Native host has exited.` and the script's first line never runs. The same script in the temp directory or in a hidden directory of the home (`~/.rescribe-probe/`) runs. What the host then does under `~/Documents` works: Node reads `native/host.ts` and the routines from the checkout, and the supervisor, a child of the host, runs `run.sh` from there. Most likely macOS file protection on what the browser itself starts. Hence `~/.rescribe/bin/rescribe-host` and the harness's `HOST_HOME` in the temp directory. Not yet seen in Brave, which [[LIVE_CHECKS]] § "Index in Lawcel on a real call in Brave" settles.
+
+### Chrome shrinks the text of extension pages to 75 % (measured 2026-10-23, Chromium 153)
+
+Chrome adds a stylesheet of its own to extension pages that sets `body { font-size: 75% }`, so a page whose `:root` says 14px renders its inherited text at 10.5px, while anything with an explicit size (`.hint` at 12.5px) comes out larger than its parent. The stop dialog sets `body { font-size: 1rem }` since the routines (its labels sat under 12px descriptions). The other pages still render at 75 %; fix one when its sizes start to fight.

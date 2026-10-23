@@ -1,9 +1,10 @@
 // The export folder (File System Access API). The human's directory handle lives in IndexedDB
-// `handles` under `export` (handles.ts); a recording saved with "Save as…" has a folder of its
-// own under `export:<id>`, and `rootFor` says which one a recording uses. Each recording gets
-// `<template>/` inside its folder, named by src/lib/pathtemplate.ts, with " (2)", " (3)"… on
-// collision. App-tab only, except `ensureExportPermission`, `getExportRoot`, `setExportRoot` and
-// `setRecordingExportRoot`, which the stop dialog calls inside its own clicks.
+// `handles` under `export` (handles.ts); a recording saved with "Save as…" before routines
+// replaced it has a folder of its own under `export:<id>`, and `rootFor` says which one a
+// recording uses. Each recording gets `<template>/` inside its folder, named by
+// src/lib/pathtemplate.ts, with " (2)", " (3)"… on collision. App-tab only, except
+// `ensureExportPermission`, `getExportRoot` and `setExportRoot`, which the stop dialog calls inside
+// its own clicks.
 import { candidateName, renderPathTemplate } from '../lib/pathtemplate.ts';
 import type { Container, Recording } from '../lib/types.ts';
 import { withDuration } from '../lib/webm.ts';
@@ -15,7 +16,6 @@ export {
   getExportRoot,
   setExportRoot,
   getRecordingExportRoot,
-  setRecordingExportRoot,
 } from './handles.ts';
 
 /** `missing`: the recording's directory or its video is not under the current export folder. */

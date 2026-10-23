@@ -1,9 +1,11 @@
 // The decision on a `stopped` recording (ARCHITECTURE § Pipeline step 2): save it into the folder
-// from Settings, save it into a folder of its own, or discard it. App-tab only. The stop dialog,
+// from Settings, with a routine to run once its transcript is there or without, or discard it.
+// App-tab only. The stop dialog,
 // the app tab's Stop button and a library row all end here; app.ts stops the recorder first when
 // the recording is still live (`stop()` ends at `stopped`), so this module only ever sees records
 // on disk. Listeners (app.ts) learn the outcome to refresh the status and start transcription.
 import type { Decision } from '../lib/messages.ts';
+import { waitingRun, type RoutineInfo } from '../lib/routines.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { finalize } from '../recorder/recorder.ts';
@@ -56,17 +58,19 @@ function emit(ev: DecisionEvent): void {
 /**
  * Apply the decision to a recording at `stopped`. `save`: `finalize` into the folder from
  * Settings, refused when none is chosen (a Save must save; the callers open the picker first),
- * a Save as handle left behind by an earlier, failed attempt dropped first.
- * `save-as`: the same into the folder whose handle the caller stored under `export:<id>`
- * (storage/handles.ts) before calling; its name goes on the record. `discard`: the record, its
- * files and its handle are deleted; nothing was ever exported. Throws when the recording does not
- * exist, is not `stopped`, or has a decision in progress; a failed export does not throw, it is
- * on the returned record (`error`, no `exportPath`; the row offers Save now).
+ * a Save as handle left behind by a failed attempt from before routines dropped first; with a
+ * `routine`, it goes on the record as `waiting` before the export, so the transcription runs
+ * whatever Settings say and the routine starts once the transcript is in the folder
+ * (app/routines.ts). `discard`: the record, its files and its handle are deleted; nothing was
+ * ever exported. Throws when the recording does not exist, is not `stopped`, or has a decision in
+ * progress; a failed export does not throw, it is on the returned record (`error`, no
+ * `exportPath`; the row offers Save now).
  */
 export async function decide(
   id: string,
   action: Decision,
   onExporting?: (rec: Recording) => void,
+  routine?: RoutineInfo,
 ): Promise<Recording | undefined> {
   if (deciding.has(id)) throw new Error('That recording is being saved or discarded already.');
   deciding.add(id);
@@ -81,18 +85,17 @@ export async function decide(
       await deleteRecording(id);
     } else {
       let target = before;
-      if (action === 'save-as') {
-        const own = await getRecordingExportRoot(id);
-        if (!own) throw new Error('No folder was chosen for this recording.');
-        target = await updateRecording(id, { exportRoot: own.name });
-      } else {
-        if (!(await getExportRoot()))
-          throw new Error('No export folder chosen in Settings; choose one, then save.');
-        if (before.exportRoot !== undefined || (await getRecordingExportRoot(id))) {
-          await deleteRecordingExportRoot(id);
-          target = await updateRecording(id, { exportRoot: undefined });
-        }
+      if (!(await getExportRoot()))
+        throw new Error('No export folder chosen in Settings; choose one, then save.');
+      if (before.exportRoot !== undefined || (await getRecordingExportRoot(id))) {
+        await deleteRecordingExportRoot(id);
+        target = await updateRecording(id, { exportRoot: undefined });
       }
+      // Always written, also without one: a routine picked before (a save the app tab did not
+      // live to finish) must not ride along on a plain Save now.
+      target = await updateRecording(id, {
+        routine: routine ? waitingRun(routine, Date.now()) : undefined,
+      });
       out = await finalize(target, (await loadSettings()).pathTemplate, onExporting);
     }
     emit({ phase: 'done', id, action, before, rec: out });

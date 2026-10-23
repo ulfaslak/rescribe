@@ -12,6 +12,7 @@ import type {
 import { send } from '../lib/messages.ts';
 import { formatDuration } from '../lib/format.ts';
 import { summaryLine, type PipelinePhase, type PipelineProgress } from '../lib/progress.ts';
+import type { RoutineInfo } from '../lib/routines.ts';
 import { loadSettings, migrateSettings, saveSettings, toFrameRate } from '../lib/settings.ts';
 import {
   DEFAULT_SETTINGS,
@@ -45,6 +46,7 @@ import {
   recoverInterruptedTranscriptions,
   transcribeRecording,
 } from './pipeline.ts';
+import { initRoutines, refreshRoutines } from './routines.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -129,7 +131,7 @@ async function refreshPending(): Promise<void> {
     const rec = stopped[0]!;
     setStatus('stopped');
     note(
-      `"${rec.title}" (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}) is not saved yet: Save, Save as… or Discard it from its row below, or from the toolbar button.`,
+      `"${rec.title}" (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}) is not saved yet: Save it, run a routine on it or Discard it from its row below, or from the toolbar button.`,
     );
   } else setStatus('idle');
 }
@@ -196,9 +198,10 @@ function onMessage(
       return true;
     case 'folder-changed':
       void describeFolder();
+      void renderList();
       return false;
     case 'decide':
-      void applyDecision(msg.id, msg.action).then((result) => {
+      void applyDecision(msg.id, msg.action, msg.routine).then((result) => {
         try {
           sendResponse(result);
         } catch {
@@ -435,7 +438,7 @@ function onRecorderChange(rec: Recording, phase: RecorderPhase): void {
         pendingId = rec.id;
         setStatus('stopped');
         note(
-          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}), not saved yet: Save, Save as… or Discard it from its row below, or from the toolbar button.`,
+          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}), not saved yet: Save it, run a routine on it or Discard it from its row below, or from the toolbar button.`,
         );
         askToSave();
       }
@@ -492,11 +495,15 @@ async function progressInfo(id?: string): Promise<ProgressInfo | undefined> {
 
 /**
  * The decision, from the stop dialog, the Stop button or a row: stop the recorder first when the
- * recording is the live one (its stop ends at `stopped`), then `decide` (app/decide.ts). The
- * export runs with the status at `recorded` (busy); the outcome goes to the status line and,
- * through `onDecision`, starts the transcription.
+ * recording is the live one (its stop ends at `stopped`), then `decide` (app/decide.ts), with the
+ * routine the human picked, if any. The export runs with the status at `recorded` (busy); the
+ * outcome goes to the status line and, through `onDecision`, starts the transcription.
  */
-async function applyDecision(id: string, action: Decision): Promise<DecideResult> {
+async function applyDecision(
+  id: string,
+  action: Decision,
+  routine?: RoutineInfo,
+): Promise<DecideResult> {
   const r = recorder;
   if (r && r.recording.id === id) {
     if (deciding !== undefined) return { ok: false, message: 'The recording is already stopping.' };
@@ -515,9 +522,14 @@ async function applyDecision(id: string, action: Decision): Promise<DecideResult
   applying++;
   try {
     if (!recorder) setStatus('recorded');
-    const out = await decide(id, action, (rec) => {
-      if (!recorder) note(`Saving ${exportVideoName(rec.container)}…`);
-    });
+    const out = await decide(
+      id,
+      action,
+      (rec) => {
+        if (!recorder) note(`Saving ${exportVideoName(rec.container)}…`);
+      },
+      routine,
+    );
     if (!out) return { ok: true, message: 'Discarded.' };
     if (out.error) return { ok: true, message: `Recorded, but ${out.error}` };
     return { ok: true, message: `Saved to ${describePath(out)}` };
@@ -536,8 +548,10 @@ function describePath(rec: Recording): string {
 }
 
 // --- Transcription (steps 3–5 live in pipeline.ts; this is the status line around them) --------
+/** As Settings say, and always for a recording with a routine waiting on its transcript. */
 async function autoTranscribe(id: string): Promise<void> {
-  if ((await loadSettings()).autoTranscribe) await runPipeline(id);
+  const routine = (await getRecording(id))?.routine;
+  if ((await loadSettings()).autoTranscribe || routine?.state === 'waiting') await runPipeline(id);
 }
 
 async function runPipeline(id: string): Promise<void> {
@@ -622,6 +636,8 @@ async function chooseFolder(): Promise<void> {
     const handle = await window.showDirectoryPicker({ id: 'rescribe-export', mode: 'readwrite' });
     await setExportRoot(handle);
     await describeFolder();
+    // The rows' routine buttons depend on which folder it is.
+    void renderList();
   } catch (err) {
     if ((err as DOMException).name === 'AbortError') {
       hint.textContent =
@@ -781,6 +797,8 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>('#record-screen').addEventListener('click', () => void onRecordScreen());
   $<HTMLButtonElement>('#stop').addEventListener('click', () => void onStop());
   await describeFolder();
+  // Before the first render: the rows offer the routines the host lists (app/routines.ts).
+  await refreshRoutines();
   await renderList();
   // A duplicate tab is inert (above), so a `recording` answer here can only come from an owner
   // tab that loaded in the same instant as this one; its recording must not be "recovered".
@@ -799,6 +817,8 @@ async function main(): Promise<void> {
   if (interrupted.length > 0) await renderList();
   // Again after the recovery: a recovered recording may have changed what is waiting.
   await refreshPending();
+  // The routines on offer, and the runs a closed tab left going or waiting (app/routines.ts).
+  void initRoutines(() => void renderList());
   // Startup is complete (recovery included); the e2e harness waits for this.
   document.body.dataset['ready'] = 'owner';
 }

@@ -1,5 +1,5 @@
-// The stop dialog (src/stop/): a toolbar click while recording opens it; Save, Save as… and
-// Discard; closing it keeps recording; a share that ends leaves the recording `stopped` and opens
+// The stop dialog (src/stop/): a toolbar click while recording opens it; Save, the routines
+// (routines.spec.ts covers them) and Discard; closing it keeps recording; a share that ends leaves the recording `stopped` and opens
 // it; a Meet call that ends opens it while the recording goes on; a save hands over to the
 // processing tab (src/progress/). The toolbar click is driven through the service worker's
 // `onToggle` hook (helpers.toolbarClick); the dialog is the popup window's page in the same
@@ -17,7 +17,6 @@ import {
   openTarget,
   opfsList,
   opfsSize,
-  OTHER_EXPORT_DIR,
   progressUrl,
   ready,
   recordings,
@@ -64,22 +63,6 @@ async function setUp(
   return { page, targetId };
 }
 
-/** The per-recording handle keys in IndexedDB `handles`. */
-async function handleKeys(page: Page): Promise<string[]> {
-  return page.evaluate(
-    () =>
-      new Promise<string[]>((resolve, reject) => {
-        const req = indexedDB.open('rescribe');
-        req.onerror = () => reject(req.error);
-        req.onsuccess = () => {
-          const r = req.result.transaction('handles').objectStore('handles').getAllKeys();
-          r.onsuccess = () => resolve(r.result.map(String).sort());
-          r.onerror = () => reject(r.error);
-        };
-      }),
-  );
-}
-
 const row = (page: Page, id: string) => page.locator(`.recording-item[data-id="${id}"]`);
 
 test('a click while recording opens the dialog; Escape keeps recording; a second click focuses the same one; Save stops, exports, hands over to the processing tab and leaves the app tab alone', async ({
@@ -96,7 +79,7 @@ test('a click while recording opens the dialog; Escape keeps recording; a second
   const dialog = await waitForStopDialog(context, extensionId);
   await expect(dialog.locator('#state')).toHaveText('recording');
   await expect(dialog.locator('#title')).toHaveText('Screen recording');
-  await expect(dialog.locator('#where')).toContainText(`Save to ${EXPORT_DIR}/`);
+  await expect(dialog.locator('#where')).toContainText(`Into ${EXPORT_DIR}/`);
   await expect(dialog.locator('#where')).toContainText('Screen recording/');
   await expect(dialog.locator('#save')).toBeEnabled();
   await expect(dialog.locator('#footer')).toContainText('keeps recording');
@@ -192,91 +175,6 @@ test('Discard is a two-step; confirmed, the recording is gone from Rescribe and 
   await expect(row(page, live!.id)).toHaveCount(0);
 });
 
-test('Save as…: the video lands in the chosen folder, the transcript follows it there, Re-export goes there too, the Settings folder stays; Delete drops the handle', async ({
-  context,
-  extensionId,
-}) => {
-  // The picker cannot be driven: in the dialog it answers with another OPFS directory.
-  await context.addInitScript((other) => {
-    if (!location.pathname.endsWith('/stop/stop.html')) return;
-    window.showDirectoryPicker = async () =>
-      (await navigator.storage.getDirectory()).getDirectoryHandle(other, { create: true });
-  }, OTHER_EXPORT_DIR);
-  const { page, targetId } = await setUp(context, extensionId, { autoTranscribe: true });
-  const worker = await serviceWorker(context);
-  const settingsFolderBefore = await opfsList(page, [EXPORT_DIR]);
-  await startRecording(page);
-  await page.waitForTimeout(3000);
-  const [live] = await recordings(page);
-  await toolbarClick(worker, { id: targetId, url: MEET_URL });
-  const dialog = await waitForStopDialog(context, extensionId);
-  await dialog.click('#save-as');
-  const progress = await waitForProgressPage(context, extensionId);
-  await expect.poll(() => dialog.isClosed(), { timeout: 10_000 }).toBe(true);
-  await expect(progress.locator('#destination')).toContainText(`${OTHER_EXPORT_DIR}/`, {
-    timeout: 30_000,
-  });
-  await expect
-    .poll(async () => (await recordings(page)).find((r) => r.id === live!.id)?.exportPath, {
-      timeout: 30_000,
-    })
-    .toBeDefined();
-
-  let rec = (await recordings(page)).find((r) => r.id === live!.id)!;
-  expect(rec.exportRoot).toBe(OTHER_EXPORT_DIR);
-  expect(rec.exportPath).toMatch(/Screen recording$/);
-  const path = (name: string) => [OTHER_EXPORT_DIR, ...rec.exportPath!.split('/'), name];
-  expect(await opfsSize(page, path('recording.mp4'))).toBeGreaterThan(10_000);
-  expect(await opfsList(page, [EXPORT_DIR])).toEqual(settingsFolderBefore);
-  await expect(row(page, rec.id).locator('.path')).toHaveText(
-    `${OTHER_EXPORT_DIR}/${rec.exportPath}/`,
-  );
-  expect(await handleKeys(page)).toEqual(['export', `export:${rec.id}`]);
-
-  // The transcript follows the video into that folder (the first run downloads the model).
-  rec = await waitForRecording(page, rec.id, (r) => r.status === 'done' || r.status === 'failed', {
-    label: 'save-as',
-  });
-  expect(rec.status, rec.error).toBe('done');
-  expect(rec.error).toBeUndefined();
-  for (const name of ['transcript.md', 'transcript.json', 'meta.json'])
-    expect(await opfsSize(page, path(name)), name).toBeGreaterThan(0);
-  expect(await opfsList(page, [EXPORT_DIR])).toEqual(settingsFolderBefore);
-  // The processing tab followed it to the end, with the folder in front of the path.
-  await expect(progress.locator('#headline')).toHaveText('Done', { timeout: 10_000 });
-  await expect(progress.locator('#destination')).toHaveText(
-    `${OTHER_EXPORT_DIR}/${rec.exportPath}/`,
-  );
-  await expect(progress.locator('body')).toHaveAttribute('data-kind', 'done');
-  await progress.close();
-
-  // Re-export after the folder was deleted: it comes back under the recording's own folder.
-  await page.evaluate(
-    async ({ other, dir }) => {
-      const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(other);
-      await root.removeEntry(dir, { recursive: true });
-    },
-    { other: OTHER_EXPORT_DIR, dir: rec.exportPath! },
-  );
-  expect(await opfsSize(page, path('recording.mp4'))).toBe(-1);
-  await row(page, rec.id).locator('button.re-export').click();
-  await expect(page.locator('#library-status')).toContainText('Saved recording.mp4', {
-    timeout: 30_000,
-  });
-  expect(await opfsSize(page, path('recording.mp4'))).toBeGreaterThan(10_000);
-  expect(await opfsSize(page, path('transcript.md'))).toBeGreaterThan(0);
-  expect(await opfsList(page, [EXPORT_DIR])).toEqual(settingsFolderBefore);
-
-  // Delete: the record, its files and its handle go; the exported folder stays.
-  const del = row(page, rec.id).locator('button.delete');
-  await del.click();
-  await page.waitForTimeout(400);
-  await del.click();
-  await expect(row(page, rec.id)).toHaveCount(0);
-  expect(await handleKeys(page)).toEqual(['export']);
-  expect(await opfsSize(page, path('recording.mp4'))).toBeGreaterThan(10_000);
-});
-
 test("the share ends: the recording waits stopped with the badge on SAVE and the dialog open; closing it leaves the row's choices and survives a reload; a click reopens it; Save from the row exports and transcribes nothing until then", async ({
   context,
   extensionId,
@@ -301,13 +199,13 @@ test("the share ends: the recording waits stopped with the badge on SAVE and the
   await expect(page.locator('#record-status')).toContainText('not saved yet');
   await expect(page.locator('#record-screen')).toBeEnabled();
 
-  // Escape: still stopped, the row offers the three choices, the note stays.
+  // Escape: still stopped, the row offers the dialog's choices, the note stays.
   await escape(dialog);
   await expect(page.locator('#status')).toHaveText('stopped');
   const r = row(page, rec.id);
   await expect(r).toHaveAttribute('data-status', 'stopped');
   await expect(r.locator('button.save')).toBeVisible();
-  await expect(r.locator('button.save-as')).toBeVisible();
+  await expect(r.locator('button.save-routine[data-routine="e2e-echo"]')).toBeVisible();
   await expect(r.locator('button.discard')).toBeVisible();
   await expect(r.locator('button.re-export, button.save-now, button.rerun')).toHaveCount(0);
 

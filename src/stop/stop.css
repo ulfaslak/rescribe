@@ -32,6 +32,10 @@ body {
   background: var(--bg);
   color: var(--fg);
 }
+/* Chrome gives extension pages `body { font-size: 75% }` of its own; the sizes here are meant as written. */
+body {
+  font-size: 1rem;
+}
 main {
   display: grid;
   gap: 10px;
@@ -81,6 +85,36 @@ h1 {
   color: #fff;
   background: var(--pending);
   border-color: var(--pending);
+}
+.question {
+  margin: 0;
+  font-weight: 600;
+}
+.choices {
+  display: grid;
+  gap: 8px;
+}
+button.choice {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 9px 14px;
+}
+button.choice .label {
+  font-weight: 600;
+}
+button.choice .sub {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.choice.primary .sub {
+  color: rgb(255 255 255 / 0.85);
+}
+button.choice:not(:disabled):hover {
+  border-color: var(--accent);
 }
 .actions {
   display: flex;
