@@ -36,10 +36,18 @@ const p = paths(process.env);
 const extensionId = flag('--extension-id') ?? extensionIdForPath(path.join(REPO, 'dist'));
 for (const d of [p.recordings, p.runs, path.join(p.home, 'bin')]) mkdirSync(d, { recursive: true });
 
+// Node by name on a PATH with Homebrew's links in front, not the path this Node runs from: that is
+// a versioned Cellar directory, and the next `brew upgrade` deletes it.
 const wrapper = path.join(p.home, 'bin', 'rescribe-host');
 writeFileSync(
   wrapper,
-  `#!/bin/sh\n# Written by ${path.join(REPO, 'native/install.ts')}; run it again rather than editing this.\nexec "${process.execPath}" --no-warnings "${path.join(REPO, 'native/host.ts')}" "$@"\n`,
+  [
+    '#!/bin/sh',
+    `# Written by ${path.join(REPO, 'native/install.ts')}; run it again rather than editing this.`,
+    'export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"',
+    `exec node --no-warnings "${path.join(REPO, 'native/host.ts')}" "$@"`,
+    '',
+  ].join('\n'),
 );
 chmodSync(wrapper, 0o755);
 

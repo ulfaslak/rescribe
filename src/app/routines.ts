@@ -8,7 +8,7 @@
 // the transcript in the folder (`startWhenReady`, from the library), and on app start for whatever
 // a closed tab left waiting. Runs are followed by polling the host every few seconds while any is
 // `running`; the run itself lives outside the browser, so a closed tab only delays the record.
-import { applyStatus, waitingRun, type RoutineInfo } from '../lib/routines.ts';
+import { applyStatus, runKey, waitingRun, type RoutineInfo } from '../lib/routines.ts';
 import type { Recording } from '../lib/types.ts';
 import { rootFor } from '../storage/export.ts';
 import { getRecording, listRecordings, updateRecording } from '../storage/store.ts';
@@ -17,6 +17,8 @@ import type { RoutineList } from '../ui/routines.ts';
 import { onPipelineProgress } from './pipeline.ts';
 
 const POLL_MS = 4000;
+/** A start the host did not answer in time is asked again (same key) this much later. */
+const RETRY_START_MS = 30_000;
 
 /** Records with a run going: polled. */
 const following = new Set<string>();
@@ -55,14 +57,19 @@ export async function startWhenReady(id: string): Promise<void> {
     let patch: Recording['routine'];
     try {
       const root = await rootFor(rec);
-      const status = await startRoutine(run.id, {
-        id: rec.id,
-        title: rec.title,
-        folder: root.name,
-        exportPath: rec.exportPath!,
-      });
+      const status = await startRoutine(
+        run.id,
+        { id: rec.id, title: rec.title, folder: root.name, exportPath: rec.exportPath! },
+        runKey(rec.id, run),
+      );
       patch = applyStatus(run, status);
     } catch (err) {
+      if (err instanceof HostUnavailable && err.transient) {
+        // No answer in time: the run may have started all the same. It stays waiting and is
+        // asked again under the same key, which the host answers with that run if it exists.
+        window.setTimeout(() => void startWhenReady(id), RETRY_START_MS);
+        return;
+      }
       // Not installed, or refused (the folder is not the host's, the files are not there): the
       // run never began, so it is failed with the reason, and the row offers it again.
       patch = { ...run, state: 'failed', at: Date.now(), message: message(err) };

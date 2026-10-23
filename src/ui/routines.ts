@@ -11,16 +11,25 @@ import {
   type RunTarget,
 } from '../lib/routines.ts';
 
-/** The host could not be reached at all (not installed, not allowed); a run may still be going. */
+/**
+ * The host could not be reached at all (not installed, not allowed, no answer); a run may still be
+ * going. `transient`: no answer in time, which asking again (with the same key) may settle.
+ */
 export class HostUnavailable extends Error {
-  constructor(message: string) {
+  readonly transient: boolean;
+  constructor(message: string, transient = false) {
     super(message);
     this.name = 'HostUnavailable';
+    this.transient = transient;
   }
 }
 
+class Timeout extends Error {}
+
 function unavailable(err: unknown): HostUnavailable {
   const text = err instanceof Error ? err.message : String(err);
+  if (err instanceof Timeout)
+    return new HostUnavailable(`The routine host did not answer: ${text}`, true);
   if (/not found/i.test(text))
     return new HostUnavailable(
       'The routine host is not installed: run npm run install-host in the Rescribe clone.',
@@ -44,7 +53,7 @@ async function ask(req: HostRequest, timeoutMs: number): Promise<HostResponse> {
       chrome.runtime.sendNativeMessage(NATIVE_HOST, req),
       new Promise((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`no answer within ${timeoutMs / 1000} s`)),
+          () => reject(new Timeout(`no answer within ${timeoutMs / 1000} s`)),
           timeoutMs,
         );
       }),
@@ -106,11 +115,16 @@ async function runStatus(req: HostRequest): Promise<RunStatus> {
 }
 
 /**
- * Start `routine` on a recording in the folder; the run is `running` when this resolves. Throws
- * HostUnavailable when the host cannot be reached, an Error with the host's reason when it refused.
+ * Start `routine` on a recording in the folder, or get the run already started under `key`; the
+ * run is `running` (or further) when this resolves. Throws HostUnavailable when the host cannot
+ * be reached, an Error with the host's reason when it refused.
  */
-export function startRoutine(routine: string, recording: RunTarget): Promise<RunStatus> {
-  return runStatus({ type: 'run-routine', routine, recording });
+export function startRoutine(
+  routine: string,
+  recording: RunTarget,
+  key: string,
+): Promise<RunStatus> {
+  return runStatus({ type: 'run-routine', routine, recording, key });
 }
 
 /** A run's status. Throws as `startRoutine` does. */

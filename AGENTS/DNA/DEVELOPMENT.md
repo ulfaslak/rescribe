@@ -17,7 +17,7 @@ Routines need the native host registered once, from the primary clone (it refuse
 npm run install-host   # ~/.rescribe/{recordings,runs,bin}, the wrapper, the browsers' manifests
 ```
 
-It derives the extension's id from the path of this clone's `dist/` (an unpacked extension's id is a hash of its path) and writes `NativeMessagingHosts/com.rescribe.host.json` for Brave, Chrome and Chromium where their profile directories exist. Run it again after moving the clone or changing Node; a merged change to `native/` or `routines/` needs only the pull. The wrapper and anything else the browser starts directly must live outside `~/Documents` ([[ENVIRONMENT_NOTES]]).
+It derives the extension's id from the path of this clone's `dist/` (an unpacked extension's id is a hash of its path) and writes `NativeMessagingHosts/com.rescribe.host.json` for Brave, Chrome and Chromium where their profile directories exist. Run it again after moving the clone (the wrapper finds `node` on Homebrew's PATH at each start, so a Node upgrade needs nothing); a merged change to `native/` or `routines/` needs only the pull. The wrapper and anything else the browser starts directly must live outside `~/Documents` ([[ENVIRONMENT_NOTES]]).
 
 ## Commands
 

@@ -24,6 +24,8 @@ export interface Routine extends RoutineInfo {
 /** What the host hands the supervisor: `runs/<runId>/run.json`. */
 export interface RunSpec {
   runId: string;
+  /** The extension's name for this start (lib/routines.ts `runKey`): one run per key. */
+  key: string;
   routine: string;
   label: string;
   script: string;
@@ -102,6 +104,10 @@ export function resolveRecording(root: string, target: RunTarget): string {
   const dir = path.resolve(root, target.exportPath);
   if (!dir.startsWith(path.resolve(root) + path.sep))
     throw new Error(`"${target.exportPath}" is not inside ${root}.`);
+  if (!existsSync(dir))
+    throw new Error(
+      `${dir} does not exist: is ${root} the folder Rescribe saves into (Settings), and the recording still in it?`,
+    );
   let meta: { id?: unknown };
   try {
     meta = JSON.parse(readFileSync(path.join(dir, 'meta.json'), 'utf8')) as { id?: unknown };
@@ -112,6 +118,20 @@ export function resolveRecording(root: string, target: RunTarget): string {
     throw new Error(`${dir} holds another recording than "${target.title}".`);
   if (!existsSync(path.join(dir, 'transcript.md'))) throw new Error(`${dir} has no transcript.md.`);
   return dir;
+}
+
+/** The run started under `key`, if there is one: its directory. */
+export function findRun(runs: string, key: string): string | undefined {
+  if (!existsSync(runs)) return undefined;
+  for (const id of readdirSync(runs).sort().reverse()) {
+    if (!isRunId(id)) continue;
+    try {
+      if (readSpec(path.join(runs, id)).key === key) return path.join(runs, id);
+    } catch {
+      // a run directory without run.json yet: not this one
+    }
+  }
+  return undefined;
 }
 
 export function runDir(runs: string, runId: string): string {

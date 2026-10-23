@@ -16,6 +16,7 @@ import type { HostRequest, HostResponse, RunStatus } from '../src/lib/routines.t
 import { decodeMessage, encodeMessage, makeRunId, paths } from './lib.ts';
 import {
   currentStatus,
+  findRun,
   listRoutines,
   resolveRecording,
   runDir,
@@ -43,6 +44,9 @@ function readOne(): Promise<unknown> {
 
 function runRoutine(req: Extract<HostRequest, { type: 'run-routine' }>): HostResponse {
   const p = paths(process.env);
+  // Asked again for a start it has seen (the answer was lost): that run, not a second one.
+  const seen = findRun(p.runs, req.key);
+  if (seen) return { ok: true, run: currentStatus(seen) };
   const routine = listRoutines(p.routines).find((r) => r.id === req.routine);
   if (!routine) return { ok: false, error: `No routine "${req.routine}" in ${p.routines}.` };
   const recordingDir = resolveRecording(p.recordings, req.recording);
@@ -55,6 +59,7 @@ function runRoutine(req: Extract<HostRequest, { type: 'run-routine' }>): HostRes
   cpSync(routine.dir, copy, { recursive: true });
   const spec: RunSpec = {
     runId,
+    key: req.key,
     routine: routine.id,
     label: routine.label,
     script: path.join(copy, path.basename(routine.script)),

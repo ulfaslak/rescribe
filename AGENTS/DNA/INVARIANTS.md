@@ -71,3 +71,8 @@ A routine the human picks for a recording (DECISIONS § Routines) hands its dire
 
 **Mechanism:** a routine that runs Claude Code on a transcript runs it `--restricted --strict-mcp-config` (no Bash or other code-running tools, no WebFetch, no MCP servers, no user settings, file tools confined to its working directory) and never with `bypassPermissions` or `--dangerously-skip-permissions`; the meeting's files are copied into that directory, and the script around it does the git work. `native/routines.test.ts` reads every routine's `run.sh` and fails on a `claude` call without the two flags, or on either bypass anywhere.
 **Incident:** adversarial review of the routines (2026-10-23): the first Index in Lawcel ran `bypassPermissions` with the home directory in reach, so anyone on a call could have had it read `.env` keys into a note it then pushed to a shared repository.
+
+### A pick of a routine starts at most one run
+
+**Mechanism:** every `run-routine` carries a key for the pick (`src/lib/routines.ts` `runKey`: the recording's id, the routine, the epoch ms it was picked), stored in the run's `run.json`; `native/host.ts` answers a key it has seen (`store.ts` `findRun`) with that run's status instead of starting another. The app tab treats a start the host did not answer in time as unknown, not failed: the routine stays `waiting` and is asked again under the same key (`app/routines.ts` `startWhenReady`). `native/host.test.ts` "a start asked again under the same key gets the same run" asks twice and asserts one run.
+**Incident:** adversarial review of the routines (2026-10-23): a lost or slow answer marked the routine failed while the run went on outside the browser, and the retry the row offered would push the same meeting's notes a second time.

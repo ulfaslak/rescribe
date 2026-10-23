@@ -28,7 +28,11 @@ export interface RunTarget {
 
 export type HostRequest =
   | { type: 'list-routines' }
-  | { type: 'run-routine'; routine: string; recording: RunTarget }
+  /**
+   * `key` names this start (`runKey`): the host answers a key it has seen with that run instead
+   * of starting another, so a start whose answer was lost can be asked again safely.
+   */
+  | { type: 'run-routine'; routine: string; recording: RunTarget; key: string }
   | { type: 'routine-status'; runId: string };
 
 export type RunState = 'running' | 'done' | 'failed';
@@ -64,6 +68,11 @@ export interface RoutineRun {
   /** done: the routine's one line; failed: why. */
   message?: string;
   log?: string;
+}
+
+/** The start of `run` on recording `id`: the same until the human picks a routine again. */
+export function runKey(id: string, run: Pick<RoutineRun, 'id' | 'at'>): string {
+  return `${id}:${run.id}:${run.at}`;
 }
 
 /** A routine to wait for the transcript. */

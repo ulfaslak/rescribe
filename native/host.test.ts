@@ -72,8 +72,9 @@ function ask(req: HostRequest): Promise<HostResponse> {
   });
 }
 
-async function run(routineId: string, target: RunTarget): Promise<RunStatus> {
-  const res = await ask({ type: 'run-routine', routine: routineId, recording: target });
+let starts = 0;
+async function run(routineId: string, target: RunTarget, key = `k${++starts}`): Promise<RunStatus> {
+  const res = await ask({ type: 'run-routine', routine: routineId, recording: target, key });
   assert.ok(res.ok && 'run' in res, JSON.stringify(res));
   assert.equal(res.run.state, 'running');
   return res.run;
@@ -126,6 +127,26 @@ test('runs a routine on the recording, outside the host, with its summary at the
   assert.match(seen, /^PATH=.*\/\.local\/bin:\/opt\/homebrew\/bin:/m);
 });
 
+test('a start asked again under the same key gets the same run, not a second one', async () => {
+  const target = recording('twice', 'rec-9');
+  const first = await run('echo', target, 'rec-9:echo:1');
+  const again = await run('echo', target, 'rec-9:echo:1').catch(() => undefined);
+  // `run` asserts `running`; the first may have finished already, so ask plainly too.
+  const res = await ask({
+    type: 'run-routine',
+    routine: 'echo',
+    recording: target,
+    key: 'rec-9:echo:1',
+  });
+  assert.ok(res.ok && 'run' in res);
+  assert.equal(res.run.runId, first.runId);
+  if (again) assert.equal(again.runId, first.runId);
+  const other = await run('echo', target, 'rec-9:echo:2');
+  assert.notEqual(other.runId, first.runId);
+  await settle(first.runId);
+  await settle(other.runId);
+});
+
 test('a failing routine fails with the last line it printed', async () => {
   const done = await settle((await run('fails', recording('fails', 'rec-2'))).runId);
   assert.equal(done.state, 'failed');
@@ -167,11 +188,11 @@ test('refuses a recording it cannot vouch for, with a sentence for the human', a
     [{ ...recording('elsewhere', 'rec-4'), folder: 'transcripts' }, /folder named "transcripts"/],
     [{ ...recording('wrong-id', 'rec-5'), id: 'rec-other' }, /another recording/],
     [recording('no-transcript', 'rec-6', false), /no transcript\.md/],
-    [{ id: 'x', title: 'x', folder: 'recordings', exportPath: 'missing' }, /no readable meta/],
+    [{ id: 'x', title: 'x', folder: 'recordings', exportPath: 'missing' }, /does not exist: is/],
     [{ id: 'x', title: 'x', folder: 'recordings', exportPath: '../../etc' }, /not inside/],
   ];
   for (const [target, error] of cases) {
-    const res = await ask({ type: 'run-routine', routine: 'echo', recording: target });
+    const res = await ask({ type: 'run-routine', routine: 'echo', recording: target, key: 'r' });
     assert.ok(!res.ok, target.exportPath);
     assert.match(res.error, error);
   }
@@ -179,6 +200,7 @@ test('refuses a recording it cannot vouch for, with a sentence for the human', a
     type: 'run-routine',
     routine: 'nope',
     recording: recording('ok', 'rec-7'),
+    key: 'u',
   });
   assert.ok(!unknown.ok && /No routine "nope"/.test(unknown.error));
   const notARun = await ask({ type: 'routine-status', runId: '../../etc' });

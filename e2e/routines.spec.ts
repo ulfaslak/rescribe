@@ -177,7 +177,7 @@ test('from a transcribed row: refused by the host with its reason, offered again
   await expect(r.locator('.hint.routine.failed')).toContainText('E2E echo failed:', {
     timeout: 15_000,
   });
-  await expect(r.locator('.hint.routine.failed')).toContainText('no readable meta.json');
+  await expect(r.locator('.hint.routine.failed')).toContainText('does not exist: is');
   await r.screenshot({ path: 'screenshots/routines-row-failed.png' });
   expect((await record(page, live!.id)).routine?.state).toBe('failed');
 
