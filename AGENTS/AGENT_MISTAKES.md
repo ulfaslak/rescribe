@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-10-23 · routines · an unattended agent with every permission, fed what strangers said `[learned]`
+
+The first Index in Lawcel ran `claude -p --permission-mode bypassPermissions` on a meeting transcript, with the home directory, the shell, the network and push rights in reach, so anyone on a call could have had it copy `.env` keys into a note and push it, or send mail. The author thought of the transcript as the human's data; it is the words of everyone on the call. Found by the adversarial review. Fixed by running Claude Code `--restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep` in a worktree holding a copy of the meeting, with git in the script (INVARIANTS § "What was said on a call never reaches an agent that can run commands", pinned by `native/routines.test.ts`). Rule: an agent that reads input other people wrote gets only the tools its job needs, and anything that needs more is done by code around it.
+
 ### 2026-10-23 · routines · a render scheduled after the page said it was ready `[learned]`
 
 The routine list came from the native host after the app tab had rendered and set `data-ready`, and its arrival re-rendered the list, so a two-step button armed in that window was swapped for a fresh one and the confirming click armed it again: three library e2e tests that click Delete right after a reload failed in the first full run. Fixed by awaiting the list (with a timeout) before the first render (`app.ts` main, `app/routines.ts` `initRoutines`). Rule: data a row's buttons depend on is loaded before the first render; a later render is for state that changed, never for state that arrived late.
