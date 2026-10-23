@@ -11,12 +11,20 @@ Load `dist/` once in the human's browser (Brave): `brave://extensions` → Devel
 
 `npm run watch` rebuilds on change. You still reload the extension by hand.
 
+Routines need the native host registered once, from the primary clone (it refuses a worktree: the browser runs the host from where it was installed):
+
+```
+npm run install-host   # ~/.rescribe/{recordings,runs,bin}, the wrapper, the browsers' manifests
+```
+
+It derives the extension's id from the path of this clone's `dist/` (an unpacked extension's id is a hash of its path) and writes `NativeMessagingHosts/com.rescribe.host.json` for Brave, Chrome and Chromium where their profile directories exist. Run it again after moving the clone or changing Node; a merged change to `native/` or `routines/` needs only the pull. The wrapper and anything else the browser starts directly must live outside `~/Documents` ([[ENVIRONMENT_NOTES]]).
+
 ## Commands
 
 | Command                           | What                                                                                                                                                                                                                                                                                                                                                                                  |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `npm run check`                   | `tsc --noEmit`, strict. Must be clean.                                                                                                                                                                                                                                                                                                                                                |
-| `npm test`                        | Node's test runner over `src/**/*.test.ts`. Runs TypeScript directly (Node 25 type stripping), which is why source imports use the `.ts` extension, and why `src/lib/` uses no TypeScript-only _runtime_ syntax: no parameter properties, no `enum`, no `namespace`, no `import x = require()`. A file that uses them fails to load in `npm test` while `tsc` and esbuild stay green. |
+| `npm test`                        | Node's test runner over `src/**/*.test.ts` and `native/**/*.test.ts` (the native host as the browser drives it: a process per framed message, a temporary home and routines). Runs TypeScript directly (Node 25 type stripping), which is why source imports use the `.ts` extension, and why `src/lib/` uses no TypeScript-only _runtime_ syntax: no parameter properties, no `enum`, no `namespace`, no `import x = require()`. A file that uses them fails to load in `npm test` while `tsc` and esbuild stay green. |
 | `npm run e2e`                     | Builds, then Playwright drives the real extension in Chromium. See below.                                                                                                                                                                                                                                                                                                             |
 | `npm run format` / `format:check` | Prettier. A PostToolUse hook runs `--check` on files you edit.                                                                                                                                                                                                                                                                                                                        |
 
@@ -34,6 +42,8 @@ The profile lives in `.playwright/profile/` (gitignored) and is **reused between
 Headless by default (`channel: 'chromium'`, new headless supports extensions and, on this Mac, WebGPU with f16). `HEADED=1 npm run e2e` opens a window; `CHROME_CHANNEL=chrome` uses the installed Google Chrome instead of Playwright's Chromium; `RESCRIBE_E2E_WEBGPU=1` also runs the WebGPU transcription variant (2.4 GB download, skipped by default).
 
 Extension pages are opened by URL: `chrome-extension://<id>/app/app.html`, where the id comes from the service worker URL (see `fixtures.ts`). The id of an unpacked extension is a hash of its path (`.playwright/extension/` in the checkout), and the model cache lives in the extension origin's IndexedDB, so **each worktree's first e2e run downloads the model again** into that worktree's profile.
+
+The fixture also registers the real native host in the profile (`<profile>/NativeMessagingHosts/`, which Chromium reads) with a home of its own in the temp directory (`HOST_HOME`, outside `~/Documents` like the real `~/.rescribe`), a recordings folder named like `EXPORT_DIR`, and the routines in `e2e/fixtures/routines/`; the host's stderr goes to `HOST_HOME/host.log`. The export goes to OPFS, so `e2e/routines.spec.ts` writes a recording's directory on disk itself when a run should find it.
 
 `e2e/helpers.ts` holds the app-page helpers for specs written after `record.spec.ts` (open the page, seed the export folder, record, poll a record until a status, read OPFS files). `record.spec.ts` covers steps 1–2 and sets `autoTranscribe: false` in its `openApp`, so a recording ends at `recorded` with the pill idle; `pipeline.spec.ts` sets it back. Settings persist in the profile between tests, so a spec that depends on one sets it explicitly.
 
@@ -68,7 +78,7 @@ There is no deploy. After a merge, from the primary clone:
 git checkout main && git pull && npm run build
 ```
 
-Then the human reloads the extension at `brave://extensions`. Say so in the closer of any session that merges.
+Then the human reloads the extension at `brave://extensions`. Say so in the closer of any session that merges. A change to `native/` or `routines/` is live with the pull alone (the host runs from the primary clone); one that adds a manifest permission needs the reload.
 
 ## Worktrees
 

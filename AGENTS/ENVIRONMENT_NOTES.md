@@ -76,4 +76,8 @@ The Claude browser extension was not connected in the kickoff session, so browse
 
 ### The gtr post-create hook has not run
 
-`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-09-25 (`feat/in-page-start`).
+`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-10-23 (`feat/routines`).
+
+### A native host under ~/Documents never starts (probed 2026-10-23, Chrome for Testing 153 through Playwright)
+
+A native messaging host whose executable, the wrapper script, lives under `~/Documents` (the e2e harness's first try, `.playwright/` in the checkout) fails at once: `sendNativeMessage` rejects with `Native host has exited.` and the script's first line never runs. The same script in the temp directory or in a hidden directory of the home (`~/.rescribe-probe/`) runs. What the host then does under `~/Documents` works: Node reads `native/host.ts` and the routines from the checkout, and the supervisor, a child of the host, runs `run.sh` from there. Most likely macOS file protection on what the browser itself starts. Hence `~/.rescribe/bin/rescribe-host` and the harness's `HOST_HOME` in the temp directory. Not yet seen in Brave, which [[LIVE_CHECKS]] § "Index in Lawcel on a real call in Brave" settles.

@@ -10,7 +10,9 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 ---
 
-### No audio, video or transcript ever leaves the machine
+### No audio, video or transcript ever leaves the machine through Rescribe
+
+A routine the human picks for a recording (DECISIONS § Routines) hands its directory to a program of theirs outside the browser, which may send the transcript elsewhere (Index in Lawcel runs Claude Code). That is the human's choice, made per recording, and not Rescribe's traffic: the extension passes the routine the recording's id, title and path, never its content.
 
 **Mechanism:** the only permitted network traffic is the one-time model download from `huggingface.co`: `ParakeetEngine.load` fetches each file with parakeet.js's `getModelFile`, which serves its IndexedDB cache before the network, so a cached model loads with zero requests (`e2e/transcribe.spec.ts` asserts that on a fresh worker). `e2e/privacy.ts` records every HTTP(S) request a Playwright context makes, the transcribe worker's included, and every WebSocket a page opens, and fails on any network host outside its pinned list: `huggingface.co` and `<region>.<cloud>.cdn.hf.co`, the CDN it redirects to (observed `us.aws.cdn.hf.co`). Every test in `e2e/pipeline.spec.ts` asserts it over a whole run: record, transcribe, export; `e2e/transcribe.spec.ts` over the worker alone. The ORT binaries come from `dist/vendor/ort/`: `load` sets `ort.env.wasm.wasmPaths` before parakeet.js can default to jsDelivr. The manifest declares no `host_permissions`.
 **Incident:** none. Seeded 2026-09-24 as the product's core promise.
@@ -49,3 +51,18 @@ An entry that no longer matches the code is a bug in one of them. Find out which
 
 **Mechanism:** `start/start.html` is web-accessible (the overlay needs that), so any site can load it in a frame of its own. The service worker puts a one-time key in the URL of each dialog it opens (`background.ts` `issueStartKey`, kept in `chrome.storage.session` per tab) and counts a dialog as open, for Start Capture and for the toolbar toggle, only when its URL carries that tab's key (`startDialogs`); `start-capture` names the key, the key goes when the dialog is closed from the toolbar or its Start succeeds, and the page without it shows nothing and asks nothing of the app tab. `e2e/start-dialog.spec.ts` (the overlay test) frames the page from another site with a guessed key.
 **Incident:** 2026-09-25, the in-page start dialog's review: without the key, a site framing `start.html?tab=<id>` passed the "dialog still open" check, so a click in it recorded a tab whose click grant was still alive (the human had opened and closed the dialog there), and its frame made every toolbar click on that tab count as "close".
+
+### A routine runs only on a recording the host can vouch for
+
+**Mechanism:** the extension knows a recording's directory only by name (a folder handle has no path), so `native/store.ts` `resolveRecording` checks before a run starts that the Settings folder's name is the recordings folder's (`~/.rescribe/recordings`), that the export path resolves inside that folder, and that the directory's `meta.json` names the recording and sits next to `transcript.md`. Refused, the run never starts and the reason goes to the row. Run ids are checked by `isRunId` before they become paths. `native/host.test.ts` "refuses a recording it cannot vouch for" covers each case, `..` included; the routines e2e spec covers a refusal through the browser.
+**Incident:** none. Seeded 2026-10-23: Index in Lawcel pushes what it is given to a shared repository, so a run on the wrong recording would publish the wrong meeting.
+
+### A routine never runs with the human's API key
+
+**Mechanism:** `native/lib.ts` `routineEnv` builds every routine's environment from the browser's without `ANTHROPIC_API_KEY` (and without Claude Code's session variables), so `claude` in a routine bills the human's subscription. `native/lib.test.ts` asserts it on the function, and `native/host.test.ts` runs a routine under a host that has the key and asserts the routine's environment does not.
+**Incident:** none. Seeded 2026-10-23: the human's keys bill metered accounts, uncapped, and an automation must never spend them.
+
+### A run that stopped without finishing is reported failed, never running forever
+
+**Mechanism:** `status.json` carries the supervisor's pid while a run goes on; `native/store.ts` `currentStatus` turns a `running` status whose pid is gone into `failed` ("Interrupted…") and writes it back, and the supervisor stops a routine that outlives its `timeoutMinutes`. The app tab polls only `running` runs, so without this a row would poll and say "running" forever after a restart. `native/host.test.ts` "a run whose supervisor is gone is failed" kills the supervisor and asserts the status.
+**Incident:** none. Seeded 2026-10-23.

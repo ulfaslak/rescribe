@@ -77,9 +77,12 @@ export function isRunId(s: string): boolean {
  * human's tool directories in front, and without what would change who pays or what runs.
  * `ANTHROPIC_API_KEY` goes: with it set, `claude` bills that key instead of the human's
  * subscription, and the human's keys are never to be spent by an automation. The variables a
- * Claude Code session sets go too, so a run started from inside one (a test, a terminal) behaves
- * as one started by the browser.
+ * Claude Code session and tmux set go too, so a run started from inside one (a test, a terminal)
+ * behaves as one started by the browser: the human's hooks key on `TMUX_PANE` and would mark
+ * the window of whoever started it.
  */
+const DROPPED = new Set(['ANTHROPIC_API_KEY', 'CLAUDECODE', 'TMUX', 'TMUX_PANE']);
+
 export function routineEnv(
   base: NodeJS.ProcessEnv,
   extra: Record<string, string>,
@@ -87,7 +90,7 @@ export function routineEnv(
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined) continue;
-    if (k === 'ANTHROPIC_API_KEY' || k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) continue;
+    if (DROPPED.has(k) || k.startsWith('CLAUDE_CODE_')) continue;
     env[k] = v;
   }
   const home = env['HOME'] ?? homedir();

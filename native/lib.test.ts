@@ -38,7 +38,7 @@ test('a run id sorts by time, names the routine, and nothing else passes as one'
     assert.ok(!isRunId(bad), bad);
 });
 
-test("a routine's environment drops the API key and Claude Code's session, and finds the tools", () => {
+test("a routine's environment drops the API key, Claude Code's session and tmux, and finds the tools", () => {
   const env = routineEnv(
     {
       HOME: '/Users/u',
@@ -47,12 +47,16 @@ test("a routine's environment drops the API key and Claude Code's session, and f
       CLAUDECODE: '1',
       CLAUDE_CODE_ENTRYPOINT: 'cli',
       SSH_AUTH_SOCK: '/tmp/agent',
+      TMUX: '/tmp/tmux-501/default,1,0',
+      TMUX_PANE: '%3',
     },
     { RESCRIBE_RUN_ID: 'r' },
   );
   assert.equal(env['ANTHROPIC_API_KEY'], undefined);
   assert.equal(env['CLAUDECODE'], undefined);
   assert.equal(env['CLAUDE_CODE_ENTRYPOINT'], undefined);
+  assert.equal(env['TMUX_PANE'], undefined);
+  assert.equal(env['TMUX'], undefined);
   assert.equal(env['SSH_AUTH_SOCK'], '/tmp/agent');
   assert.equal(env['RESCRIBE_RUN_ID'], 'r');
   assert.deepEqual(env['PATH']?.split(':'), [

@@ -2,13 +2,13 @@
 
 ## Vision
 
-Press one button before a call. After the call, find a folder with the video and a transcript that says who said what. Nothing leaves the machine. That's it.
+Press one button before a call. After the call, find a folder with the video and a transcript that says who said what. Nothing leaves the machine. That's it. When the call ends, say what should happen to it next, and a routine of the human's own takes the transcript from there (Index in Lawcel files it in lawcel-knowledge).
 
 The human is Ulf: runs many Google Meet calls (consulting, PyMC Labs, Lawcel), sometimes Teams, wants transcripts as raw material for later work with agents. He records his own screen with narration sometimes. He does not want workflows hard-coded: Meet calls, Teams calls and narrated screen recordings must all fall out of one mechanism (sources in, assets out).
 
 ## The two assets
 
-Every recording produces, in the folder chosen in Settings, under a per-recording directory named by the path template:
+Every recording produces, in the folder chosen in Settings (`~/.rescribe/recordings`, the one routines read), under a per-recording directory named by the path template:
 
 - `recording.webm`: the captured video with a mixed audio track (everyone plus the microphone), about 65 MB per hour of a call at the default settings (5 fps, AV1); `recording.mp4` when Settings says MP4, for QuickTime.
 - `transcript.md`: speaker-attributed turns with timestamps, readable as-is.
@@ -35,6 +35,8 @@ Every recording produces, in the folder chosen in Settings, under a per-recordin
 
 - Transcription progress as steps (2026-09-25): while a recording is transcribed, its row, the Record section's line and the processing tab show the job as numbered steps in order (**Speech model** when it has to be fetched or loaded, **Your microphone** or **Ulf’s microphone** after the name in Settings, **The call**, **Who said what**, **Transcript files** when there is a folder), the running one marked with its share and, for a channel, where in the recording it is (`at 18:12 of 35:10`), one bar for the whole job split into a segment per step, the time elapsed and, once the job's own pace is known, a rough time left (for the running channel alone while another channel waits, for the whole job once the last one runs); a channel kept from an earlier run shows as done; the start dialog's one-liner says the step. The step count never changes during a run, and no channel id or region count is shown anywhere. Verified in headless Chromium with screenshots of every state (`e2e/progress.spec.ts`); the first real call in Brave is a pending live check.
 
+- Routines (2026-10-23): when a recording ends, the stop window asks what should happen to it: **Save**; **Index in Lawcel**, which saves it and, once the transcript is in the folder, has Claude Code copy the transcript into lawcel-knowledge as `meetings/transcripts/<date>-<names>.md`, write the meeting's note, update the CRM, decisions, questions and reminders there, and push; or **Discard**. **Save as…** is gone: recordings go to one folder, `~/.rescribe/recordings`. A routine runs outside the browser, so the Rescribe tab and the browser can close while it works; a macOS notification says when it is done or why it failed, the recording's row and the processing tab say it too (with the run's log), and a transcribed row offers each routine again (click twice). Picking a routine transcribes the recording even with auto-transcription off. Routines are scripts in the repository (`routines/`), so a new one is a PR; `npm run install-host` connects them to the browser once. Verified with the real host in headless Chromium and a routine of the harness's own; Index in Lawcel itself on a real call in Brave is a pending live check.
+
 ### Planned, in order
 
 Nothing queued; see Later.
@@ -51,4 +53,4 @@ Nothing queued; see Later.
 
 - Cloud anything: sync, accounts, sharing links.
 - Editing video.
-- Summaries or LLM post-processing inside the extension. The transcript is the raw material; what happens next is up to the human's other tools.
+- Summaries or LLM post-processing inside the extension. The transcript is the raw material; what happens next is up to the human's other tools, which routines hand it to (DECISIONS § Routines).
