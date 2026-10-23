@@ -12,6 +12,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { extensionIdForPath } from '../native/lib.ts';
 import { NATIVE_HOST } from '../src/lib/routines.ts';
@@ -50,8 +52,14 @@ function testBuild(): string {
  * The recordings folder is named like helpers.ts `EXPORT_DIR`, since the host checks the Settings
  * folder's name against it; the export itself goes to OPFS, so a spec that wants a run to find
  * the recording on disk writes it there (routines.spec.ts). The home is emptied on every launch.
+ * It is outside ~/Documents, as the real one is (`~/.rescribe`): the browser cannot start a host
+ * whose executable lives there (ENVIRONMENT_NOTES § "A native host under ~/Documents never
+ * starts"). One per checkout, so worktrees do not share it.
  */
-export const HOST_HOME = path.resolve('.playwright/rescribe-home');
+export const HOST_HOME = path.join(
+  tmpdir(),
+  `rescribe-e2e-${createHash('sha256').update(process.cwd()).digest('hex').slice(0, 8)}`,
+);
 export const HOST_RECORDINGS = path.join(HOST_HOME, 'export-test');
 
 function registerHost(profile: string, extensionDir: string): void {
@@ -66,7 +74,8 @@ function registerHost(profile: string, extensionDir: string): void {
       `export RESCRIBE_RECORDINGS="${HOST_RECORDINGS}"`,
       `export RESCRIBE_ROUTINES="${path.resolve('e2e/fixtures/routines')}"`,
       'export RESCRIBE_NOTIFY=0',
-      `exec "${process.execPath}" --no-warnings "${path.resolve('native/host.ts')}" "$@"`,
+      // Chrome drops a host's stderr; the harness keeps it.
+      `exec "${process.execPath}" --no-warnings "${path.resolve('native/host.ts')}" "$@" 2>>"${path.join(HOST_HOME, 'host.log')}"`,
       '',
     ].join('\n'),
   );
