@@ -1,6 +1,7 @@
 // The recording library (ARCHITECTURE § Pipeline: "any stage can be re-run from the library").
-// One row per Recording: an editable title, the status, what is still on disk, and the actions
-// that work from OPFS (re-export, re-run transcription, delete media, delete). App-tab only.
+// One row per Recording: an editable title, the status, what is still on disk, the routine chosen
+// for it and how it went, and the actions that work from OPFS (re-export, re-run transcription,
+// delete media, delete) or on the folder (run a routine). App-tab only.
 //
 // app.ts calls renderList() after every recorder phase change and every pipeline phase. Each
 // render re-reads IndexedDB and walks `recordings/` in OPFS once: the walk is both the storage
@@ -10,6 +11,7 @@
 // current without help from the recorder or the pipeline.
 import { formatDuration } from '../lib/format.ts';
 import type { PipelineProgress } from '../lib/progress.ts';
+import { describeRun, type RoutineInfo } from '../lib/routines.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { finalize } from '../recorder/recorder.ts';
@@ -21,7 +23,6 @@ import {
   exportVideoName,
   getExportRoot,
   setExportRoot,
-  setRecordingExportRoot,
   type ExportedFileState,
 } from '../storage/export.ts';
 import { isExportableArtifact, isMediaFile, pcmFileName, videoFileName } from '../storage/opfs.ts';
@@ -36,9 +37,11 @@ import {
   type StorageUsage,
 } from '../storage/store.ts';
 import { confirmButton } from '../ui/confirm.ts';
+import { folderMismatch } from '../ui/routines.ts';
 import { renderSteps, tickElapsed } from '../ui/steps.ts';
 import { decide, isDeciding } from './decide.ts';
 import { isTranscribing, onPipelineProgress, transcribeRecording } from './pipeline.ts';
+import { routinesOnOffer, runRoutineOn, startWhenReady, transcriptInFolder } from './routines.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -230,14 +233,14 @@ async function runAction(
  * `exportArtifacts`, next to it. Works from the stored record, never while the recorder or the
  * pipeline holds the recording, and re-requests the folder permission first thing in the click
  * (after a browser restart the persisted handle is `prompt`; the recording's own folder when it
- * was saved with Save as…). `finalize` reuses `exportPath`, so a
+ * was saved with Save as…, before routines). `finalize` reuses `exportPath`, so a
  * folder the human deleted comes back at the same path. `error` is cleared only when both are in
  * the folder; a `done` recording stays `done`. A `failed` recording with a playable video (a chunk
  * lost late in a long call) is saved as `failed` and keeps its reason: what went wrong on export
  * goes to the status line, not the record.
  */
 async function reExport(id: string): Promise<Outcome> {
-  // The recording's own folder (Save as…) or the Settings folder: whichever it is exported under.
+  // The recording's own folder (an old Save as…) or the Settings folder: whichever it is under.
   await ensureExportPermission((await getRecording(id)) ?? undefined).catch(() => undefined);
   const claimed = await claim(id, 'save it');
   if (typeof claimed === 'string') return claimed;
@@ -290,6 +293,8 @@ async function reExport(id: string): Promise<Outcome> {
     }
   }
   if (!failed && rec.error) rec = await updateRecording(rec.id, { error: undefined });
+  // A routine waiting for the transcript to reach the folder can start now.
+  if (!failed) void startWhenReady(rec.id);
   return written.length
     ? `Saved ${written.join(', ')} to ${rec.exportPath}/.`
     : `${rec.exportPath}/ is up to date: ${exportVideoName(rec.container)} is there and there is no transcript to save yet.`;
@@ -319,9 +324,10 @@ async function claim(id: string, what: string): Promise<Recording | string> {
 // --- The decision on a stopped recording (app/decide.ts) ----------------------------------------
 /**
  * Save into the folder from Settings, chosen here first when there is none (a Save must save;
- * cancelled, nothing happens); the permission is re-requested inside the click.
+ * cancelled, nothing happens); the permission is re-requested inside the click. With a routine,
+ * it runs once the transcript is in the folder.
  */
-async function saveStopped(id: string): Promise<Outcome> {
+async function saveStopped(id: string, routine?: RoutineInfo): Promise<Outcome> {
   if (!(await getExportRoot())) {
     try {
       const handle = await window.showDirectoryPicker({
@@ -336,22 +342,46 @@ async function saveStopped(id: string): Promise<Outcome> {
     }
   }
   await ensureExportPermission().catch(() => undefined);
-  const rec = await decide(id, 'save');
+  const rec = await decide(id, 'save', undefined, routine);
   return savedOutcome(rec);
 }
 
-/** Save as…: Chrome's folder picker inside the click, the handle stored for this recording only. */
-async function saveStoppedAs(id: string): Promise<Outcome> {
-  let dir: FileSystemDirectoryHandle;
-  try {
-    dir = await window.showDirectoryPicker({ id: 'rescribe-save-as', mode: 'readwrite' });
-  } catch (err) {
-    if ((err as DOMException).name === 'AbortError') return undefined;
-    return fail(`Could not choose a folder: ${describe(err)}`);
-  }
-  await setRecordingExportRoot(id, dir);
-  const rec = await decide(id, 'save-as');
-  return savedOutcome(rec);
+/** A routine on a recording whose transcript is in the folder (app/routines.ts). */
+async function runRoutine(id: string, routine: RoutineInfo): Promise<Outcome> {
+  const rec = await runRoutineOn(id, routine);
+  const run = rec.routine;
+  if (run?.state === 'failed') return fail(describeRun(run, true));
+  return `${routine.label} started on "${rec.title}".`;
+}
+
+/**
+ * Why the routines cannot run on recordings saved now, or undefined: none on offer (the host is
+ * missing), or the Settings folder is not the one the host reads.
+ */
+async function routineBlocker(): Promise<string | undefined> {
+  const list = routinesOnOffer();
+  if (list.error) return list.error;
+  return folderMismatch(list, (await getExportRoot())?.name);
+}
+
+/** One button per routine on offer, each a two-step: a routine writes outside Rescribe. */
+function routineButtons(
+  rec: Recording,
+  li: HTMLElement,
+  blocker: string | undefined,
+): HTMLButtonElement[] {
+  return routinesOnOffer().routines.map((routine) => {
+    const b = confirmButton(
+      routine.label,
+      `Run ${routine.label} on "${rec.title}"?`,
+      'routine',
+      () => void runAction([rec.id], `${routine.label}…`, li, () => runRoutine(rec.id, routine)),
+    );
+    b.dataset['routine'] = routine.id;
+    b.title = blocker ?? routine.description ?? routine.label;
+    b.disabled = blocker !== undefined || rec.routine?.state === 'running';
+    return b;
+  });
 }
 
 function savedOutcome(rec: Recording | undefined): Outcome {
@@ -525,7 +555,11 @@ function span(cls: string, text: string): HTMLSpanElement {
   return el;
 }
 
-function item(rec: Recording, inv: Inventory): HTMLLIElement {
+/**
+ * One row. `blocker`: why routines cannot run on what is saved now (lib `routineBlocker`), which
+ * the routine buttons show instead of running.
+ */
+function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTMLLIElement {
   const li = document.createElement('li');
   li.className = 'recording-item';
   li.dataset['id'] = rec.id;
@@ -577,6 +611,13 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
   }
   if (rec.error) li.append(div('hint error', rec.error));
   if (rec.note) li.append(div('hint', rec.note));
+  if (rec.routine) {
+    const run = rec.routine;
+    li.append(div(`hint routine ${run.state}`, describeRun(run, transcriptInFolder(rec))));
+    // Where to look while it runs and after it failed: the run's log, outside the browser.
+    if (run.log && (run.state === 'running' || run.state === 'failed'))
+      li.append(div('path routine-log', run.log));
+  }
   if (rec.mediaDeleted)
     li.append(
       div('hint media-deleted', 'Media deleted from local storage; the exported files remain.'),
@@ -594,7 +635,7 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
     // Waiting for the human: the same three choices as the stop dialog, nothing else. Nothing
     // has been exported and nothing is transcribed until one of them is clicked.
     li.append(
-      div('hint pending', 'Not saved yet: save it, save it into another folder, or discard it.'),
+      div('hint pending', 'Not saved yet: save it, save it and run a routine, or discard it.'),
     );
     const save = document.createElement('button');
     save.className = 'save';
@@ -604,17 +645,23 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
       'click',
       () => void runAction([rec.id], 'Saving…', li, () => saveStopped(rec.id)),
     );
-    const saveAs = document.createElement('button');
-    saveAs.className = 'save-as';
-    saveAs.textContent = 'Save as…';
-    saveAs.title = 'Choose a folder for this recording only; the Settings folder stays';
-    saveAs.addEventListener(
-      'click',
-      () => void runAction([rec.id], 'Saving…', li, () => saveStoppedAs(rec.id)),
-    );
+    // Save with a routine: one click, as in the stop dialog; the routine runs after the transcript.
+    const withRoutine = routinesOnOffer().routines.map((routine) => {
+      const b = document.createElement('button');
+      b.className = 'save-routine';
+      b.dataset['routine'] = routine.id;
+      b.textContent = routine.label;
+      b.title = blocker ?? `Save, transcribe, then: ${routine.description ?? routine.label}`;
+      b.disabled = blocker !== undefined;
+      b.addEventListener(
+        'click',
+        () => void runAction([rec.id], 'Saving…', li, () => saveStopped(rec.id, routine)),
+      );
+      return b;
+    });
     actions.append(
       save,
-      saveAs,
+      ...withRoutine,
       confirmButton(
         'Discard',
         `Discard "${rec.title}"? Nothing was exported.`,
@@ -656,6 +703,8 @@ function item(rec: Recording, inv: Inventory): HTMLLIElement {
     );
     actions.append(b);
   }
+  // A routine needs the transcript in the folder; it says why not when it cannot run.
+  if (transcriptInFolder(rec)) actions.append(...routineButtons(rec, li, blocker));
   if (inv.mediaBytes > 0) {
     // A recording without a transcript loses the audio a transcript would be made from.
     const consequence =
@@ -724,9 +773,17 @@ let bound = false;
 const signatureOf = (recs: Recording[]): string =>
   recs
     .map((r) =>
-      [r.id, r.status, r.exportPath, r.error, r.note, r.mediaDeleted, r.transcribedAt].join(
-        '\u0001',
-      ),
+      [
+        r.id,
+        r.status,
+        r.exportPath,
+        r.error,
+        r.note,
+        r.mediaDeleted,
+        r.transcribedAt,
+        r.routine?.state,
+        r.routine?.at,
+      ].join('\u0001'),
     )
     .join('\u0002');
 
@@ -738,9 +795,13 @@ function bindOnce(): void {
 
 async function render(): Promise<void> {
   bindOnce();
-  const [recs, usage] = await Promise.all([listRecordings(), storageUsage()]);
+  const [recs, usage, blocker] = await Promise.all([
+    listRecordings(),
+    storageUsage(),
+    routineBlocker(),
+  ]);
   $<HTMLUListElement>('#recordings-list').replaceChildren(
-    ...recs.map((rec) => item(rec, inventory(rec, usage))),
+    ...recs.map((rec) => item(rec, inventory(rec, usage), blocker)),
   );
   $<HTMLElement>('#recordings-empty').hidden = recs.length > 0;
   renderStorage(recs, usage);

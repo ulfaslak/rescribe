@@ -12,10 +12,15 @@
         <span id="elapsed" class="elapsed"></span>
       </header>
       <h1 id="title">Rescribe</h1>
-      <p id="where" class="hint"></p>
+      <p class="question">What should happen to it?</p>
+      <div id="choices" class="choices">
+        <button id="save" class="choice primary" disabled>
+          <span class="label">Save</span>
+          <span id="where" class="sub">Video and transcript into the folder</span>
+        </button>
+      </div>
+      <p id="routines-note" class="hint" hidden></p>
       <div class="actions">
-        <button id="save" class="primary" disabled>Save</button>
-        <button id="save-as" disabled>Save as…</button>
         <span id="discard-slot"></span>
       </div>
       <p id="status" class="hint" aria-live="polite"></p>

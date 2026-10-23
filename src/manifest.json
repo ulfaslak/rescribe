@@ -22,7 +22,15 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "tabCapture", "unlimitedStorage"],
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "tabs",
+    "tabCapture",
+    "unlimitedStorage"
+  ],
   "web_accessible_resources": [
     {
       "resources": ["start/start.html"],

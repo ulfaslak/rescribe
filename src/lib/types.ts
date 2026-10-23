@@ -3,6 +3,7 @@
 // (t = 0 at the first captured sample). Only Recording.startedAt/endedAt/transcribedAt are
 // wall-clock epoch ms.
 import type { Backend } from './asr/engine.ts';
+import type { RoutineRun } from './routines.ts';
 
 export type ChannelId = 'mic' | 'display';
 
@@ -17,7 +18,8 @@ export interface Source {
 
 /**
  * `stopped`: the media is complete on disk and nothing has been exported; the recording waits
- * for the human's decision (save, save elsewhere, discard). `recorded`: the export was attempted.
+ * for the human's decision (save, save and run a routine, discard). `recorded`: the export was
+ * attempted.
  */
 export type RecordingStatus =
   'recording' | 'stopped' | 'recorded' | 'transcribing' | 'done' | 'failed';
@@ -33,9 +35,10 @@ export interface Recording {
   status: RecordingStatus;
   container: Container;
   /**
-   * The name of the folder this recording was saved under with "Save as…", when it was not the
-   * folder from Settings; its handle lives in IndexedDB `handles` under `export:<id>`
-   * (src/storage/handles.ts). Display only: the handle is the truth.
+   * The name of the folder this recording was saved under with "Save as…" (gone since 2026-10-23,
+   * when routines replaced it), when it was not the folder from Settings; its handle lives in
+   * IndexedDB `handles` under `export:<id>` (src/storage/handles.ts). Display only: the handle is
+   * the truth. Only records from before then have it.
    */
   exportRoot?: string;
   /** Relative path of the export directory under its folder, once the video is in it. */
@@ -56,6 +59,8 @@ export interface Recording {
   transcribedAt?: number;
   /** The video and PCM were deleted from OPFS; artifacts and the segments cache stay. */
   mediaDeleted?: boolean;
+  /** The routine chosen for it (lib/routines.ts), the last one when there were several. */
+  routine?: RoutineRun;
 }
 
 export interface Word {

@@ -3,16 +3,17 @@
 // message types. Workers speak postMessage, and each worker's protocol is typed in its own file
 // under src/workers/.
 import type { PipelineProgress } from './progress.ts';
+import type { RoutineInfo } from './routines.ts';
 import type { RecordingStatus } from './types.ts';
 
 /**
- * `pending`: a stopped recording waits for the human's decision (save, save as, discard). No
+ * `pending`: a stopped recording waits for the human's decision (save, a routine, discard). No
  * state for a transcription: the processing tab is its feedback (DECISIONS § Form factor).
  */
 export type BadgeState = 'idle' | 'recording' | 'pending' | 'error';
 
-/** What the human does with a recording once it stops (or to stop it). */
-export type Decision = 'save' | 'save-as' | 'discard';
+/** What the human does with a recording once it stops (or to stop it); a routine rides on `save`. */
+export type Decision = 'save' | 'discard';
 
 /** The recording the stop dialog is about: the live one, or the newest one waiting `stopped`. */
 export interface PendingInfo {
@@ -96,12 +97,12 @@ export type Message =
   | { type: 'query-pending' }
   /**
    * The stop dialog → the owning app tab: the human decided. `save` stops the recording if it
-   * still runs and exports it to the folder from Settings; `save-as` the same into the folder
-   * whose handle the sender stored under `export:<id>` first (handles cannot travel in a
-   * message); `discard` stops it and deletes it. Answered with a DecideResult once the export (or
-   * the deletion) is done.
+   * still runs and exports it to the folder from Settings, and with a `routine` it is transcribed
+   * whatever Settings say and the routine runs once the transcript is in the folder
+   * (app/routines.ts); `discard` stops it and deletes it. Answered with a DecideResult once the
+   * export (or the deletion) is done.
    */
-  | { type: 'decide'; id: string; action: Decision }
+  | { type: 'decide'; id: string; action: Decision; routine?: RoutineInfo }
   /**
    * The start dialog → service worker: Start Capture. The dialog was opened for `tabId` by a
    * toolbar click, which is the invocation the tab capture needs; `key` is the one-time key the

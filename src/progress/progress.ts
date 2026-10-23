@@ -1,12 +1,13 @@
 // The processing tab: a normal tab the service worker opens (`open-progress`) after a save in the
 // stop dialog, so the human sees what happens to the recording next (the video export, the
-// transcription, where it all went) while the app tab, which does the work, stays pinned in the
-// background. A view: the record from IndexedDB once a second (the truth on disk, readable with
+// transcription, where it all went, and the routine chosen for it, which runs outside the
+// browser) while the app tab, which does the work, stays pinned in the background. A view: the record from IndexedDB once a second (the truth on disk, readable with
 // the app tab closed) plus the app tab's live line for it (`query-progress`). Closing this tab
 // stops nothing; a closed app tab does, and this page says so and offers to open it.
 import type { ProgressInfo } from '../lib/messages.ts';
 import { send } from '../lib/messages.ts';
 import { stepOf, type PipelineProgress } from '../lib/progress.ts';
+import { describeRun } from '../lib/routines.ts';
 import { loadSettings } from '../lib/settings.ts';
 import type { Recording } from '../lib/types.ts';
 import { rootFor } from '../storage/export.ts';
@@ -50,14 +51,16 @@ function view(
   if (!rec)
     return { headline: 'Gone', detail: 'This recording was discarded or deleted.', kind: 'error' };
   if (live?.saving) return { headline: 'Saving the video…', detail: '', kind: 'busy' };
+  // What comes after the transcript, while the transcript is still being made.
+  const then = rec.routine?.state === 'waiting' ? ` · then ${rec.routine.label}` : '';
   if (live?.progress && live.progress.phase !== 'done') {
     const p = live.progress;
     const at = stepOf(p);
     return {
       headline: p.message,
       detail: at
-        ? `Step ${at.index} of ${at.count} · ${Math.round(p.overall * 100)}% of the whole job`
-        : '',
+        ? `Step ${at.index} of ${at.count} · ${Math.round(p.overall * 100)}% of the whole job${then}`
+        : then.slice(3),
       kind: 'busy',
       ...(p.steps.length ? { progress: p } : {}),
     };
@@ -68,7 +71,7 @@ function view(
     case 'stopped':
       return {
         headline: 'Waiting to be saved',
-        detail: 'Save, Save as… or Discard it in Rescribe.',
+        detail: 'Save it, run a routine on it or Discard it in Rescribe.',
         kind: 'paused',
       };
     case 'recorded':
@@ -89,18 +92,32 @@ function view(
       };
     case 'transcribing':
       return appOpen ? { headline: 'Waiting to transcribe…', detail: '', kind: 'busy' } : PAUSED;
-    case 'done':
-      return rec.error
-        ? {
-            headline: 'Transcribed, but not everything is in the folder',
-            detail: rec.error,
-            kind: 'error',
-          }
-        : {
-            headline: 'Done',
-            detail: 'The video and the transcript are in the folder.',
-            kind: 'done',
+    case 'done': {
+      if (rec.error)
+        return {
+          headline: 'Transcribed, but not everything is in the folder',
+          detail: rec.error + (rec.routine ? ` ${describeRun(rec.routine, false)}` : ''),
+          kind: 'error',
+        };
+      const run = rec.routine;
+      const files = 'The video and the transcript are in the folder.';
+      if (!run) return { headline: 'Done', detail: files, kind: 'done' };
+      switch (run.state) {
+        case 'waiting':
+          return { headline: `Starting ${run.label}…`, detail: files, kind: 'busy' };
+        case 'running':
+          return {
+            headline: `${run.label}…`,
+            detail: `${files} ${describeRun(run, true)} It runs outside the browser, so this tab and Rescribe can close; a notification says when it is done.`,
+            kind: 'busy',
           };
+        case 'done':
+          return { headline: 'Done', detail: `${files} ${describeRun(run, true)}`, kind: 'done' };
+        case 'failed':
+          return { headline: `${run.label} failed`, detail: run.message ?? '', kind: 'error' };
+      }
+      break;
+    }
     case 'failed':
       // The recorder, the export and the pipeline all end here; the error says which.
       return { headline: 'Failed', detail: rec.error ?? 'Unknown error.', kind: 'error' };
@@ -116,6 +133,12 @@ async function destination(rec: Recording | undefined): Promise<string> {
   } catch {
     return '';
   }
+}
+
+/** The run's log while it runs or after it failed: where to look, outside the browser. */
+function logPath(rec: Recording | undefined): string {
+  const run = rec?.routine;
+  return run?.log && (run.state === 'running' || run.state === 'failed') ? `Log: ${run.log}` : '';
 }
 
 function render(rec: Recording | undefined, v: View, dest: string): void {
@@ -136,6 +159,7 @@ function render(rec: Recording | undefined, v: View, dest: string): void {
   bar.hidden = v.kind !== 'busy' || !!v.progress;
   bar.classList.add('indeterminate');
   $<HTMLElement>('#destination').textContent = dest;
+  $<HTMLElement>('#log').textContent = logPath(rec);
   document.body.dataset['kind'] = v.kind;
 }
 

@@ -2,15 +2,19 @@
 // See AGENTS/DNA/DEVELOPMENT.md § "The e2e harness".
 import { test as base, chromium, type BrowserContext } from '@playwright/test';
 import {
+  chmodSync,
   constants,
   cpSync,
   existsSync,
   globSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { extensionIdForPath } from '../native/lib.ts';
+import { NATIVE_HOST } from '../src/lib/routines.ts';
 
 /** Title of the page a test opens for getDisplayMedia to auto-select (see the flag below). */
 export const CAPTURE_TARGET_TITLE = 'Rescribe Capture Target';
@@ -37,6 +41,48 @@ function testBuild(): string {
   manifest['host_permissions'] = ['<all_urls>'];
   writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return out;
+}
+
+/**
+ * The routines' native host for the test browser: the real native/host.ts, with a home, a
+ * recordings folder and routines of the harness's own (e2e/fixtures/routines/), registered in the
+ * profile, which Chromium reads native messaging hosts from (`<user-data-dir>/NativeMessagingHosts`).
+ * The recordings folder is named like helpers.ts `EXPORT_DIR`, since the host checks the Settings
+ * folder's name against it; the export itself goes to OPFS, so a spec that wants a run to find
+ * the recording on disk writes it there (routines.spec.ts). The home is emptied on every launch.
+ */
+export const HOST_HOME = path.resolve('.playwright/rescribe-home');
+export const HOST_RECORDINGS = path.join(HOST_HOME, 'export-test');
+
+function registerHost(profile: string, extensionDir: string): void {
+  rmSync(HOST_HOME, { recursive: true, force: true });
+  mkdirSync(HOST_RECORDINGS, { recursive: true });
+  const wrapper = path.join(HOST_HOME, 'rescribe-host');
+  writeFileSync(
+    wrapper,
+    [
+      '#!/bin/sh',
+      `export RESCRIBE_HOME="${HOST_HOME}"`,
+      `export RESCRIBE_RECORDINGS="${HOST_RECORDINGS}"`,
+      `export RESCRIBE_ROUTINES="${path.resolve('e2e/fixtures/routines')}"`,
+      'export RESCRIBE_NOTIFY=0',
+      `exec "${process.execPath}" --no-warnings "${path.resolve('native/host.ts')}" "$@"`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(wrapper, 0o755);
+  const hosts = path.join(profile, 'NativeMessagingHosts');
+  mkdirSync(hosts, { recursive: true });
+  writeFileSync(
+    path.join(hosts, `${NATIVE_HOST}.json`),
+    JSON.stringify({
+      name: NATIVE_HOST,
+      description: 'Rescribe routines (e2e)',
+      path: wrapper,
+      type: 'stdio',
+      allowed_origins: [`chrome-extension://${extensionIdForPath(extensionDir)}/`],
+    }),
+  );
 }
 
 export const test = base.extend<{ context: BrowserContext; extensionId: string }>({
@@ -77,6 +123,7 @@ export const test = base.extend<{ context: BrowserContext; extensionId: string }
     ])
       for (const f of globSync(path.join(profile, 'Default', pattern)))
         rmSync(f, { recursive: true, force: true });
+    registerHost(profile, dist);
     const context = await chromium.launchPersistentContext(profile, {
       channel: process.env['CHROME_CHANNEL'] ?? 'chromium',
       headless: !headed,

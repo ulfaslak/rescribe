@@ -3,7 +3,6 @@
 // (native/host.ts) outside the browser; the extension only lists them, starts one and follows it.
 // This file is the protocol between the two and the words the pages use for a run. Pure: the
 // host imports its types too.
-import { formatDuration } from './format.ts';
 
 /** The native messaging host's name, in its manifest and in `chrome.runtime.sendNativeMessage`. */
 export const NATIVE_HOST = 'com.rescribe.host';
@@ -91,18 +90,18 @@ function clock(ms: number): string {
 }
 
 /**
- * One line about a run, for the row and the processing tab: "Index in Lawcel: running for 3:10",
- * "Index in Lawcel: done at 14:09. 2026-10-23-ulf-carolina: …", "Index in Lawcel failed: …".
- * `transcribed`: whether the transcript is in the folder, which a waiting run waits for.
+ * One line about a run, for the row and the processing tab: "Index in Lawcel: running since
+ * 14:02", "Index in Lawcel: done at 14:09. 2026-10-23-ulf-carolina: …", "Index in Lawcel
+ * failed: …". `transcribed`: whether the transcript is in the folder, which a waiting run waits for.
  */
-export function describeRun(run: RoutineRun, now: number, transcribed: boolean): string {
+export function describeRun(run: RoutineRun, transcribed: boolean): string {
   switch (run.state) {
     case 'waiting':
       return transcribed
         ? `${run.label}: starting…`
         : `${run.label}: starts when the transcript is in the folder.`;
     case 'running':
-      return `${run.label}: running for ${formatDuration(now - run.at)}.`;
+      return `${run.label}: running since ${clock(run.at)}.`;
     case 'done':
       return `${run.label}: done at ${clock(run.at)}.${run.message ? ` ${run.message}` : ''}`;
     case 'failed':

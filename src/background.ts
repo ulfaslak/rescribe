@@ -13,10 +13,11 @@ const READY_TIMEOUT_MS = 5000;
 const RELOAD_TIMEOUT_MS = 8000;
 /**
  * The dialog windows (stop/stop.html, and start/start.html where a page cannot host it): small,
- * near the top right of the browser window.
+ * near the top right of the browser window. The stop dialog fits its height to its content once
+ * the routines are known (stop.ts `fitWindow`).
  */
 const STOP_WIDTH = 420;
-const STOP_HEIGHT = 300;
+const STOP_HEIGHT = 360;
 const START_WIDTH = 400;
 const START_HEIGHT = 440;
 
@@ -381,7 +382,7 @@ async function setBadge(state: BadgeState): Promise<void> {
  * or its row away), a click on a tab opens the start dialog for that tab; a click while the
  * dialog is open closes it, or moves it to the clicked tab when that is another one. Nothing
  * records until Start Capture in the dialog (`startCapture` below). Recording: open the stop
- * dialog, where Save, Save as… and Discard live; closing it keeps recording, so a misclick stops
+ * dialog, where Save, the routines and Discard live; closing it keeps recording, so a misclick stops
  * nothing. Anything else (a start under way, which may be waiting on the human; the recorder
  * draining; an export running), and a click on the app tab itself: bring the app tab forward.
  *
