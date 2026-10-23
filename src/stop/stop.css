@@ -32,6 +32,10 @@ body {
   background: var(--bg);
   color: var(--fg);
 }
+/* Chrome gives extension pages `body { font-size: 75% }` of its own; the sizes here are meant as written. */
+body {
+  font-size: 1rem;
+}
 main {
   display: grid;
   gap: 10px;

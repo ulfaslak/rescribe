@@ -101,6 +101,7 @@ test('chosen in the stop dialog: transcribed although Settings say not, started 
   await expect(choice).toContainText('Writes down what it was given');
   await expect(dialog.locator('#routines-note')).toBeHidden();
   await expect(dialog.locator('#save')).toBeEnabled();
+  await dialog.screenshot({ path: 'screenshots/routines-stop-dialog.png' });
   await choice.click();
   const progress = await waitForProgressPage(context, extensionId);
 
@@ -127,6 +128,8 @@ test('chosen in the stop dialog: transcribed although Settings say not, started 
   await expect(row(page, rec.id).locator('.routine-log')).toHaveText(rec.routine!.log!);
   await expect(progress.locator('#headline')).toHaveText('E2E echo…');
   await expect(progress.locator('#log')).toContainText(rec.routine!.log!);
+  await progress.screenshot({ path: 'screenshots/routines-progress-running.png' });
+  await row(page, rec.id).screenshot({ path: 'screenshots/routines-row-running.png' });
 
   // Done: what it said, in the record, the row and the processing tab.
   await expect
@@ -141,6 +144,8 @@ test('chosen in the stop dialog: transcribed although Settings say not, started 
   await expect(progress.locator('#headline')).toHaveText('Done');
   await expect(progress.locator('#detail')).toContainText(`Echoed ${rec.title}`);
   await expect(progress.locator('#log')).toHaveText('');
+  await progress.screenshot({ path: 'screenshots/routines-progress-done.png' });
+  await row(page, rec.id).screenshot({ path: 'screenshots/routines-row-done.png' });
 
   // What the routine was given: the recording's directory on disk and its title.
   const seen = readFileSync(path.join(HOST_HOME, 'runs', rec.routine!.runId!, 'seen.txt'), 'utf8');
@@ -171,6 +176,7 @@ test('from a transcribed row: refused by the host with its reason, offered again
     timeout: 15_000,
   });
   await expect(r.locator('.hint.routine.failed')).toContainText('no readable meta.json');
+  await r.screenshot({ path: 'screenshots/routines-row-failed.png' });
   expect((await record(page, live!.id)).routine?.state).toBe('failed');
 
   // The files are there now: the same button runs it.
@@ -202,6 +208,7 @@ test('a Settings folder the host does not read: the routines are there but disab
   await expect(dialog.locator('#routines-note')).toBeVisible();
   await expect(dialog.locator('#routines-note')).toContainText(`Routines read ${HOST_RECORDINGS}`);
   await expect(dialog.locator('#routines-note')).toContainText(`"${OTHER_EXPORT_DIR}"`);
+  await dialog.screenshot({ path: 'screenshots/routines-stop-dialog-blocked.png' });
   await dialog.locator('#save').click();
   await expect
     .poll(async () => (await record(page, live!.id)).status, { timeout: 30_000 })
