@@ -66,9 +66,18 @@ Chromium keeps an installed extension's service worker script in `<profile>/Defa
 
 An extension page in an iframe of an http(s) page, as the start dialog's overlay is (probed **with** `host_permissions: <all_urls>` and `--use-fake-ui-for-media-stream`; with only a real click's `activeTab`, whether storage and device ids are partitioned by the host site is unproven, which is why the overlay asks the app tab for them): `showDirectoryPicker` throws `NotAllowedError: Third party iframes are not allowed to show a file picker`; IndexedDB and OPFS are the extension origin's own, not partitioned by the page (a handle stored by the app tab reads back); `enumerateDevices` gives labels when the iframe has `allow="microphone"` and the extension origin holds the permission; a page CSP of `default-src 'none'; frame-src 'none'` does not block it; `chrome.runtime.getContexts` lists it as a `TAB` context with the page's `tabId` and a `frameId` above 0, `documentUrl` with its query string.
 
-### Claude in Chrome
+### Claude in Chrome cannot reach Rescribe; the terminal can drive Brave, unless the Mac is locked (2026-10-23)
 
-The Claude browser extension was not connected in the kickoff session, so browser-automation MCP tools may be unavailable. Playwright is the reliable way to drive the extension; use it.
+Claude in Chrome is connected to the human's **Google Chrome, not Brave** (its pages report the brand `Google Chrome` and no `navigator.brave`), and it refuses `chrome-extension://` and `brave://` URLs (`Can't interact with browser-internal or unparseable URLs`). So it can neither open Rescribe's pages nor reload the extension. Playwright stays the way to drive the extension.
+
+The real Brave can be driven from the terminal the agents run in. That terminal holds Automation for Brave, Accessibility and Screen Recording. Probe them without raising a prompt: `AXIsProcessTrusted()`, `CGPreflightScreenCaptureAccess()` and `AEDeterminePermissionToAutomateTarget(…, askUserIfNeeded: false)` in a `swift -e` script.
+
+- AppleScript lists Brave's windows and tabs and switches between them.
+- `screencapture -x` sees the screen: 1800×1169 points at 2×.
+- CGEvent posts clicks and keys (a `swiftc` helper).
+- AppleScript's `execute javascript` needs Brave's "Allow JavaScript from Apple Events". It is off; leave it off.
+
+**None of this works while the Mac is locked.** The capture comes back black (check `CGSSessionScreenIsLocked` in `CGSessionCopyCurrentDictionary()` first), so there is nothing to click on, and unlocking takes the human's password.
 
 ### Headless Chrome probes
 
