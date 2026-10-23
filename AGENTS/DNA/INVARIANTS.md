@@ -64,5 +64,10 @@ A routine the human picks for a recording (DECISIONS § Routines) hands its dire
 
 ### A run that stopped without finishing is reported failed, never running forever
 
-**Mechanism:** `status.json` carries the supervisor's pid while a run goes on; `native/store.ts` `currentStatus` turns a `running` status whose pid is gone into `failed` ("Interrupted…") and writes it back, and the supervisor stops a routine that outlives its `timeoutMinutes`. The app tab polls only `running` runs, so without this a row would poll and say "running" forever after a restart. `native/host.test.ts` "a run whose supervisor is gone is failed" kills the supervisor and asserts the status.
-**Incident:** none. Seeded 2026-10-23.
+**Mechanism:** `status.json` carries the supervisor's pid while a run goes on; `native/store.ts` `currentStatus` turns a `running` status into `failed` and writes it back when that pid is gone or belongs to another user (reused after a restart), or when the run is five minutes past its routine's `timeoutMinutes`, by which time the supervisor has stopped it (SIGTERM to the group, SIGKILL after ten seconds) or is not there to say so. The app tab polls only `running` runs, so without this a row would poll and say "running" forever, with its routine buttons disabled. `native/host.test.ts` "a run whose supervisor is gone is failed" kills the supervisor, and "a run still running far past its time limit is failed" gives the run a live pid and an old start.
+**Incident:** adversarial review of the routines (2026-10-23): the first version took an EPERM pid for alive and had no time limit, so a pid reused by a system process after a restart kept a run `running` forever.
+
+### What was said on a call never reaches an agent that can run commands
+
+**Mechanism:** a routine that runs Claude Code on a transcript runs it `--restricted --strict-mcp-config` (no Bash or other code-running tools, no WebFetch, no MCP servers, no user settings, file tools confined to its working directory) and never with `bypassPermissions` or `--dangerously-skip-permissions`; the meeting's files are copied into that directory, and the script around it does the git work. `native/routines.test.ts` reads every routine's `run.sh` and fails on a `claude` call without the two flags, or on either bypass anywhere.
+**Incident:** adversarial review of the routines (2026-10-23): the first Index in Lawcel ran `bypassPermissions` with the home directory in reach, so anyone on a call could have had it read `.env` keys into a note it then pushed to a shared repository.

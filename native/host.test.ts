@@ -110,6 +110,11 @@ test('runs a routine on the recording, outside the host, with its summary at the
   assert.ok(done.endedAt! >= done.startedAt);
   const runDir = path.dirname(done.log);
   assert.match(readFileSync(done.log, 'utf8'), /working/);
+  // It ran from the run's own copy of the routine.
+  assert.equal(
+    readFileSync(path.join(runDir, 'routine', 'run.sh'), 'utf8').includes('Echoed'),
+    true,
+  );
   const seen = readFileSync(path.join(runDir, 'env.txt'), 'utf8');
   assert.match(
     seen,

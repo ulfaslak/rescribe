@@ -9,7 +9,7 @@
 // stdout carries the framed answer and nothing else; diagnostics go to stderr.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HostRequest, HostResponse, RunStatus } from '../src/lib/routines.ts';
@@ -49,11 +49,15 @@ function runRoutine(req: Extract<HostRequest, { type: 'run-routine' }>): HostRes
   const runId = makeRunId(new Date(), routine.id, randomBytes(2).toString('hex'));
   const dir = runDir(p.runs, runId);
   mkdirSync(dir, { recursive: true });
+  // The run gets a copy of the routine: a shell reads its script as it goes, so a pull in the
+  // clone that changes run.sh under a run would have it carry on with the new file's bytes.
+  const copy = path.join(dir, 'routine');
+  cpSync(routine.dir, copy, { recursive: true });
   const spec: RunSpec = {
     runId,
     routine: routine.id,
     label: routine.label,
-    script: routine.script,
+    script: path.join(copy, path.basename(routine.script)),
     timeoutMinutes: routine.timeoutMinutes,
     recordingDir,
     recording: req.recording,
