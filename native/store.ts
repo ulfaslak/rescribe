@@ -60,6 +60,8 @@ export function listRoutines(dir: string): Routine[] {
   const out: (Routine & { order: number })[] = [];
   for (const id of readdirSync(dir).sort()) {
     if (id.startsWith('.') || id.startsWith('_')) continue;
+    const rdir = path.join(dir, id);
+    if (!statSync(rdir).isDirectory()) continue; // README.md
     // The id goes into the run's id (lib.ts `isRunId`), so it has that shape or is not a routine.
     if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
       process.stderr.write(
@@ -67,8 +69,6 @@ export function listRoutines(dir: string): Routine[] {
       );
       continue;
     }
-    const rdir = path.join(dir, id);
-    if (!statSync(rdir).isDirectory()) continue;
     const script = path.join(rdir, 'run.sh');
     try {
       const spec = JSON.parse(readFileSync(path.join(rdir, 'routine.json'), 'utf8')) as Record<
