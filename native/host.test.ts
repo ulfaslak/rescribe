@@ -146,6 +146,17 @@ test('a run whose supervisor is gone is failed, not running forever', async () =
   assert.match(res.run.message ?? '', /Interrupted/);
 });
 
+test('a run still running far past its time limit is failed, whatever its pid says', async () => {
+  const started = await run('slow', recording('stale', 'rec-8'));
+  const dir = path.dirname(started.log);
+  // As after a restart that handed the pid to a live process: alive, and two hours old.
+  writeStatus(dir, { ...started, startedAt: Date.now() - 2 * 3600_000, pid: process.pid });
+  const res = await ask({ type: 'routine-status', runId: started.runId });
+  assert.ok(res.ok && 'run' in res);
+  assert.equal(res.run.state, 'failed');
+  assert.match(res.run.message ?? '', /time limit/);
+});
+
 test('refuses a recording it cannot vouch for, with a sentence for the human', async () => {
   const cases: [RunTarget, RegExp][] = [
     [{ ...recording('elsewhere', 'rec-4'), folder: 'transcripts' }, /folder named "transcripts"/],

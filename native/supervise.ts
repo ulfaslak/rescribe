@@ -72,14 +72,22 @@ const child = spawn(spec.script, [], {
 });
 writeStatus(dir, { ...readStatus(dir), pid: process.pid });
 
-let timedOut = false;
-const timer = setTimeout(() => {
-  timedOut = true;
+/** After SIGTERM, how long the routine's group gets before SIGKILL. */
+const KILL_AFTER_MS = 10_000;
+
+function signalGroup(signal: NodeJS.Signals): void {
   try {
-    if (child.pid !== undefined) process.kill(-child.pid, 'SIGTERM');
+    if (child.pid !== undefined) process.kill(-child.pid, signal);
   } catch {
     // already gone
   }
+}
+
+let timedOut = false;
+const timer = setTimeout(() => {
+  timedOut = true;
+  signalGroup('SIGTERM');
+  setTimeout(() => signalGroup('SIGKILL'), KILL_AFTER_MS).unref();
 }, spec.timeoutMinutes * 60_000);
 
 child.on('error', (err) => {

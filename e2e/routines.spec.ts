@@ -11,7 +11,9 @@ import type { BrowserContext, Page } from '@playwright/test';
 import { CAPTURE_TARGET_TITLE, expect, HOST_HOME, HOST_RECORDINGS, test } from './fixtures.ts';
 import {
   clearRecordings,
+  endDisplayTrack,
   openApp,
+  patchRecording,
   openTarget,
   OTHER_EXPORT_DIR,
   ready,
@@ -215,4 +217,31 @@ test('a Settings folder the host does not read: the routines are there but disab
     .toBe('recorded');
   const rec = await record(page, live!.id);
   expect(rec.routine).toBeUndefined();
+});
+
+test('a plain Save drops a routine left on the record by a save that did not finish', async ({
+  context,
+  extensionId,
+}) => {
+  const { page } = await setUp(context, extensionId, { autoTranscribe: false });
+  await startRecording(page);
+  const [live] = await recordings(page);
+  await page.waitForTimeout(2000);
+  await endDisplayTrack(page);
+  await expect(page.locator('#status')).toHaveText('stopped', { timeout: 30_000 });
+  // As when the app tab died exporting a save with Index in Lawcel: still stopped, the routine on it.
+  await patchRecording(page, live!.id, {
+    routine: { id: ROUTINE, label: 'E2E echo', state: 'waiting', at: Date.now() },
+  });
+  await page.reload();
+  await ready(page);
+  await row(page, live!.id).locator('button.save').click();
+  await expect
+    .poll(async () => (await record(page, live!.id)).status, { timeout: 30_000 })
+    .toBe('recorded');
+  const rec = await record(page, live!.id);
+  expect(rec.routine).toBeUndefined();
+  // Not transcribed either: auto-transcription is off and no routine asks for it.
+  await page.waitForTimeout(1500);
+  expect((await record(page, live!.id)).status).toBe('recorded');
 });

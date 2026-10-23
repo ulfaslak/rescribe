@@ -134,34 +134,49 @@ export function writeStatus(dir: string, status: StoredStatus): void {
   renameSync(tmp, path.join(dir, 'status.json'));
 }
 
+/**
+ * Whether our supervisor still runs. EPERM is a process of another user: the pid was reused after
+ * a restart, since a supervisor we started runs as us.
+ */
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (err) {
-    // EPERM: it exists and is someone else's, which a pid we started cannot become unless reused.
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  } catch {
+    return false;
   }
 }
 
+/** Past the routine's own timeout, the supervisor has stopped it; this much later, nobody is left to say so. */
+const GRACE_MS = 5 * 60_000;
+
 /**
  * A run's status as the extension gets it: `running` with no supervisor alive (the machine
- * restarted under it, the supervisor was killed) is `failed`, written back so it stays so.
+ * restarted under it, the supervisor was killed), or still `running` well past the routine's
+ * timeout (a reused pid that looks alive), is `failed`, written back so it stays so.
  */
-export function currentStatus(dir: string): RunStatus {
+export function currentStatus(dir: string, now = Date.now()): RunStatus {
   const s = readStatus(dir);
-  if (s.state === 'running' && s.pid !== undefined && !alive(s.pid)) {
-    const failed: StoredStatus = {
-      ...s,
-      state: 'failed',
-      endedAt: Date.now(),
-      message: 'Interrupted: the run stopped without finishing (a restart?). See the log.',
-    };
-    delete failed.pid;
-    writeStatus(dir, failed);
-    return publicStatus(failed);
+  if (s.state !== 'running') return publicStatus(s);
+  let limitMs = Infinity;
+  try {
+    limitMs = readSpec(dir).timeoutMinutes * 60_000 + GRACE_MS;
+  } catch {
+    // no run.json: only the pid can tell
   }
-  return publicStatus(s);
+  const gone = s.pid !== undefined && !alive(s.pid);
+  if (!gone && now - s.startedAt <= limitMs) return publicStatus(s);
+  const failed: StoredStatus = {
+    ...s,
+    state: 'failed',
+    endedAt: now,
+    message: gone
+      ? 'Interrupted: the run stopped without finishing (a restart?). See the log.'
+      : 'Lost: the run outlived its time limit without reporting. See the log.',
+  };
+  delete failed.pid;
+  writeStatus(dir, failed);
+  return publicStatus(failed);
 }
 
 export function publicStatus(s: StoredStatus): RunStatus {

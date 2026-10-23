@@ -1,9 +1,14 @@
 #!/bin/zsh
 # Index in Lawcel: the transcript into lawcel-knowledge, notes from it, synced with git
-# (routines/README.md). Claude Code does the work headless in a worktree of its own, so the
-# human's clone, which may be mid-edit, is not touched until the end, and then only fast-forwarded.
-# Started by native/supervise.ts with RESCRIBE_RECORDING_DIR, RESCRIBE_RUN_DIR and RESCRIBE_RUN_ID.
-# The last line it prints is what the human reads when it fails; on success, summary.txt.
+# (routines/README.md). Started by native/supervise.ts with RESCRIBE_RECORDING_DIR, RESCRIBE_RUN_DIR
+# and RESCRIBE_RUN_ID. The last line it prints is what the human reads when it fails.
+#
+# What was said on the call is not trusted: anyone on it can talk to the agent that reads it. So
+# Claude Code runs restricted (no shell, no web, no MCP, no user settings; file tools confined to
+# its working directory) in a worktree of its own, with the meeting's files copied into it, and
+# only writes markdown. This script does everything else: the transcript into place under the
+# name the agent chose, the commit, the rebase and the push, and the check that it landed. The
+# human's clone, which may be mid-edit, is only fast-forwarded at the end.
 setopt err_exit no_unset pipe_fail
 
 repo=${LAWCEL_KNOWLEDGE:-$HOME/Documents/git/lawcel-knowledge}
@@ -16,27 +21,46 @@ fail() {
   print -r -- "$*"
   exit 1
 }
+first_line() { [[ -s $1 ]] && head -1 $1 | tr -d '\r' || true; }
 
 say "recording: $RESCRIBE_RECORDING_DIR"
 git -C $repo fetch --quiet origin main
 git -C $repo worktree add --quiet -b $branch $work origin/main
-git -C $work branch --quiet --set-upstream-to=origin/main
-base=$(git -C $work rev-parse HEAD)
 
-prompt=$(<$here/prompt.md)
-prompt=${prompt//'{{RECORDING_DIR}}'/$RESCRIBE_RECORDING_DIR}
-prompt=${prompt//'{{SUMMARY_FILE}}'/$RESCRIBE_RUN_DIR/summary.txt}
+# The agent's inbox and outbox, inside its working directory: the meeting in; the name, the
+# commit message and the summary out. Removed before the commit.
+box=$work/.rescribe
+mkdir -p $box
+cp $RESCRIBE_RECORDING_DIR/transcript.md $RESCRIBE_RECORDING_DIR/meta.json $box/
 
-say "claude -p in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
+say "claude -p (restricted) in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $work
-claude -p "$prompt" --permission-mode bypassPermissions --output-format stream-json --verbose \
-  >$RESCRIBE_RUN_DIR/trace.jsonl || fail "Claude Code exited with an error; the work is in $work"
+claude -p "$(<$here/prompt.md)" --restricted --strict-mcp-config --permission-mode acceptEdits \
+  --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
+  fail "Claude Code exited with an error; see $RESCRIBE_RUN_DIR/trace.jsonl"
 
-# It counts only when the commit is on origin/main and nothing was left behind.
+name=$(first_line $box/name)
+[[ $name =~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(-[a-z0-9]+)+$' ]] ||
+  fail "Claude Code gave no usable name (\"$name\"); the work is in $work"
+[[ -s meetings/notes/$name.md ]] || fail "No meetings/notes/$name.md was written; the work is in $work"
+cp $box/transcript.md meetings/transcripts/$name.md
+subject=$(first_line $box/commit-message)
+summary=$(first_line $box/summary)
+[[ -n $summary ]] && print -r -- $summary >$RESCRIBE_RUN_DIR/summary.txt
+rm -rf $box
+
+git add -A
+git commit --quiet -m "${subject:-notes $name}" -m "Indexed by Rescribe (Index in Lawcel, run $RESCRIBE_RUN_ID)."
+for attempt in 1 2 3; do
+  if ! git pull --quiet --rebase origin main; then
+    git rebase --abort 2>/dev/null || true
+    fail "Rebasing on origin/main conflicted; the commit is on $branch in $work"
+  fi
+  git push --quiet origin HEAD:main && break
+  ((attempt < 3)) || fail "The push to origin/main was refused three times; the commit is on $branch in $work"
+done
 git fetch --quiet origin main
-[[ -z $(git status --porcelain) ]] || fail "Uncommitted changes left behind in $work"
-[[ $(git rev-parse HEAD) != $base ]] || fail "Nothing was committed; see $RESCRIBE_RUN_DIR/trace.jsonl"
-git merge-base --is-ancestor HEAD origin/main || fail "Not pushed to origin/main; the work is in $work"
+git merge-base --is-ancestor HEAD origin/main || fail "The commit is not on origin/main; it is on $branch in $work"
 commit=$(git log -1 --format='%h %s')
 
 # The human's clone: fast-forwarded when it is on main and nothing in it is in the way.

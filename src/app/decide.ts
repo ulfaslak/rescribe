@@ -91,7 +91,11 @@ export async function decide(
         await deleteRecordingExportRoot(id);
         target = await updateRecording(id, { exportRoot: undefined });
       }
-      if (routine) target = await updateRecording(id, { routine: waitingRun(routine, Date.now()) });
+      // Always written, also without one: a routine picked before (a save the app tab did not
+      // live to finish) must not ride along on a plain Save now.
+      target = await updateRecording(id, {
+        routine: routine ? waitingRun(routine, Date.now()) : undefined,
+      });
       out = await finalize(target, (await loadSettings()).pathTemplate, onExporting);
     }
     emit({ phase: 'done', id, action, before, rec: out });
