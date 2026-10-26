@@ -85,11 +85,15 @@ The real Brave can be driven from the terminal the agents run in. That terminal 
 
 ### The gtr post-create hook has not run
 
-`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-10-23 (`feat/routines`).
+`.gtrconfig` declares `postCreate = npm install` and `git gtr config list` shows it, but the first four worktrees came up without `node_modules`. Until diagnosed, run `npm install` in a fresh worktree yourself. Remove this note when a worktree comes up installed. Still happening 2026-10-26 (`feat/index-in-lawcel-cards`).
 
 ### A native host under ~/Documents never starts (probed 2026-10-23, Chrome for Testing 153 through Playwright)
 
-A native messaging host whose executable, the wrapper script, lives under `~/Documents` (the e2e harness's first try, `.playwright/` in the checkout) fails at once: `sendNativeMessage` rejects with `Native host has exited.` and the script's first line never runs. The same script in the temp directory or in a hidden directory of the home (`~/.rescribe-probe/`) runs. What the host then does under `~/Documents` works: Node reads `native/host.ts` and the routines from the checkout, and the supervisor, a child of the host, runs `run.sh` from there. Most likely macOS file protection on what the browser itself starts. Hence `~/.rescribe/bin/rescribe-host` and the harness's `HOST_HOME` in the temp directory. Not yet seen in Brave, which [[LIVE_CHECKS]] § "Index in Lawcel on a real call in Brave" settles.
+A native messaging host whose executable, the wrapper script, lives under `~/Documents` (the e2e harness's first try, `.playwright/` in the checkout) fails at once: `sendNativeMessage` rejects with `Native host has exited.` and the script's first line never runs. The same script in the temp directory or in a hidden directory of the home (`~/.rescribe-probe/`) runs. What the host then does under `~/Documents` works: Node reads `native/host.ts` and the routines from the checkout, and the supervisor, a child of the host, runs `run.sh` from there. Most likely macOS file protection on what the browser itself starts. Hence `~/.rescribe/bin/rescribe-host` and the harness's `HOST_HOME` in the temp directory. Brave starts `~/.rescribe/bin/rescribe-host` (the Holm run, 2026-10-23); whether it too would refuse one under `~/Documents` was not tried.
+
+### The local gh token cannot read the project board (2026-10-26)
+
+`gh` here is logged in as ulfaslak with `repo`, `read:org`, `gist` and `admin:public_key`, and no `read:project` or `project`: `gh project …` and any `projectV2` GraphQL query fail with `INSUFFICIENT_SCOPES`. Issues work, and the board adds a new lawcel-knowledge issue in Triage by a workflow of its own (lawcel-knowledge CLAUDE.md § Project board), so Index in Lawcel needs no project scope; but an agent here cannot check that a card reached the board. `gh auth refresh -s read:project` (interactive, the human's) would let it. `gh` works from a bare, launchd-like environment (`env -i` with HOME, USER and Homebrew's PATH; the token comes from the keychain), checked 2026-10-26.
 
 ### Chrome shrinks the text of extension pages to 75 % (measured 2026-10-23, Chromium 153)
 

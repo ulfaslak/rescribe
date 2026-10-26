@@ -89,7 +89,8 @@ function run(cards: string, extra: Record<string, string> = {}): Run {
     GIT_COMMITTER_NAME: 'Test',
     GIT_COMMITTER_EMAIL: 'test@example.com',
   };
-  const git = (...args: string[]) => execFileSync('git', args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const git = (...args: string[]) =>
+    execFileSync('git', args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
   const origin = path.join(t, 'origin.git');
   const repo = path.join(t, 'lawcel-knowledge');
@@ -131,7 +132,9 @@ function run(cards: string, extra: Record<string, string> = {}): Run {
   const filed = readdirSync(created)
     .sort()
     .map((i) => ({
-      args: readFileSync(path.join(created, i, 'args'), 'utf8').trimEnd().split('\n'),
+      args: readFileSync(path.join(created, i, 'args'), 'utf8')
+        .trimEnd()
+        .split('\n'),
       body: readFileSync(path.join(created, i, 'body'), 'utf8'),
       originMain: readFileSync(path.join(created, i, 'origin-main'), 'utf8').trim(),
     }));
@@ -152,12 +155,19 @@ ${assignees === undefined ? '' : `printf '${assignees}' > .rescribe/cards/${i}/a
 
 test('the cards are filed after the notes are on origin/main, each ending in where it came from', () => {
   const r = run(
-    card(1, 'Price by buyer type', 'Draft prices per buyer.', 'ulfaslak\\n @kennethgraupner \\nsomeone-else\\n') +
-      card(2, 'Ask Christian for standard data', 'He offered a sample.'),
+    card(
+      1,
+      'Price by buyer type',
+      'Draft prices per buyer.',
+      'ulfaslak\\n @kennethgraupner \\nsomeone-else\\n',
+    ) + card(2, 'Ask Christian for standard data', 'He offered a sample.'),
   );
   assert.equal(r.code, 0, r.out);
   assert.equal(originMain(r), 'notes 2026-10-19 kenneth ulf: pricing');
-  assert.match(r.last, /^Pushed [0-9a-f]+ notes 2026-10-19 kenneth ulf: pricing; filed #101, #102$/);
+  assert.match(
+    r.last,
+    /^Pushed [0-9a-f]+ notes 2026-10-19 kenneth ulf: pricing; filed #101, #102$/,
+  );
   assert.equal(
     readFileSync(path.join(r.dir, 'summary.txt'), 'utf8'),
     `${NAME}: pricing by buyer Cards: #101, #102.\n`,
@@ -185,9 +195,13 @@ test('the cards are filed after the notes are on origin/main, each ending in whe
     readFileSync(path.join(r.dir, 'seen-assignable.tsv'), 'utf8'),
     'ulfaslak\tUlf Aslak\nkennethgraupner\tKenneth Graupner\n',
   );
-  const tree = execFileSync('git', ['--git-dir', r.origin, 'ls-tree', '-r', '--name-only', 'main'], {
-    encoding: 'utf8',
-  });
+  const tree = execFileSync(
+    'git',
+    ['--git-dir', r.origin, 'ls-tree', '-r', '--name-only', 'main'],
+    {
+      encoding: 'utf8',
+    },
+  );
   assert.match(tree, new RegExp(`meetings/transcripts/${NAME}\\.md`));
   assert.doesNotMatch(tree, /\.rescribe/);
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'the worktree is removed');
@@ -197,7 +211,10 @@ test('a call with nothing for the board pushes its notes and files nothing', () 
   const r = run('');
   assert.equal(r.code, 0, r.out);
   assert.match(r.last, /^Pushed [0-9a-f]+ notes 2026-10-19 kenneth ulf: pricing$/);
-  assert.equal(readFileSync(path.join(r.dir, 'summary.txt'), 'utf8'), `${NAME}: pricing by buyer\n`);
+  assert.equal(
+    readFileSync(path.join(r.dir, 'summary.txt'), 'utf8'),
+    `${NAME}: pricing by buyer\n`,
+  );
   assert.equal(r.filed.length, 0);
 });
 
@@ -220,7 +237,10 @@ test('more than ten cards, or one without a one-line title: nothing is pushed or
 test('gh cannot read the board: the run stops before Claude Code starts', () => {
   const r = run(card(1, 'Never', 'x'), { FAKE_GH_DOWN: '1' });
   assert.equal(r.code, 1, r.out);
-  assert.match(r.last, /^gh could not read Lawcel\/lawcel-knowledge's issues \(gh auth status\); nothing was indexed$/);
+  assert.match(
+    r.last,
+    /^gh could not read Lawcel\/lawcel-knowledge's issues \(gh auth status\); nothing was indexed$/,
+  );
   assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'no worktree made');
   assert.equal(originMain(r), 'seed');

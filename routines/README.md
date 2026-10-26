@@ -19,4 +19,14 @@ The host runs routines from the clone it was installed from (`npm run install-ho
 
 ## index-in-lawcel
 
-Files the transcript as `lawcel-knowledge/meetings/transcripts/<date>-<names>.md`, writes the meeting note and updates the CRM, decisions, questions and reminders there, and pushes to `main`. `run.sh` makes a worktree of lawcel-knowledge under the run directory and copies `transcript.md` and `meta.json` into its `.rescribe/`; `claude -p --restricted` writes the markdown, following `prompt.md` and lawcel-knowledge's own CLAUDE.md, and hands back the name, a commit subject and a summary in `.rescribe/`; `run.sh` then files the transcript under that name, commits, rebases on `origin/main`, pushes, and counts the run as done only when its commit is on `origin/main`. The human's clone is then fast-forwarded when nothing is in the way. A failed run keeps its worktree and says where. `LAWCEL_KNOWLEDGE` overrides the repository's path.
+Files the transcript as `lawcel-knowledge/meetings/transcripts/<date>-<names>.md`, writes the meeting note and updates the CRM, decisions, questions and reminders there, pushes to `main`, and files the call's action items as cards on the founders' board ([Project management](https://github.com/orgs/Lawcel/projects/2)).
+
+- `run.sh` first reads the board with `gh`: every issue in `Lawcel/lawcel-knowledge`, and who can be assigned there. Without that it stops before anything else.
+- It makes a worktree of lawcel-knowledge under the run directory and copies `transcript.md`, `meta.json` and the board into its `.rescribe/`.
+- `claude -p --restricted` writes the markdown, following `prompt.md` and lawcel-knowledge's own CLAUDE.md, and hands back the name, a commit subject, a summary and the cards (`.rescribe/cards/<n>/`: `title`, `body.md`, `assignees`).
+- `run.sh` checks the cards (at most ten, a one-line title, a body; assignees who cannot be assigned are left out), files the transcript under the name, commits, rebases on `origin/main` and pushes. The run counts as pushed only when its commit is on `origin/main`; the human's clone is then fast-forwarded when nothing is in the way.
+- Last, it files each card as an issue in `Lawcel/lawcel-knowledge` (the board adds it in Triage), ending in a line that links the meeting's note and says an agent filed it. The summary ends with the cards' numbers.
+
+A run that fails before the push keeps its worktree and says where; one that fails while filing says which cards it filed, and keeps the cards in the run directory. `LAWCEL_KNOWLEDGE` overrides the repository's path.
+
+It needs, on the machine that runs it: `claude` logged in on the subscription; lawcel-knowledge cloned at `~/Documents/git/lawcel-knowledge` (the browser starts the host without a shell profile, so `LAWCEL_KNOWLEDGE` set there does not reach it) with a push that never prompts; and `gh` logged in (`gh auth login`) as someone who can create issues in `Lawcel/lawcel-knowledge`.
