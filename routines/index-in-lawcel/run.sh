@@ -32,14 +32,12 @@ first_line() { [[ -s $1 ]] && head -1 $1 | tr -d '\r' || true; }
 
 say "recording: $RESCRIBE_RECORDING_DIR"
 
-# The board's cards are issues of the GitHub repository the clone's origin is, so a clone pointed
-# anywhere else never files on the founders' board. Its project
-# (https://github.com/orgs/Lawcel/projects/2) adds a new issue in Triage on its own.
-origin_url=$(git -C $repo config --get remote.origin.url || true)
-github=${${origin_url%.git}#(git@github.com:|https://github.com/|ssh://git@github.com/)}
-[[ $origin_url == (git@github.com:|https://github.com/|ssh://git@github.com/)* &&
-  $github =~ '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ]] ||
-  fail "$repo's origin (\"$origin_url\") is not a repository on GitHub, where the cards go; nothing was indexed"
+# The board's cards are issues of the GitHub repository the clone is, as gh resolves its remote (an
+# SSH alias, a user in the URL and insteadOf included), so a clone pointed anywhere else never files
+# on the founders' board. Its project (https://github.com/orgs/Lawcel/projects/2) adds a new issue
+# in Triage on its own.
+github=$(cd $repo && gh repo view --json nameWithOwner --jq .nameWithOwner) ||
+  fail "gh could not tell which GitHub repository $repo is (its origin; gh auth status); nothing was indexed"
 
 # The board as it is, so the agent can leave out what it already has, and who a card can go to.
 # Read first: without gh nothing else is worth starting. One issue to a line or two (a long board
@@ -102,7 +100,7 @@ cards=($box/cards/*(N/n))
 provenance="_From the call [$name](https://github.com/$github/blob/main/meetings/notes/$name.md). Filed by an agent (Rescribe, Index in Lawcel run $RESCRIBE_RUN_ID)._"
 for card in $cards; do
   bad() { fail "Card ${card:t} $1; nothing was pushed; the work is in $work"; }
-  title=$(first_line $card/title)
+  title=$(first_line $card/title | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
   lines=$(grep -c . $card/title 2>/dev/null || true)
   [[ -n $title && ${#title} -le 120 && $lines == 1 ]] || bad "has no one-line title of at most 120 characters"
   [[ -f $card/body.md ]] || bad "has no body.md"
@@ -190,6 +188,7 @@ gh issue list -R $github --state all --limit 1000 --json number,title,state,body
   fail "$pushed, but gh could not read $github's issues to file the cards; they are in $RESCRIBE_RUN_DIR/cards"
 on_board=(${(f)"$(<$RESCRIBE_RUN_DIR/on-board.tsv)"})
 filed=()
+skipped=()
 for card in $RESCRIBE_RUN_DIR/cards/*(N/n); do
   title=$(<$card/title)
   already=
@@ -198,6 +197,7 @@ for card in $RESCRIBE_RUN_DIR/cards/*(N/n); do
   done
   if [[ -n $already ]]; then
     say "card ${card:t}: \"$title\" is on the board already (#$already); left out"
+    skipped+=("#$already")
     continue
   fi
   who=${(j:,:)${(f)"$(<$card/assignees)"}}
@@ -209,5 +209,7 @@ for card in $RESCRIBE_RUN_DIR/cards/*(N/n); do
   say "filed $url: $title"
 done
 
-[[ -n $summary ]] && print -r -- "$summary${filed:+ Cards: ${(j:, :)filed}.}" >$RESCRIBE_RUN_DIR/summary.txt
-print -r -- "$pushed${filed:+; filed ${(j:, :)filed}}"
+# Cards left out are named too, so a call's action item that matched an older card is not lost from view.
+cards_line="${filed:+ Cards: ${(j:, :)filed}.}${skipped:+ Already on the board: ${(j:, :)skipped}.}"
+[[ -n $summary ]] && print -r -- "$summary$cards_line" >$RESCRIBE_RUN_DIR/summary.txt
+print -r -- "$pushed${filed:+; filed ${(j:, :)filed}}${skipped:+; already on the board: ${(j:, :)skipped}}"

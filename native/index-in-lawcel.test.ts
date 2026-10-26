@@ -71,11 +71,16 @@ echo "${NAME}: pricing by buyer" > .rescribe/summary
 
 // gh: the issues (FAKE_ISSUES) through whatever --jq program the script asks for, two people who
 // can be assigned, and `issue create` recorded with what origin's main was at that moment.
-// FAKE_GH_DOWN fails every call; FAKE_GH_FAIL_AT fails the nth create.
+// FAKE_REPO is the repository it takes the clone for, none when empty. FAKE_GH_DOWN fails every
+// call, FAKE_LIST_DOWN the issue lists, FAKE_GH_FAIL_AT the nth create.
 const GH = `#!/bin/sh
 [ -n "$FAKE_GH_DOWN" ] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
 case "$1 $2" in
+  "repo view")
+    [ -n "$FAKE_REPO" ] || { echo "none of the git remotes configured for this repository point to a known GitHub host" >&2; exit 1; }
+    echo "$FAKE_REPO" ;;
   "issue list")
+    [ -n "$FAKE_LIST_DOWN" ] && { echo "HTTP 502" >&2; exit 1; }
     prog=; prev=
     for a in "$@"; do [ "$prev" = --jq ] && prog=$a; prev=$a; done
     jq -r "$prog" "$FAKE_ISSUES" ;;
@@ -175,6 +180,7 @@ function run(
       RESCRIBE_RUN_ID: `test-${n}`,
       FAKE_CARDS: path.join(t, 'cards.sh'),
       FAKE_ISSUES: path.join(t, 'issues.json'),
+      FAKE_REPO: localOrigin ? '' : REPO,
       FAKE_GH_DIR: created,
       ORIGIN: origin,
       ...extra,
@@ -323,16 +329,24 @@ it('a hand-over the script refuses: nothing is pushed or filed', () => {
   }
 });
 
-it('gh cannot read the board: the run stops before Claude Code starts', () => {
-  const r = run(card(1, 'Never', 'x'), { env: { FAKE_GH_DOWN: '1' } });
-  assert.equal(r.code, 1, r.out);
-  assert.match(
-    r.last,
-    /^gh could not read rescribe-sandbox\/none's issues \(gh auth status\); nothing was indexed$/,
-  );
-  assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
-  assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'no worktree made');
-  assert.equal(originMain(r), 'seed');
+it('gh cannot tell the repository, or cannot read the board: the run stops before Claude Code starts', () => {
+  for (const [env, reason] of [
+    [
+      { FAKE_GH_DOWN: '1' },
+      /^gh could not tell which GitHub repository .*lawcel-knowledge is \(its origin; gh auth status\); nothing was indexed$/,
+    ],
+    [
+      { FAKE_LIST_DOWN: '1' },
+      /^gh could not read rescribe-sandbox\/none's issues \(gh auth status\); nothing was indexed$/,
+    ],
+  ] as const) {
+    const r = run(card(1, 'Never', 'x'), { env });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.last, reason);
+    assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
+    assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'no worktree made');
+    assert.equal(originMain(r), 'seed');
+  }
 });
 
 it('a card that fails to file: the notes stay pushed and the line says what was filed', () => {
@@ -352,9 +366,9 @@ it('a card that fails to file: the notes stay pushed and the line says what was 
 it('a card whose title is open on the board, filed from this call, or filed by this run is left out', () => {
   const other = provenance('old', '2026-09-01-ulf', 'https://example.com/notes');
   const r = run(
-    card(1, 'price by Buyer type', 'x') +
+    card(1, ' price by Buyer type ', 'x') +
       card(2, 'Ask Christian for standard data', 'y') +
-      card(3, 'Renew the domain', 'z') +
+      card(3, '  Renew the domain', 'z') +
       card(4, 'Renew the DOMAIN', 'z'),
     {
       issues: [
@@ -405,6 +419,15 @@ it('a card whose title is open on the board, filed from this call, or filed by t
     r.filed.map((f) => f.args[f.args.indexOf('--title') + 1]),
     ['Renew the domain'],
   );
+  // Left out, but named: the human sees which of the call's items matched cards already there.
+  assert.equal(
+    r.last.replace(/^Pushed [0-9a-f]+ /, ''),
+    'notes 2026-10-19 kenneth ulf: pricing; filed #101; already on the board: #55, #56, #101',
+  );
+  assert.equal(
+    readFileSync(path.join(r.dir, 'summary.txt'), 'utf8'),
+    `${NAME}: pricing by buyer Cards: #101. Already on the board: #55, #56, #101.\n`,
+  );
 });
 
 it('a title is measured in characters, not bytes, though the browser gives the host no locale', () => {
@@ -416,12 +439,12 @@ it('a title is measured in characters, not bytes, though the browser gives the h
   assert.equal(r.filed[0]?.args[r.filed[0].args.indexOf('--title') + 1], title);
 });
 
-it('a clone whose origin is not on GitHub: the run stops before Claude Code starts, and files nothing', () => {
+it('a clone gh does not take for a GitHub repository: the run stops before Claude Code starts, and files nothing', () => {
   const r = run(card(1, 'Never', 'x'), { localOrigin: true });
   assert.equal(r.code, 1, r.out);
   assert.match(
     r.last,
-    /origin \(".*origin\.git"\) is not a repository on GitHub, where the cards go; nothing was indexed$/,
+    /^gh could not tell which GitHub repository .*lawcel-knowledge is \(its origin; gh auth status\); nothing was indexed$/,
   );
   assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
   assert.equal(r.filed.length, 0);
