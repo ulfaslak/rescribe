@@ -1,6 +1,8 @@
 // routines/index-in-lawcel/run.sh as the supervisor runs it, against stand-ins for what it talks
-// to: lawcel-knowledge is a clone whose GitHub origin git rewrites to a local bare repository, `claude` a script that writes what
-// the agent would, `gh` a script that serves a board and records every issue it is asked to file.
+// to: lawcel-knowledge is a clone whose origin, a GitHub repository that does not exist, git
+// rewrites to a local bare one; `claude` is a script that writes what the agent would; `gh` runs
+// the script's own jq programs over a list of issues, and records every issue it is asked to file.
+// Needs jq, as gh's --jq stand-in.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -25,11 +27,35 @@ const RUN_SH = path.join(
 const root = mkdtempSync(path.join(tmpdir(), 'rescribe-lawcel-'));
 after(() => rmSync(root, { recursive: true, force: true }));
 
+const HAS_JQ = spawnSync('jq', ['--version']).status === 0;
+const it = (name: string, fn: () => void) =>
+  test(name, { skip: HAS_JQ ? false : 'needs jq (brew install jq)' }, fn);
+
 const NAME = '2026-10-19-kenneth-ulf';
-const NOTE_URL = `https://github.com/Lawcel/lawcel-knowledge/blob/main/meetings/notes/${NAME}.md`;
+// Not the founders' repository: if the stand-in for gh ever lost, the real one would find nothing.
+const REPO = 'rescribe-sandbox/none';
+const GITHUB_URL = `git@github.com:${REPO}.git`;
+const NOTE_URL = `https://github.com/${REPO}/blob/main/meetings/notes/${NAME}.md`;
 const TRANSCRIPT = '# Meet - Lawcel\n\n**Ulf** [0:00]\n\nHej.\n';
-const GITHUB_URL = 'git@github.com:Lawcel/lawcel-knowledge.git';
-const BOARD = '#7 OPEN Public pricing\n    Take the prices off the pricing page.\n';
+const provenance = (run: string, name = NAME, url = NOTE_URL) =>
+  `_From the call [${name}](${url}). Filed by an agent (Rescribe, Index in Lawcel run ${run})._`;
+
+interface Issue {
+  number: number;
+  title: string;
+  state: 'OPEN' | 'CLOSED';
+  assignees: { login: string }[];
+  body: string;
+}
+const ISSUES: Issue[] = [
+  {
+    number: 7,
+    title: 'Public pricing',
+    state: 'OPEN',
+    assignees: [{ login: 'ulfaslak' }],
+    body: 'Take the prices off the pricing page.',
+  },
+];
 
 // The agent: a note, the hand-over, and whatever `cards` writes into .rescribe/cards.
 const CLAUDE = `#!/bin/sh
@@ -43,12 +69,16 @@ echo "${NAME}: pricing by buyer" > .rescribe/summary
 . "$FAKE_CARDS"
 `;
 
-// gh: the board (and, asked for its open issues and this call's, FAKE_ON_BOARD), two people who can be assigned, and `issue create` recorded with what origin's
-// main was at that moment. FAKE_GH_DOWN fails every call; FAKE_GH_FAIL_AT fails the nth create.
+// gh: the issues (FAKE_ISSUES) through whatever --jq program the script asks for, two people who
+// can be assigned, and `issue create` recorded with what origin's main was at that moment.
+// FAKE_GH_DOWN fails every call; FAKE_GH_FAIL_AT fails the nth create.
 const GH = `#!/bin/sh
 [ -n "$FAKE_GH_DOWN" ] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
 case "$1 $2" in
-  "issue list") case "$*" in *"select("*) cat "$FAKE_ON_BOARD" ;; *) cat "$FAKE_BOARD" ;; esac ;;
+  "issue list")
+    prog=; prev=
+    for a in "$@"; do [ "$prev" = --jq ] && prog=$a; prev=$a; done
+    jq -r "$prog" "$FAKE_ISSUES" ;;
   "api --paginate") printf 'ulfaslak\\nkennethgraupner\\n' ;;
   "api users/ulfaslak") printf 'ulfaslak\\tUlf Aslak\\n' ;;
   "api users/kennethgraupner") printf 'kennethgraupner\\tKenneth Graupner\\n' ;;
@@ -59,7 +89,7 @@ case "$1 $2" in
     printf '%s\\n' "$@" > "$FAKE_GH_DIR/$n/args"
     while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_GH_DIR/$n/body"; shift; done
     git --git-dir="$ORIGIN" log -1 --format=%s main > "$FAKE_GH_DIR/$n/origin-main"
-    echo "https://github.com/Lawcel/lawcel-knowledge/issues/$n" ;;
+    echo "https://github.com/${REPO}/issues/$n" ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac
 `;
@@ -80,15 +110,15 @@ interface Options {
   env?: Record<string, string>;
   /** Files already on origin/main, by path. */
   seed?: Record<string, string>;
-  /** What gh says is open on the board or filed from this call: "<number>\t<title>" lines. */
-  onBoard?: string;
+  /** Issues on the board besides ISSUES. */
+  issues?: Issue[];
   /** Leave origin a local path, as a scratch clone would. */
   localOrigin?: boolean;
 }
 
 function run(
   cards: string,
-  { env: extra = {}, seed = {}, onBoard = '', localOrigin }: Options = {},
+  { env: extra = {}, seed = {}, issues = [], localOrigin }: Options = {},
 ): Run {
   const t = path.join(root, `t${++n}`);
   const [bin, home, rec, dir, created] = ['bin', 'home', 'rec', 'run', 'created'].map((d) => {
@@ -129,8 +159,7 @@ function run(
   writeFileSync(path.join(rec, 'transcript.md'), TRANSCRIPT);
   writeFileSync(path.join(rec, 'meta.json'), '{"participants":["Ulf","Kenneth Graupner"]}');
   writeFileSync(path.join(t, 'cards.sh'), cards);
-  writeFileSync(path.join(t, 'board.md'), BOARD);
-  writeFileSync(path.join(t, 'on-board.tsv'), onBoard);
+  writeFileSync(path.join(t, 'issues.json'), JSON.stringify([...issues, ...ISSUES]));
   writeFileSync(path.join(bin, 'claude'), CLAUDE);
   writeFileSync(path.join(bin, 'gh'), GH);
   chmodSync(path.join(bin, 'claude'), 0o755);
@@ -145,8 +174,7 @@ function run(
       RESCRIBE_RUN_DIR: dir,
       RESCRIBE_RUN_ID: `test-${n}`,
       FAKE_CARDS: path.join(t, 'cards.sh'),
-      FAKE_BOARD: path.join(t, 'board.md'),
-      FAKE_ON_BOARD: path.join(t, 'on-board.tsv'),
+      FAKE_ISSUES: path.join(t, 'issues.json'),
       FAKE_GH_DIR: created,
       ORIGIN: origin,
       ...extra,
@@ -177,7 +205,7 @@ printf '${body}\\n' > .rescribe/cards/${i}/body.md
 ${assignees === undefined ? '' : `printf '${assignees}' > .rescribe/cards/${i}/assignees`}
 `;
 
-test('the cards are filed after the notes are on origin/main, each ending in where it came from', () => {
+it('the cards are filed after the notes are on origin/main, each ending in where it came from', () => {
   const r = run(
     card(
       1,
@@ -201,20 +229,20 @@ test('the cards are filed after the notes are on origin/main, each ending in whe
   const [first, second] = r.filed as [Run['filed'][0], Run['filed'][0]];
   for (const f of r.filed) {
     assert.equal(f.originMain, 'notes 2026-10-19 kenneth ulf: pricing', 'filed before the push');
-    assert.ok(f.args.includes('Lawcel/lawcel-knowledge'));
+    assert.ok(f.args.includes(REPO));
   }
   assert.equal(first.args[first.args.indexOf('--title') + 1], 'Price by buyer type');
   // Only people who can be assigned there; a stray @ and spaces are forgiven.
   assert.ok(first.args.includes('--assignee=ulfaslak,kennethgraupner'), first.args.join(' '));
-  assert.match(r.out, /someone-else cannot be assigned in Lawcel\/lawcel-knowledge; left out/);
+  assert.match(r.out, /someone-else cannot be assigned in rescribe-sandbox\/none; left out/);
   assert.ok(!second.args.some((a) => a.startsWith('--assignee')), second.args.join(' '));
-  assert.equal(
-    first.body,
-    `Draft prices per buyer.\n\n_From the call [${NAME}](${NOTE_URL}). Filed by an agent (Rescribe, Index in Lawcel run test-${n})._\n`,
-  );
+  assert.equal(first.body, `Draft prices per buyer.\n\n${provenance(`test-${n}`)}\n`);
 
   // The agent saw the board and who can be assigned; none of it was committed.
-  assert.equal(readFileSync(path.join(r.dir, 'seen-board.md'), 'utf8'), BOARD);
+  assert.equal(
+    readFileSync(path.join(r.dir, 'seen-board.md'), 'utf8'),
+    '#7 OPEN Public pricing (assigned: ulfaslak)\n    Take the prices off the pricing page.\n',
+  );
   assert.equal(
     readFileSync(path.join(r.dir, 'seen-assignable.tsv'), 'utf8'),
     'ulfaslak\tUlf Aslak\nkennethgraupner\tKenneth Graupner\n',
@@ -231,7 +259,7 @@ test('the cards are filed after the notes are on origin/main, each ending in whe
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'the worktree is removed');
 });
 
-test('a call with nothing for the board pushes its notes and files nothing', () => {
+it('a call with nothing for the board pushes its notes and files nothing', () => {
   const r = run('');
   assert.equal(r.code, 0, r.out);
   assert.match(r.last, /^Pushed [0-9a-f]+ notes 2026-10-19 kenneth ulf: pricing$/);
@@ -242,7 +270,7 @@ test('a call with nothing for the board pushes its notes and files nothing', () 
   assert.equal(r.filed.length, 0);
 });
 
-test('a meeting indexed again with nothing new: nothing to push, and its new cards are still filed', () => {
+it('a meeting indexed again with nothing new: nothing to push, and its new cards are still filed', () => {
   const r = run(card(1, 'Follow up', 'x'), {
     seed: {
       [`meetings/notes/${NAME}.md`]: '# Notes\n',
@@ -256,7 +284,7 @@ test('a meeting indexed again with nothing new: nothing to push, and its new car
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'the worktree is removed');
 });
 
-test('a hand-over the script refuses: nothing is pushed or filed', () => {
+it('a hand-over the script refuses: nothing is pushed or filed', () => {
   const eleven = Array.from({ length: 11 }, (_, i) => card(i + 1, `Card ${i + 1}`, 'x')).join('');
   for (const [cards, reason] of [
     [eleven, /^Claude Code wrote 11 cards, more than 10; nothing was pushed; the work is in /],
@@ -264,9 +292,20 @@ test('a hand-over the script refuses: nothing is pushed or filed', () => {
     [card(1, 'x'.repeat(121), 'x'), /^Card 1 has no one-line title of at most 120 characters/],
     [card(1, 'No body', ''), /^Card 1 has no body\.md/],
     [card(1, 'Long', 'x'.repeat(2001)), /^Card 1 has a body\.md longer than 2000 characters/],
-    [card(1, 'Hidden', 'Do this. <!--'), /^Card 1 has HTML that hides text in body\.md/],
-    [card(1, 'Folded', '<details>more'), /^Card 1 has HTML that hides text in body\.md/],
-    [card(1, 'Fence', 'Do this.\\n```'), /^Card 1 leaves a code fence open in body\.md/],
+    ...['Do this.\\n<pre>', 'Do this. <pre>', '<!x', 'Do <?', 'x <![CDATA[', '<!-- hidden'].map(
+      (b) => [card(1, 'Hidden', b), /^Card 1 has HTML in body\.md/] as const,
+    ),
+    ...['Do this.\\n```', '````\\nx\\n```', '```\\nx\\n~~~', '  ~~~'].map(
+      (b) => [card(1, 'Fenced', b), /^Card 1 has a code fence in body\.md/] as const,
+    ),
+    [
+      'echo x > .rescribe/cards\n',
+      /^Claude Code wrote \.rescribe\/cards as a file, not a directory of cards/,
+    ],
+    [
+      'mkdir -p rescribe/cards/1 && echo T > rescribe/cards/1/title\n',
+      /^Claude Code wrote rescribe\/cards\/1\/title, outside what lawcel-knowledge has at its top level/,
+    ],
     [
       card(1, 'One', 'x') + 'echo x > .rescribe/cards/2.md\n',
       /^Claude Code wrote \.rescribe\/cards\/2\.md, which is not a card's directory/,
@@ -284,19 +323,19 @@ test('a hand-over the script refuses: nothing is pushed or filed', () => {
   }
 });
 
-test('gh cannot read the board: the run stops before Claude Code starts', () => {
+it('gh cannot read the board: the run stops before Claude Code starts', () => {
   const r = run(card(1, 'Never', 'x'), { env: { FAKE_GH_DOWN: '1' } });
   assert.equal(r.code, 1, r.out);
   assert.match(
     r.last,
-    /^gh could not read Lawcel\/lawcel-knowledge's issues \(gh auth status\); nothing was indexed$/,
+    /^gh could not read rescribe-sandbox\/none's issues \(gh auth status\); nothing was indexed$/,
   );
   assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'no worktree made');
   assert.equal(originMain(r), 'seed');
 });
 
-test('a card that fails to file: the notes stay pushed and the line says what was filed', () => {
+it('a card that fails to file: the notes stay pushed and the line says what was filed', () => {
   const r = run(card(1, 'First', 'x') + card(2, 'Second', 'y') + card(3, 'Third', 'z'), {
     env: { FAKE_GH_FAIL_AT: '102' },
   });
@@ -310,27 +349,65 @@ test('a card that fails to file: the notes stay pushed and the line says what wa
   assert.ok(existsSync(path.join(r.dir, 'cards/2/issue.md')));
 });
 
-test('a card whose title the board already has, or that this run already filed, is left out', () => {
+it('a card whose title is open on the board, filed from this call, or filed by this run is left out', () => {
+  const other = provenance('old', '2026-09-01-ulf', 'https://example.com/notes');
   const r = run(
     card(1, 'price by Buyer type', 'x') +
       card(2, 'Ask Christian for standard data', 'y') +
-      card(3, 'Ask Christian for STANDARD data', 'z'),
-    { onBoard: '55\tPrice by buyer type\n' },
+      card(3, 'Renew the domain', 'z') +
+      card(4, 'Renew the DOMAIN', 'z'),
+    {
+      issues: [
+        {
+          number: 55,
+          title: 'Price by buyer type',
+          state: 'OPEN',
+          assignees: [],
+          body: `a\n\n${other}`,
+        },
+        // Done already, and from this very call: the board's own line says so.
+        {
+          number: 56,
+          title: 'Ask Christian for standard data',
+          state: 'CLOSED',
+          assignees: [],
+          body: `b\n\n${provenance('earlier')}`,
+        },
+        // Done, from another call: the same title again is new work.
+        {
+          number: 57,
+          title: 'Renew the domain',
+          state: 'CLOSED',
+          assignees: [],
+          body: `c\n\n${other}`,
+        },
+      ],
+    },
   );
   assert.equal(r.code, 0, r.out);
+  // What the agent read: the call each was filed from, and no line of where it came from in the text.
+  const board = readFileSync(path.join(r.dir, 'seen-board.md'), 'utf8');
+  assert.match(
+    board,
+    new RegExp(
+      `^#56 CLOSED Ask Christian for standard data \\(filed from the call ${NAME}\\)\\n    b$`,
+      'm',
+    ),
+  );
+  assert.doesNotMatch(board, /Filed by an agent/);
   assert.match(r.out, /card 1: "price by Buyer type" is on the board already \(#55\); left out/);
   assert.match(
     r.out,
-    /card 3: "Ask Christian for STANDARD data" is on the board already \(#101\); left out/,
+    /card 2: "Ask Christian for standard data" is on the board already \(#56\); left out/,
   );
-  assert.equal(r.filed.length, 1);
-  assert.equal(
-    r.filed[0]?.args[r.filed[0].args.indexOf('--title') + 1],
-    'Ask Christian for standard data',
+  assert.match(r.out, /card 4: "Renew the DOMAIN" is on the board already \(#101\); left out/);
+  assert.deepEqual(
+    r.filed.map((f) => f.args[f.args.indexOf('--title') + 1]),
+    ['Renew the domain'],
   );
 });
 
-test('a title is measured in characters, not bytes, though the browser gives the host no locale', () => {
+it('a title is measured in characters, not bytes, though the browser gives the host no locale', () => {
   // 117 characters, 125 bytes in UTF-8.
   const title = `Søren og Åse — ${'æ'.repeat(4)} — ${'x'.repeat(95)}`;
   assert.equal([...title].length, 117);
@@ -339,7 +416,7 @@ test('a title is measured in characters, not bytes, though the browser gives the
   assert.equal(r.filed[0]?.args[r.filed[0].args.indexOf('--title') + 1], title);
 });
 
-test('a clone whose origin is not on GitHub: the run stops before Claude Code starts, and files nothing', () => {
+it('a clone whose origin is not on GitHub: the run stops before Claude Code starts, and files nothing', () => {
   const r = run(card(1, 'Never', 'x'), { localOrigin: true });
   assert.equal(r.code, 1, r.out);
   assert.match(
@@ -350,11 +427,17 @@ test('a clone whose origin is not on GitHub: the run stops before Claude Code st
   assert.equal(r.filed.length, 0);
 });
 
-test('a mention in a card is made inert; an address is left alone', () => {
-  const r = run(card(1, 'Ask', 'Ask @kennethgraupner, then mail a@b.com.'));
+it('a mention in a card is made inert; an address is left alone', () => {
+  const r = run(
+    card(
+      1,
+      'Ask',
+      'Ask @kennethgraupner, then mail a@b.com.\\nAsk _@ulfaslak_ and run `make`@ulfaslak.',
+    ),
+  );
   assert.equal(r.code, 0, r.out);
   assert.match(
     r.filed[0]?.body ?? '',
-    /^Ask `@kennethgraupner`, then mail a@b\.com\.\n\n_From the call /,
+    /^Ask `@kennethgraupner`, then mail a@b\.com\.\nAsk _`@ulfaslak`_ and run `make``@ulfaslak`\.\n\n_From the call /,
   );
 });

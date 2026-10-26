@@ -49,7 +49,7 @@ gh issue list -R $github --state all --limit 1000 --json number,title,state,assi
   | "#\(.number) \(.state) \(.title)"
   + (if (.assignees | length) > 0 then " (assigned: \([.assignees[].login] | join(", ")))" else "" end)
   + ([.body | scan("From the call \\[([^\\]]+)\\]")] | if length > 0 then " (filed from the call \(.[0][0]))" else "" end)
-  + "\n    " + (.body | gsub("_From the call [^\n]*"; "") | gsub("\\s+"; " ") | .[0:300])' \
+  + "\n    " + (.body | gsub("_From the call [^\n]*"; "") | gsub("\\s+"; " ") | gsub("^ | $"; "") | .[0:300])' \
   >$RESCRIBE_RUN_DIR/board.md || fail "gh could not read $github's issues (gh auth status); nothing was indexed"
 gh api --paginate repos/$github/assignees --jq '.[].login' >$RESCRIBE_RUN_DIR/assignable ||
   fail "gh could not read who can be assigned in $github; nothing was indexed"
@@ -90,6 +90,8 @@ for entry in $box/*(DN); do
   [[ ${entry:t} == (transcript.md|meta.json|board.md|assignable.tsv|name|commit-message|summary|cards) ]] ||
     fail "Claude Code wrote .rescribe/${entry:t}, which is not part of the hand-over; nothing was pushed; the work is in $work"
 done
+[[ ! -e $box/cards || -d $box/cards ]] ||
+  fail "Claude Code wrote .rescribe/cards as a file, not a directory of cards; nothing was pushed; the work is in $work"
 for entry in $box/cards/*(DN); do
   [[ -d $entry ]] ||
     fail "Claude Code wrote .rescribe/cards/${entry:t}, which is not a card's directory; nothing was pushed; the work is in $work"
@@ -107,11 +109,12 @@ for card in $cards; do
   body=$(<$card/body.md)
   [[ $body == *[^[:space:]]* ]] || bad "has no body.md"
   ((${#body} <= 2000)) || bad "has a body.md longer than 2000 characters"
-  # Text a reader would not see, or a fence left open, could swallow the line saying where it came from.
-  [[ ${(L)body} != *('<!--'|'<details'|'<summary')* ]] || bad "has HTML that hides text in body.md"
-  (($(grep -cE '^[[:space:]]*(```|~~~)' $card/body.md || true) % 2 == 0)) || bad "leaves a code fence open in body.md"
-  # A mention notifies whoever it names; the assignees are who should hear of a card.
-  body=$(print -r -- $body | sed -E 's/(^|[^[:alnum:]_`])@([[:alnum:]-]+)/\1`@\2`/g')
+  # HTML or a code fence could hide text, or swallow the line saying where the card came from.
+  ! grep -qE '<[[:alpha:]!?/]' $card/body.md || bad "has HTML in body.md"
+  ! grep -qE '^[[:space:]]*(```|~~~)' $card/body.md || bad "has a code fence in body.md"
+  # A mention notifies whoever it names; the assignees are who should hear of a card. Only a letter
+  # or a digit before the @ (an address) keeps it from being one.
+  body=$(print -r -- $body | sed -E 's/(^|[^[:alnum:]])@([[:alnum:]-]+)/\1`@\2`/g')
   kept=$RESCRIBE_RUN_DIR/cards/${card:t}
   mkdir -p $kept
   print -r -- $title >$kept/title
@@ -141,6 +144,12 @@ rm -rf $box
 
 # A meeting indexed again may leave nothing to commit: its notes on origin/main are already its own.
 git add -A
+# Nothing new at the top of the repository: a card or anything else the agent wrote outside the
+# folders lawcel-knowledge has would be pushed, and lost to the board, without a word.
+for added in ${(0)"$(git diff --cached --name-only --diff-filter=A -z)"}; do
+  git cat-file -e "origin/main:${added%%/*}" 2>/dev/null ||
+    fail "Claude Code wrote $added, outside what lawcel-knowledge has at its top level; nothing was pushed; the work is in $work"
+done
 if git diff --cached --quiet; then
   pushed="Nothing new to push"
   say "lawcel-knowledge already has everything from this meeting"
