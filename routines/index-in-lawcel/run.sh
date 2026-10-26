@@ -32,12 +32,18 @@ first_line() { [[ -s $1 ]] && head -1 $1 | tr -d '\r' || true; }
 
 say "recording: $RESCRIBE_RECORDING_DIR"
 
-# The board's cards are issues of the GitHub repository the clone is, as gh resolves its remote (an
-# SSH alias, a user in the URL and insteadOf included), so a clone pointed anywhere else never files
-# on the founders' board. Its project (https://github.com/orgs/Lawcel/projects/2) adds a new issue
-# in Triage on its own.
-github=$(cd $repo && gh repo view --json nameWithOwner --jq .nameWithOwner) ||
-  fail "gh could not tell which GitHub repository $repo is (its origin; gh auth status); nothing was indexed"
+# The board's cards are issues of the GitHub repository the notes are pushed to: origin's push URL,
+# git's rewrites applied, as gh reads it (an SSH alias for github.com resolved the way ssh would), so
+# a clone pointed anywhere else never files on the founders' board, and one redirected to a local
+# copy files nowhere. Its project (https://github.com/orgs/Lawcel/projects/2) adds a new issue in
+# Triage on its own.
+push_url=$(git -C $repo remote get-url --push origin 2>/dev/null || true)
+if [[ $push_url =~ '^([A-Za-z0-9._-]+@)?([A-Za-z0-9._-]+):([^/].*)$' ]]; then
+  host=$(ssh -G $match[2] 2>/dev/null | awk '$1 == "hostname" { print $2; exit }' || true)
+  if [[ -n $host ]]; then push_url=$match[1]$host:$match[3]; fi
+fi
+[[ -n $push_url ]] && github=$(gh repo view $push_url --json nameWithOwner --jq .nameWithOwner) ||
+  fail "gh could not tell which GitHub repository $repo pushes to (\"$push_url\"; gh auth status); nothing was indexed"
 
 # The board as it is, so the agent can leave out what it already has, and who a card can go to.
 # Read first: without gh nothing else is worth starting. One issue to a line or two (a long board
@@ -79,40 +85,50 @@ name=$(first_line $box/name)
   fail "Claude Code gave no usable name (\"$name\"); the work is in $work"
 [[ -s meetings/notes/$name.md ]] || fail "No meetings/notes/$name.md was written; the work is in $work"
 
-# The hand-over, checked before anything is pushed: nothing in .rescribe/ but what the prompt asks
-# for (a card written anywhere else would be lost without a word), at most ten cards, each with a
-# one-line title, a short body that hides nothing, and assignees who can be assigned. A call talked
-# into a flood of cards stops here. The cards are kept in the run's directory with the line saying
-# where each came from, a mention in them made inert, and are filed after the push.
+# The hand-over. Nothing in it holds back the call's notes: what the script cannot file as it is, it
+# leaves out and names in the summary, and all of it stays in the run's directory (handover/). What
+# a call can do with a card is bounded: at most ten (more files none), a title of one line, a body of
+# at most 2000 characters in which HTML, a code fence and a mention are inert, and assignees who can
+# be assigned there. Each card is kept with the line saying where it came from, and filed after the push.
+problems=()
 for entry in $box/*(DN); do
-  [[ ${entry:t} == (transcript.md|meta.json|board.md|assignable.tsv|name|commit-message|summary|cards) ]] ||
-    fail "Claude Code wrote .rescribe/${entry:t}, which is not part of the hand-over; nothing was pushed; the work is in $work"
+  if [[ ${entry:t} != (transcript.md|meta.json|board.md|assignable.tsv|name|commit-message|summary|cards) ]]; then
+    problems+=(".rescribe/${entry:t} was not part of the hand-over")
+  fi
 done
-[[ ! -e $box/cards || -d $box/cards ]] ||
-  fail "Claude Code wrote .rescribe/cards as a file, not a directory of cards; nothing was pushed; the work is in $work"
+if [[ -e $box/cards && ! -d $box/cards ]]; then problems+=(".rescribe/cards was a file"); fi
 for entry in $box/cards/*(DN); do
-  [[ -d $entry ]] ||
-    fail "Claude Code wrote .rescribe/cards/${entry:t}, which is not a card's directory; nothing was pushed; the work is in $work"
+  if [[ ! -d $entry ]]; then problems+=(".rescribe/cards/${entry:t} was not a card's directory"); fi
 done
 cards=($box/cards/*(N/n))
-(($#cards <= max_cards)) ||
-  fail "Claude Code wrote $#cards cards, more than $max_cards; nothing was pushed; the work is in $work"
+if (($#cards > max_cards)); then
+  problems+=("$#cards cards were written, more than $max_cards, so none was filed")
+  cards=()
+fi
 provenance="_From the call [$name](https://github.com/$github/blob/main/meetings/notes/$name.md). Filed by an agent (Rescribe, Index in Lawcel run $RESCRIBE_RUN_ID)._"
+# HTML (a < before a tag's first character), a code fence and a mention made inert: an escaped <, an
+# escaped fence, a zero-width space after the @. Only a letter or a digit before an @ (an address)
+# keeps it from being a mention. An autolink in <> first becomes the bare URL or address, which
+# GitHub links all the same.
+inert=(-e 's/<((https?:\/\/|mailto:)[^[:space:]<>]+)>/\1/g' -e 's/<([^[:space:]<>@]+@[^[:space:]<>]+)>/\1/g'
+  -e 's/<([[:alpha:]!?\/])/\&lt;\1/g' -e 's/^([[:space:]]*)(```|~~~)/\1\\\2/'
+  -e "s/(^|[^[:alnum:]])@([[:alnum:]-])/\\1@"$'\u200b'"\\2/g")
 for card in $cards; do
-  bad() { fail "Card ${card:t} $1; nothing was pushed; the work is in $work"; }
-  title=$(first_line $card/title | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
-  lines=$(grep -c . $card/title 2>/dev/null || true)
-  [[ -n $title && ${#title} -le 120 && $lines == 1 ]] || bad "has no one-line title of at most 120 characters"
-  [[ -f $card/body.md ]] || bad "has no body.md"
-  body=$(<$card/body.md)
-  [[ $body == *[^[:space:]]* ]] || bad "has no body.md"
-  ((${#body} <= 2000)) || bad "has a body.md longer than 2000 characters"
-  # HTML or a code fence could hide text, or swallow the line saying where the card came from.
-  ! grep -qE '<[[:alpha:]!?/]' $card/body.md || bad "has HTML in body.md"
-  ! grep -qE '^[[:space:]]*(```|~~~)' $card/body.md || bad "has a code fence in body.md"
-  # A mention notifies whoever it names; the assignees are who should hear of a card. Only a letter
-  # or a digit before the @ (an address) keeps it from being one.
-  body=$(print -r -- $body | sed -E 's/(^|[^[:alnum:]])@([[:alnum:]-]+)/\1`@\2`/g')
+  # The first line that is not blank, trimmed, at most 120 characters.
+  title=$(grep -m1 '[^[:space:]]' $card/title 2>/dev/null | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)
+  if ((${#title} > 120)); then title="${title[1,119]}…"; fi
+  body=
+  if [[ -f $card/body.md ]]; then body=$(<$card/body.md); fi
+  if [[ -z $title ]]; then
+    problems+=("card ${card:t} had no title")
+    continue
+  fi
+  if [[ $body != *[^[:space:]]* ]]; then
+    problems+=("card ${card:t} had no body")
+    continue
+  fi
+  if ((${#body} > 2000)); then body="${body[1,1999]}…"; fi
+  body=$(print -r -- $body | sed -E $inert)
   kept=$RESCRIBE_RUN_DIR/cards/${card:t}
   mkdir -p $kept
   print -r -- $title >$kept/title
@@ -138,15 +154,17 @@ done
 cp $box/transcript.md meetings/transcripts/$name.md
 subject=$(first_line $box/commit-message)
 summary=$(first_line $box/summary)
+cp -R $box $RESCRIBE_RUN_DIR/handover
 rm -rf $box
 
 # A meeting indexed again may leave nothing to commit: its notes on origin/main are already its own.
 git add -A
-# Nothing new at the top of the repository: a card or anything else the agent wrote outside the
-# folders lawcel-knowledge has would be pushed, and lost to the board, without a word.
+# Anything new at the top of the repository is named: a card written there instead of in .rescribe/
+# would otherwise be pushed, and lost to the board, without a word.
 for added in ${(0)"$(git diff --cached --name-only --diff-filter=A -z)"}; do
-  git cat-file -e "origin/main:${added%%/*}" 2>/dev/null ||
-    fail "Claude Code wrote $added, outside what lawcel-knowledge has at its top level; nothing was pushed; the work is in $work"
+  if ! git cat-file -e "origin/main:${added%%/*}" 2>/dev/null; then
+    problems+=("$added is new at the top of lawcel-knowledge")
+  fi
 done
 if git diff --cached --quiet; then
   pushed="Nothing new to push"
@@ -209,7 +227,9 @@ for card in $RESCRIBE_RUN_DIR/cards/*(N/n); do
   say "filed $url: $title"
 done
 
-# Cards left out are named too, so a call's action item that matched an older card is not lost from view.
+# Cards left out are named too, so a call's action item that matched an older card, or that the
+# script could not file, is not lost from view.
 cards_line="${filed:+ Cards: ${(j:, :)filed}.}${skipped:+ Already on the board: ${(j:, :)skipped}.}"
+cards_line+="${problems:+ To look at: ${(j:; :)problems} (in $RESCRIBE_RUN_DIR/handover).}"
 [[ -n $summary ]] && print -r -- "$summary$cards_line" >$RESCRIBE_RUN_DIR/summary.txt
-print -r -- "$pushed${filed:+; filed ${(j:, :)filed}}${skipped:+; already on the board: ${(j:, :)skipped}}"
+print -r -- "$pushed${filed:+; filed ${(j:, :)filed}}${skipped:+; already on the board: ${(j:, :)skipped}}${problems:+; to look at: ${(j:; :)problems}}"

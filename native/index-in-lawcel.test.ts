@@ -77,6 +77,7 @@ const GH = `#!/bin/sh
 [ -n "$FAKE_GH_DOWN" ] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
 case "$1 $2" in
   "repo view")
+    printf '%s\n' "$3" > "$FAKE_GH_DIR/../repo-view-arg"
     [ -n "$FAKE_REPO" ] || { echo "none of the git remotes configured for this repository point to a known GitHub host" >&2; exit 1; }
     echo "$FAKE_REPO" ;;
   "issue list")
@@ -231,6 +232,8 @@ it('the cards are filed after the notes are on origin/main, each ending in where
     `${NAME}: pricing by buyer Cards: #101, #102.\n`,
   );
 
+  // gh was asked about the URL the notes are pushed to, git's rewrite applied.
+  assert.equal(readFileSync(path.join(r.dir, '../repo-view-arg'), 'utf8').trim(), r.origin);
   assert.equal(r.filed.length, 2);
   const [first, second] = r.filed as [Run['filed'][0], Run['filed'][0]];
   for (const f of r.filed) {
@@ -290,50 +293,53 @@ it('a meeting indexed again with nothing new: nothing to push, and its new cards
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'the worktree is removed');
 });
 
-it('a hand-over the script refuses: nothing is pushed or filed', () => {
+it('what the script cannot file holds back neither the notes nor the other cards, and is named', () => {
   const eleven = Array.from({ length: 11 }, (_, i) => card(i + 1, `Card ${i + 1}`, 'x')).join('');
-  for (const [cards, reason] of [
-    [eleven, /^Claude Code wrote 11 cards, more than 10; nothing was pushed; the work is in /],
-    [card(1, 'One', 'x') + card(2, 'Two\\nlines', 'x'), /^Card 2 has no one-line title/],
-    [card(1, 'x'.repeat(121), 'x'), /^Card 1 has no one-line title of at most 120 characters/],
-    [card(1, 'No body', ''), /^Card 1 has no body\.md/],
-    [card(1, 'Long', 'x'.repeat(2001)), /^Card 1 has a body\.md longer than 2000 characters/],
-    ...['Do this.\\n<pre>', 'Do this. <pre>', '<!x', 'Do <?', 'x <![CDATA[', '<!-- hidden'].map(
-      (b) => [card(1, 'Hidden', b), /^Card 1 has HTML in body\.md/] as const,
-    ),
-    ...['Do this.\\n```', '````\\nx\\n```', '```\\nx\\n~~~', '  ~~~'].map(
-      (b) => [card(1, 'Fenced', b), /^Card 1 has a code fence in body\.md/] as const,
-    ),
+  const good = card(9, 'Good', 'Fine.');
+  for (const [cards, problem, filed] of [
+    [eleven, '11 cards were written, more than 10, so none was filed', 0],
+    [card(1, '   ', 'x') + good, 'card 1 had no title', 1],
+    [card(1, 'No body', '') + good, 'card 1 had no body', 1],
+    ['echo x > .rescribe/cards\n', '.rescribe/cards was a file', 0],
     [
-      'echo x > .rescribe/cards\n',
-      /^Claude Code wrote \.rescribe\/cards as a file, not a directory of cards/,
+      good + 'echo x > .rescribe/cards/2.md\n',
+      ".rescribe/cards/2.md was not a card's directory",
+      1,
     ],
+    [good + 'mkdir -p .rescribe/card/1\n', '.rescribe/card was not part of the hand-over', 1],
     [
-      'mkdir -p rescribe/cards/1 && echo T > rescribe/cards/1/title\n',
-      /^Claude Code wrote rescribe\/cards\/1\/title, outside what lawcel-knowledge has at its top level/,
-    ],
-    [
-      card(1, 'One', 'x') + 'echo x > .rescribe/cards/2.md\n',
-      /^Claude Code wrote \.rescribe\/cards\/2\.md, which is not a card's directory/,
-    ],
-    [
-      'mkdir -p .rescribe/card/1 && echo T > .rescribe/card/1/title\n',
-      /^Claude Code wrote \.rescribe\/card, which is not part of the hand-over/,
+      good + 'mkdir -p rescribe/cards/1 && echo T > rescribe/cards/1/title\n',
+      'rescribe/cards/1/title is new at the top of lawcel-knowledge',
+      1,
     ],
   ] as const) {
     const r = run(cards);
-    assert.equal(r.code, 1, r.out);
-    assert.match(r.last, reason);
-    assert.equal(originMain(r), 'seed');
-    assert.equal(r.filed.length, 0);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(originMain(r), 'notes 2026-10-19 kenneth ulf: pricing', 'the notes are pushed');
+    assert.equal(r.filed.length, filed, r.out);
+    assert.ok(r.last.endsWith(`; to look at: ${problem}`), r.last);
+    assert.ok(
+      readFileSync(path.join(r.dir, 'summary.txt'), 'utf8').includes(
+        ` To look at: ${problem} (in ${r.dir}/handover).`,
+      ),
+    );
+    assert.ok(existsSync(path.join(r.dir, 'handover/name')), 'the hand-over is kept');
   }
+});
+
+it('a title or a body too long is cut, and a title takes its first line that is not blank', () => {
+  const r = run(card(1, `\\n  ${'t'.repeat(130)}\\nsecond`, 'b'.repeat(2100)));
+  assert.equal(r.code, 0, r.out);
+  const f = r.filed[0]!;
+  assert.equal(f.args[f.args.indexOf('--title') + 1], `${'t'.repeat(119)}…`);
+  assert.ok(f.body.startsWith(`${'b'.repeat(1999)}…\n\n_From the call `), f.body.slice(1990, 2010));
 });
 
 it('gh cannot tell the repository, or cannot read the board: the run stops before Claude Code starts', () => {
   for (const [env, reason] of [
     [
       { FAKE_GH_DOWN: '1' },
-      /^gh could not tell which GitHub repository .*lawcel-knowledge is \(its origin; gh auth status\); nothing was indexed$/,
+      /^gh could not tell which GitHub repository .*lawcel-knowledge pushes to \(".*origin\.git"; gh auth status\); nothing was indexed$/,
     ],
     [
       { FAKE_LIST_DOWN: '1' },
@@ -444,23 +450,43 @@ it('a clone gh does not take for a GitHub repository: the run stops before Claud
   assert.equal(r.code, 1, r.out);
   assert.match(
     r.last,
-    /^gh could not tell which GitHub repository .*lawcel-knowledge is \(its origin; gh auth status\); nothing was indexed$/,
+    /^gh could not tell which GitHub repository .*lawcel-knowledge pushes to \(".*origin\.git"; gh auth status\); nothing was indexed$/,
   );
   assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
   assert.equal(r.filed.length, 0);
 });
 
-it('a mention in a card is made inert; an address is left alone', () => {
+it('HTML, a code fence and a mention in a card are made inert; an address and a link are left alone', () => {
   const r = run(
     card(
       1,
-      'Ask',
-      'Ask @kennethgraupner, then mail a@b.com.\\nAsk _@ulfaslak_ and run `make`@ulfaslak.',
+      'Inert',
+      [
+        'Ask @kennethgraupner, then mail a@b.com.',
+        'Ask _@ulfaslak_ and run `cc @ulfaslak`.',
+        'See <https://example.com/x> and <c@firm.dk>, a < b.',
+        '<details>',
+        '<pre>',
+        '  ```',
+        '~~~',
+      ].join('\\n'),
     ),
   );
   assert.equal(r.code, 0, r.out);
-  assert.match(
-    r.filed[0]?.body ?? '',
-    /^Ask `@kennethgraupner`, then mail a@b\.com\.\nAsk _`@ulfaslak`_ and run `make``@ulfaslak`\.\n\n_From the call /,
+  const z = '​';
+  assert.equal(
+    r.filed[0]?.body,
+    [
+      `Ask @${z}kennethgraupner, then mail a@b.com.`,
+      `Ask _@${z}ulfaslak_ and run \`cc @${z}ulfaslak\`.`,
+      'See https://example.com/x and c@firm.dk, a < b.',
+      '&lt;details>',
+      '&lt;pre>',
+      '  \\```',
+      '\\~~~',
+      '',
+      provenance(`test-${n}`),
+      '',
+    ].join('\n'),
   );
 });
