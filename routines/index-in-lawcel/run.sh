@@ -104,19 +104,25 @@ subject=$(first_line $box/commit-message)
 summary=$(first_line $box/summary)
 rm -rf $box
 
+# A meeting indexed again may leave nothing to commit: its notes on origin/main are already its own.
 git add -A
-git commit --quiet -m "${subject:-notes $name}" -m "Indexed by Rescribe (Index in Lawcel, run $RESCRIBE_RUN_ID)."
-for attempt in 1 2 3; do
-  if ! git pull --quiet --rebase origin main; then
-    git rebase --abort 2>/dev/null || true
-    fail "Rebasing on origin/main conflicted; the commit is on $branch in $work"
-  fi
-  git push --quiet origin HEAD:main && break
-  ((attempt < 3)) || fail "The push to origin/main was refused three times; the commit is on $branch in $work"
-done
-git fetch --quiet origin main
-git merge-base --is-ancestor HEAD origin/main || fail "The commit is not on origin/main; it is on $branch in $work"
-commit=$(git log -1 --format='%h %s')
+if git diff --cached --quiet; then
+  pushed="Nothing new to push"
+  say "lawcel-knowledge already has everything from this meeting"
+else
+  git commit --quiet -m "${subject:-notes $name}" -m "Indexed by Rescribe (Index in Lawcel, run $RESCRIBE_RUN_ID)."
+  for attempt in 1 2 3; do
+    if ! git pull --quiet --rebase origin main; then
+      git rebase --abort 2>/dev/null || true
+      fail "Rebasing on origin/main conflicted; the commit is on $branch in $work"
+    fi
+    git push --quiet origin HEAD:main && break
+    ((attempt < 3)) || fail "The push to origin/main was refused three times; the commit is on $branch in $work"
+  done
+  git fetch --quiet origin main
+  git merge-base --is-ancestor HEAD origin/main || fail "The commit is not on origin/main; it is on $branch in $work"
+  pushed="Pushed $(git log -1 --format='%h %s')"
+fi
 
 # The human's clone: fast-forwarded when it is on main and nothing in it is in the way.
 if [[ $(git -C $repo symbolic-ref --quiet --short HEAD || true) == main ]]; then
@@ -137,11 +143,11 @@ for card in $RESCRIBE_RUN_DIR/cards/*(N/n); do
   title=$(<$card/title)
   who=${(j:,:)${(f)"$(<$card/assignees)"}}
   url=$(gh issue create -R $github --title $title --body-file $card/issue.md ${who:+--assignee=$who}) ||
-    fail "Pushed $commit, but filing \"$title\" on the board failed${filed:+ (filed ${(j:, :)filed})}; the cards are in $RESCRIBE_RUN_DIR/cards"
+    fail "$pushed, but filing \"$title\" on the board failed${filed:+ (filed ${(j:, :)filed})}; the cards are in $RESCRIBE_RUN_DIR/cards"
   url=${url##*$'\n'}
   filed+=("#${url:t}")
   say "filed $url: $title"
 done
 
 [[ -n $summary ]] && print -r -- "$summary${filed:+ Cards: ${(j:, :)filed}.}" >$RESCRIBE_RUN_DIR/summary.txt
-print -r -- "Pushed $commit${filed:+; filed ${(j:, :)filed}}"
+print -r -- "$pushed${filed:+; filed ${(j:, :)filed}}"

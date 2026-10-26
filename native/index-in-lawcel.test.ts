@@ -27,6 +27,7 @@ after(() => rmSync(root, { recursive: true, force: true }));
 
 const NAME = '2026-10-19-kenneth-ulf';
 const NOTE_URL = `https://github.com/Lawcel/lawcel-knowledge/blob/main/meetings/notes/${NAME}.md`;
+const TRANSCRIPT = '# Meet - Lawcel\n\n**Ulf** [0:00]\n\nHej.\n';
 const BOARD = [{ number: 7, title: 'Public pricing', state: 'OPEN', assignees: [], body: 'x' }];
 
 // The agent: a note, the hand-over, and whatever `cards` writes into .rescribe/cards.
@@ -74,7 +75,11 @@ interface Run {
 }
 
 let n = 0;
-function run(cards: string, extra: Record<string, string> = {}): Run {
+function run(
+  cards: string,
+  extra: Record<string, string> = {},
+  seed: Record<string, string> = {},
+): Run {
   const t = path.join(root, `t${++n}`);
   const [bin, home, rec, dir, created] = ['bin', 'home', 'rec', 'run', 'created'].map((d) => {
     mkdirSync(path.join(t, d), { recursive: true });
@@ -102,11 +107,12 @@ function run(cards: string, extra: Record<string, string> = {}): Run {
     mkdirSync(path.join(repo, d), { recursive: true });
     writeFileSync(path.join(repo, d, '.gitkeep'), '');
   }
+  for (const [f, text] of Object.entries(seed)) writeFileSync(path.join(repo, f), text);
   git('-C', repo, 'add', '-A');
   git('-C', repo, 'commit', '--quiet', '-m', 'seed');
   git('-C', repo, 'push', '--quiet', 'origin', 'HEAD:main');
 
-  writeFileSync(path.join(rec, 'transcript.md'), '# Meet - Lawcel\n\n**Ulf** [0:00]\n\nHej.\n');
+  writeFileSync(path.join(rec, 'transcript.md'), TRANSCRIPT);
   writeFileSync(path.join(rec, 'meta.json'), '{"participants":["Ulf","Kenneth Graupner"]}');
   writeFileSync(path.join(t, 'cards.sh'), cards);
   writeFileSync(path.join(t, 'board.json'), JSON.stringify(BOARD));
@@ -218,6 +224,22 @@ test('a call with nothing for the board pushes its notes and files nothing', () 
     `${NAME}: pricing by buyer\n`,
   );
   assert.equal(r.filed.length, 0);
+});
+
+test('a meeting indexed again with nothing new: nothing to push, and its new cards are still filed', () => {
+  const r = run(
+    card(1, 'Follow up', 'x'),
+    {},
+    {
+      [`meetings/notes/${NAME}.md`]: '# Notes\n',
+      [`meetings/transcripts/${NAME}.md`]: TRANSCRIPT,
+    },
+  );
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.last, 'Nothing new to push; filed #101');
+  assert.equal(originMain(r), 'seed');
+  assert.equal(r.filed.length, 1);
+  assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'the worktree is removed');
 });
 
 test('more than ten cards, or one without a one-line title: nothing is pushed or filed', () => {
