@@ -81,44 +81,52 @@ name=$(first_line $box/name)
   fail "Claude Code gave no usable name (\"$name\"); the work is in $work"
 [[ -s meetings/notes/$name.md ]] || fail "No meetings/notes/$name.md was written; the work is in $work"
 
-# The cards, checked before anything is pushed, so a call talked into a flood of them stops here,
-# and kept in the run's directory with the line saying where each came from. Filed after the push.
+# The hand-over, checked before anything is pushed: nothing in .rescribe/ but what the prompt asks
+# for (a card written anywhere else would be lost without a word), at most ten cards, each with a
+# one-line title, a short body that hides nothing, and assignees who can be assigned. A call talked
+# into a flood of cards stops here. The cards are kept in the run's directory with the line saying
+# where each came from, a mention in them made inert, and are filed after the push.
+for entry in $box/*(DN); do
+  [[ ${entry:t} == (transcript.md|meta.json|board.md|assignable.tsv|name|commit-message|summary|cards) ]] ||
+    fail "Claude Code wrote .rescribe/${entry:t}, which is not part of the hand-over; nothing was pushed; the work is in $work"
+done
+for entry in $box/cards/*(DN); do
+  [[ -d $entry ]] ||
+    fail "Claude Code wrote .rescribe/cards/${entry:t}, which is not a card's directory; nothing was pushed; the work is in $work"
+done
 cards=($box/cards/*(N/n))
 (($#cards <= max_cards)) ||
   fail "Claude Code wrote $#cards cards, more than $max_cards; nothing was pushed; the work is in $work"
-# A card the board already has from this call (a run filed it and then failed, or the meeting is
-# indexed again) is left out by its title, whatever the agent made of the board.
-gh issue list -R $github --state all --limit 1000 --json number,title,body \
-  --jq ".[] | select(.body | contains(\"/meetings/notes/$name.md)\")) | \"\(.number)\t\(.title)\"" \
-  >$RESCRIBE_RUN_DIR/same-call.tsv || fail "gh could not read $github's issues again; nothing was pushed; the work is in $work"
-same_call=(${(f)"$(<$RESCRIBE_RUN_DIR/same-call.tsv)"})
 provenance="_From the call [$name](https://github.com/$github/blob/main/meetings/notes/$name.md). Filed by an agent (Rescribe, Index in Lawcel run $RESCRIBE_RUN_ID)._"
 for card in $cards; do
-  kept=$RESCRIBE_RUN_DIR/cards/${card:t}
+  bad() { fail "Card ${card:t} $1; nothing was pushed; the work is in $work"; }
   title=$(first_line $card/title)
   lines=$(grep -c . $card/title 2>/dev/null || true)
-  [[ -n $title && ${#title} -le 120 && $lines == 1 ]] ||
-    fail "Card ${card:t} has no one-line title of at most 120 characters; nothing was pushed; the work is in $work"
-  grep -q '[^[:space:]]' $card/body.md 2>/dev/null ||
-    fail "Card ${card:t} has no body.md; nothing was pushed; the work is in $work"
-  already=
-  for issue in $same_call; do
-    if [[ ${(L)issue#*$'\t'} == "${(L)title}" ]]; then already=${issue%%$'\t'*}; fi
-  done
-  if [[ -n $already ]]; then
-    say "card ${card:t}: \"$title\" is on the board from this call already (#$already); left out"
-    continue
-  fi
+  [[ -n $title && ${#title} -le 120 && $lines == 1 ]] || bad "has no one-line title of at most 120 characters"
+  [[ -f $card/body.md ]] || bad "has no body.md"
+  body=$(<$card/body.md)
+  [[ $body == *[^[:space:]]* ]] || bad "has no body.md"
+  ((${#body} <= 2000)) || bad "has a body.md longer than 2000 characters"
+  # Text a reader would not see, or a fence left open, could swallow the line saying where it came from.
+  [[ ${(L)body} != *('<!--'|'<details'|'<summary')* ]] || bad "has HTML that hides text in body.md"
+  (($(grep -cE '^[[:space:]]*(```|~~~)' $card/body.md || true) % 2 == 0)) || bad "leaves a code fence open in body.md"
+  # A mention notifies whoever it names; the assignees are who should hear of a card.
+  body=$(print -r -- $body | sed -E 's/(^|[^[:alnum:]_`])@([[:alnum:]-]+)/\1`@\2`/g')
+  kept=$RESCRIBE_RUN_DIR/cards/${card:t}
   mkdir -p $kept
   print -r -- $title >$kept/title
-  print -r -- "$(<$card/body.md)"$'\n\n'"$provenance" >$kept/issue.md
+  print -r -- $body$'\n\n'$provenance >$kept/issue.md
   : >$kept/assignees
   if [[ -f $card/assignees ]]; then
     for login in ${(f)"$(<$card/assignees)"}; do
       login=${${login//[[:space:]]/}#@}
       [[ -n $login ]] || continue
-      if ((${assignable[(Ie)$login]})); then
-        print -r -- $login >>$kept/assignees
+      match=
+      for a in $assignable; do
+        if [[ ${(L)a} == "${(L)login}" ]]; then match=$a; fi
+      done
+      if [[ -n $match ]]; then
+        print -r -- $match >>$kept/assignees
       else
         say "card ${card:t}: $login cannot be assigned in $github; left out"
       fi
@@ -164,15 +172,31 @@ cd /
 git -C $repo worktree remove --force $work
 git -C $repo branch --quiet -D $branch
 
-# The cards, now that the note they link to is on origin/main.
+# The cards, now that the note they link to is on origin/main. The board read again first: a card
+# whose title is that of an open issue, or of one filed from this call (a run that filed it and then
+# failed, an overlapping run, the meeting indexed again), is left out, whatever the agent made of it.
+gh issue list -R $github --state all --limit 1000 --json number,title,state,body \
+  --jq ".[] | select(.state == \"OPEN\" or (.body | contains(\"/meetings/notes/$name.md)\"))) | \"\(.number)\t\(.title)\"" \
+  >$RESCRIBE_RUN_DIR/on-board.tsv ||
+  fail "$pushed, but gh could not read $github's issues to file the cards; they are in $RESCRIBE_RUN_DIR/cards"
+on_board=(${(f)"$(<$RESCRIBE_RUN_DIR/on-board.tsv)"})
 filed=()
 for card in $RESCRIBE_RUN_DIR/cards/*(N/n); do
   title=$(<$card/title)
+  already=
+  for issue in $on_board; do
+    if [[ ${(L)issue#*$'\t'} == "${(L)title}" ]]; then already=${issue%%$'\t'*}; fi
+  done
+  if [[ -n $already ]]; then
+    say "card ${card:t}: \"$title\" is on the board already (#$already); left out"
+    continue
+  fi
   who=${(j:,:)${(f)"$(<$card/assignees)"}}
   url=$(gh issue create -R $github --title $title --body-file $card/issue.md ${who:+--assignee=$who}) ||
     fail "$pushed, but filing \"$title\" on the board failed${filed:+ (filed ${(j:, :)filed})}; the cards are in $RESCRIBE_RUN_DIR/cards"
   url=${url##*$'\n'}
   filed+=("#${url:t}")
+  on_board+=("${url:t}"$'\t'"$title")
   say "filed $url: $title"
 done
 

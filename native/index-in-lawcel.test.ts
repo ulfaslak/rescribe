@@ -43,12 +43,12 @@ echo "${NAME}: pricing by buyer" > .rescribe/summary
 . "$FAKE_CARDS"
 `;
 
-// gh: the board (and, asked for the issues of one call, FAKE_SAME_CALL), two people who can be assigned, and `issue create` recorded with what origin's
+// gh: the board (and, asked for its open issues and this call's, FAKE_ON_BOARD), two people who can be assigned, and `issue create` recorded with what origin's
 // main was at that moment. FAKE_GH_DOWN fails every call; FAKE_GH_FAIL_AT fails the nth create.
 const GH = `#!/bin/sh
 [ -n "$FAKE_GH_DOWN" ] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
 case "$1 $2" in
-  "issue list") case "$*" in *"select("*) cat "$FAKE_SAME_CALL" ;; *) cat "$FAKE_BOARD" ;; esac ;;
+  "issue list") case "$*" in *"select("*) cat "$FAKE_ON_BOARD" ;; *) cat "$FAKE_BOARD" ;; esac ;;
   "api --paginate") printf 'ulfaslak\\nkennethgraupner\\n' ;;
   "api users/ulfaslak") printf 'ulfaslak\\tUlf Aslak\\n' ;;
   "api users/kennethgraupner") printf 'kennethgraupner\\tKenneth Graupner\\n' ;;
@@ -80,15 +80,15 @@ interface Options {
   env?: Record<string, string>;
   /** Files already on origin/main, by path. */
   seed?: Record<string, string>;
-  /** What gh says the board has from this call: "<number>\t<title>" lines. */
-  sameCall?: string;
+  /** What gh says is open on the board or filed from this call: "<number>\t<title>" lines. */
+  onBoard?: string;
   /** Leave origin a local path, as a scratch clone would. */
   localOrigin?: boolean;
 }
 
 function run(
   cards: string,
-  { env: extra = {}, seed = {}, sameCall = '', localOrigin }: Options = {},
+  { env: extra = {}, seed = {}, onBoard = '', localOrigin }: Options = {},
 ): Run {
   const t = path.join(root, `t${++n}`);
   const [bin, home, rec, dir, created] = ['bin', 'home', 'rec', 'run', 'created'].map((d) => {
@@ -130,7 +130,7 @@ function run(
   writeFileSync(path.join(rec, 'meta.json'), '{"participants":["Ulf","Kenneth Graupner"]}');
   writeFileSync(path.join(t, 'cards.sh'), cards);
   writeFileSync(path.join(t, 'board.md'), BOARD);
-  writeFileSync(path.join(t, 'same-call.tsv'), sameCall);
+  writeFileSync(path.join(t, 'on-board.tsv'), onBoard);
   writeFileSync(path.join(bin, 'claude'), CLAUDE);
   writeFileSync(path.join(bin, 'gh'), GH);
   chmodSync(path.join(bin, 'claude'), 0o755);
@@ -146,7 +146,7 @@ function run(
       RESCRIBE_RUN_ID: `test-${n}`,
       FAKE_CARDS: path.join(t, 'cards.sh'),
       FAKE_BOARD: path.join(t, 'board.md'),
-      FAKE_SAME_CALL: path.join(t, 'same-call.tsv'),
+      FAKE_ON_BOARD: path.join(t, 'on-board.tsv'),
       FAKE_GH_DIR: created,
       ORIGIN: origin,
       ...extra,
@@ -183,7 +183,7 @@ test('the cards are filed after the notes are on origin/main, each ending in whe
       1,
       'Price by buyer type',
       'Draft prices per buyer.',
-      'ulfaslak\\n @kennethgraupner \\nsomeone-else\\n',
+      'ulfaslak\\n @KennethGraupner \\nsomeone-else\\n',
     ) + card(2, 'Ask Christian for standard data', 'He offered a sample.'),
   );
   assert.equal(r.code, 0, r.out);
@@ -256,13 +256,25 @@ test('a meeting indexed again with nothing new: nothing to push, and its new car
   assert.ok(!existsSync(path.join(r.dir, 'lawcel-knowledge')), 'the worktree is removed');
 });
 
-test('more than ten cards, or one without a one-line title: nothing is pushed or filed', () => {
+test('a hand-over the script refuses: nothing is pushed or filed', () => {
   const eleven = Array.from({ length: 11 }, (_, i) => card(i + 1, `Card ${i + 1}`, 'x')).join('');
   for (const [cards, reason] of [
     [eleven, /^Claude Code wrote 11 cards, more than 10; nothing was pushed; the work is in /],
     [card(1, 'One', 'x') + card(2, 'Two\\nlines', 'x'), /^Card 2 has no one-line title/],
     [card(1, 'x'.repeat(121), 'x'), /^Card 1 has no one-line title of at most 120 characters/],
     [card(1, 'No body', ''), /^Card 1 has no body\.md/],
+    [card(1, 'Long', 'x'.repeat(2001)), /^Card 1 has a body\.md longer than 2000 characters/],
+    [card(1, 'Hidden', 'Do this. <!--'), /^Card 1 has HTML that hides text in body\.md/],
+    [card(1, 'Folded', '<details>more'), /^Card 1 has HTML that hides text in body\.md/],
+    [card(1, 'Fence', 'Do this.\\n```'), /^Card 1 leaves a code fence open in body\.md/],
+    [
+      card(1, 'One', 'x') + 'echo x > .rescribe/cards/2.md\n',
+      /^Claude Code wrote \.rescribe\/cards\/2\.md, which is not a card's directory/,
+    ],
+    [
+      'mkdir -p .rescribe/card/1 && echo T > .rescribe/card/1/title\n',
+      /^Claude Code wrote \.rescribe\/card, which is not part of the hand-over/,
+    ],
   ] as const) {
     const r = run(cards);
     assert.equal(r.code, 1, r.out);
@@ -298,17 +310,18 @@ test('a card that fails to file: the notes stay pushed and the line says what wa
   assert.ok(existsSync(path.join(r.dir, 'cards/2/issue.md')));
 });
 
-test('a card the board already has from this call is left out by its title', () => {
+test('a card whose title the board already has, or that this run already filed, is left out', () => {
   const r = run(
-    card(1, 'price by Buyer type', 'x') + card(2, 'Ask Christian for standard data', 'y'),
-    {
-      sameCall: '55\tPrice by buyer type\n',
-    },
+    card(1, 'price by Buyer type', 'x') +
+      card(2, 'Ask Christian for standard data', 'y') +
+      card(3, 'Ask Christian for STANDARD data', 'z'),
+    { onBoard: '55\tPrice by buyer type\n' },
   );
   assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /card 1: "price by Buyer type" is on the board already \(#55\); left out/);
   assert.match(
     r.out,
-    /card 1: "price by Buyer type" is on the board from this call already \(#55\); left out/,
+    /card 3: "Ask Christian for STANDARD data" is on the board already \(#101\); left out/,
   );
   assert.equal(r.filed.length, 1);
   assert.equal(
@@ -335,4 +348,13 @@ test('a clone whose origin is not on GitHub: the run stops before Claude Code st
   );
   assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
   assert.equal(r.filed.length, 0);
+});
+
+test('a mention in a card is made inert; an address is left alone', () => {
+  const r = run(card(1, 'Ask', 'Ask @kennethgraupner, then mail a@b.com.'));
+  assert.equal(r.code, 0, r.out);
+  assert.match(
+    r.filed[0]?.body ?? '',
+    /^Ask `@kennethgraupner`, then mail a@b\.com\.\n\n_From the call /,
+  );
 });
