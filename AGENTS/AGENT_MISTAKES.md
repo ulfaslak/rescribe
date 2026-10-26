@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-10-26 · cards · a re-index with nothing new failed on its own commit `[learned]`
+
+`run.sh` ran `git commit` unconditionally, so indexing a meeting again when lawcel-knowledge already had all of it ended the run failed, with git's "nothing to commit, working tree clean" as the reason. Since 2026-10-23, and harmless until cards: a re-index whose only news is a card would never have filed it. The second sandbox run on the Holm call caught it. Fix: an empty index skips the commit and the push (`native/index-in-lawcel.test.ts` "a meeting indexed again with nothing new").
+
 ### 2026-10-26 · cards · a sandbox whose stand-in lost to the human's shell profile `[learned]`
 
 To self-test Index in Lawcel's cards on a real call, the sandbox put a recording stand-in for `gh` first on PATH and ran `run.sh` with the real HOME, so that `claude` could log in. zsh read `~/.zshenv`, which puts `/opt/homebrew/bin` in front again, so the real `gh` filed lawcel-knowledge #32 and assigned it to Kenneth. The issue number in the log, where the stand-in would have printed #901, caught it after the fact. Fix: [[ENVIRONMENT_NOTES]] § "`~/.zshenv` puts Homebrew first in every zsh" (set `ZDOTDIR`, and check `command -v` through the same shell before the run), and `native/index-in-lawcel.test.ts` sets `ZDOTDIR`.
