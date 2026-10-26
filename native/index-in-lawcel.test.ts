@@ -1,5 +1,5 @@
 // routines/index-in-lawcel/run.sh as the supervisor runs it, against stand-ins for what it talks
-// to: lawcel-knowledge is a clone of a local bare repository, `claude` a script that writes what
+// to: lawcel-knowledge is a clone whose GitHub origin git rewrites to a local bare repository, `claude` a script that writes what
 // the agent would, `gh` a script that serves a board and records every issue it is asked to file.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -28,12 +28,13 @@ after(() => rmSync(root, { recursive: true, force: true }));
 const NAME = '2026-10-19-kenneth-ulf';
 const NOTE_URL = `https://github.com/Lawcel/lawcel-knowledge/blob/main/meetings/notes/${NAME}.md`;
 const TRANSCRIPT = '# Meet - Lawcel\n\n**Ulf** [0:00]\n\nHej.\n';
-const BOARD = [{ number: 7, title: 'Public pricing', state: 'OPEN', assignees: [], body: 'x' }];
+const GITHUB_URL = 'git@github.com:Lawcel/lawcel-knowledge.git';
+const BOARD = '#7 OPEN Public pricing\n    Take the prices off the pricing page.\n';
 
 // The agent: a note, the hand-over, and whatever `cards` writes into .rescribe/cards.
 const CLAUDE = `#!/bin/sh
 touch "$RESCRIBE_RUN_DIR/claude-ran"
-cp .rescribe/board.json "$RESCRIBE_RUN_DIR/seen-board.json"
+cp .rescribe/board.md "$RESCRIBE_RUN_DIR/seen-board.md"
 cp .rescribe/assignable.tsv "$RESCRIBE_RUN_DIR/seen-assignable.tsv"
 echo "# Notes" > meetings/notes/${NAME}.md
 echo ${NAME} > .rescribe/name
@@ -42,12 +43,12 @@ echo "${NAME}: pricing by buyer" > .rescribe/summary
 . "$FAKE_CARDS"
 `;
 
-// gh: the board, two people who can be assigned, and `issue create` recorded with what origin's
+// gh: the board (and, asked for the issues of one call, FAKE_SAME_CALL), two people who can be assigned, and `issue create` recorded with what origin's
 // main was at that moment. FAKE_GH_DOWN fails every call; FAKE_GH_FAIL_AT fails the nth create.
 const GH = `#!/bin/sh
 [ -n "$FAKE_GH_DOWN" ] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
 case "$1 $2" in
-  "issue list") cat "$FAKE_BOARD" ;;
+  "issue list") case "$*" in *"select("*) cat "$FAKE_SAME_CALL" ;; *) cat "$FAKE_BOARD" ;; esac ;;
   "api --paginate") printf 'ulfaslak\\nkennethgraupner\\n' ;;
   "api users/ulfaslak") printf 'ulfaslak\\tUlf Aslak\\n' ;;
   "api users/kennethgraupner") printf 'kennethgraupner\\tKenneth Graupner\\n' ;;
@@ -75,10 +76,19 @@ interface Run {
 }
 
 let n = 0;
+interface Options {
+  env?: Record<string, string>;
+  /** Files already on origin/main, by path. */
+  seed?: Record<string, string>;
+  /** What gh says the board has from this call: "<number>\t<title>" lines. */
+  sameCall?: string;
+  /** Leave origin a local path, as a scratch clone would. */
+  localOrigin?: boolean;
+}
+
 function run(
   cards: string,
-  extra: Record<string, string> = {},
-  seed: Record<string, string> = {},
+  { env: extra = {}, seed = {}, sameCall = '', localOrigin }: Options = {},
 ): Run {
   const t = path.join(root, `t${++n}`);
   const [bin, home, rec, dir, created] = ['bin', 'home', 'rec', 'run', 'created'].map((d) => {
@@ -111,11 +121,16 @@ function run(
   git('-C', repo, 'add', '-A');
   git('-C', repo, 'commit', '--quiet', '-m', 'seed');
   git('-C', repo, 'push', '--quiet', 'origin', 'HEAD:main');
+  if (!localOrigin) {
+    git('-C', repo, 'remote', 'set-url', 'origin', GITHUB_URL);
+    git('-C', repo, 'config', `url.${origin}.insteadOf`, GITHUB_URL);
+  }
 
   writeFileSync(path.join(rec, 'transcript.md'), TRANSCRIPT);
   writeFileSync(path.join(rec, 'meta.json'), '{"participants":["Ulf","Kenneth Graupner"]}');
   writeFileSync(path.join(t, 'cards.sh'), cards);
-  writeFileSync(path.join(t, 'board.json'), JSON.stringify(BOARD));
+  writeFileSync(path.join(t, 'board.md'), BOARD);
+  writeFileSync(path.join(t, 'same-call.tsv'), sameCall);
   writeFileSync(path.join(bin, 'claude'), CLAUDE);
   writeFileSync(path.join(bin, 'gh'), GH);
   chmodSync(path.join(bin, 'claude'), 0o755);
@@ -130,7 +145,8 @@ function run(
       RESCRIBE_RUN_DIR: dir,
       RESCRIBE_RUN_ID: `test-${n}`,
       FAKE_CARDS: path.join(t, 'cards.sh'),
-      FAKE_BOARD: path.join(t, 'board.json'),
+      FAKE_BOARD: path.join(t, 'board.md'),
+      FAKE_SAME_CALL: path.join(t, 'same-call.tsv'),
       FAKE_GH_DIR: created,
       ORIGIN: origin,
       ...extra,
@@ -198,7 +214,7 @@ test('the cards are filed after the notes are on origin/main, each ending in whe
   );
 
   // The agent saw the board and who can be assigned; none of it was committed.
-  assert.deepEqual(JSON.parse(readFileSync(path.join(r.dir, 'seen-board.json'), 'utf8')), BOARD);
+  assert.equal(readFileSync(path.join(r.dir, 'seen-board.md'), 'utf8'), BOARD);
   assert.equal(
     readFileSync(path.join(r.dir, 'seen-assignable.tsv'), 'utf8'),
     'ulfaslak\tUlf Aslak\nkennethgraupner\tKenneth Graupner\n',
@@ -227,14 +243,12 @@ test('a call with nothing for the board pushes its notes and files nothing', () 
 });
 
 test('a meeting indexed again with nothing new: nothing to push, and its new cards are still filed', () => {
-  const r = run(
-    card(1, 'Follow up', 'x'),
-    {},
-    {
+  const r = run(card(1, 'Follow up', 'x'), {
+    seed: {
       [`meetings/notes/${NAME}.md`]: '# Notes\n',
       [`meetings/transcripts/${NAME}.md`]: TRANSCRIPT,
     },
-  );
+  });
   assert.equal(r.code, 0, r.out);
   assert.equal(r.last, 'Nothing new to push; filed #101');
   assert.equal(originMain(r), 'seed');
@@ -259,7 +273,7 @@ test('more than ten cards, or one without a one-line title: nothing is pushed or
 });
 
 test('gh cannot read the board: the run stops before Claude Code starts', () => {
-  const r = run(card(1, 'Never', 'x'), { FAKE_GH_DOWN: '1' });
+  const r = run(card(1, 'Never', 'x'), { env: { FAKE_GH_DOWN: '1' } });
   assert.equal(r.code, 1, r.out);
   assert.match(
     r.last,
@@ -272,7 +286,7 @@ test('gh cannot read the board: the run stops before Claude Code starts', () => 
 
 test('a card that fails to file: the notes stay pushed and the line says what was filed', () => {
   const r = run(card(1, 'First', 'x') + card(2, 'Second', 'y') + card(3, 'Third', 'z'), {
-    FAKE_GH_FAIL_AT: '102',
+    env: { FAKE_GH_FAIL_AT: '102' },
   });
   assert.equal(r.code, 1, r.out);
   assert.match(
@@ -282,4 +296,43 @@ test('a card that fails to file: the notes stay pushed and the line says what wa
   assert.equal(originMain(r), 'notes 2026-10-19 kenneth ulf: pricing');
   assert.equal(r.filed.length, 1);
   assert.ok(existsSync(path.join(r.dir, 'cards/2/issue.md')));
+});
+
+test('a card the board already has from this call is left out by its title', () => {
+  const r = run(
+    card(1, 'price by Buyer type', 'x') + card(2, 'Ask Christian for standard data', 'y'),
+    {
+      sameCall: '55\tPrice by buyer type\n',
+    },
+  );
+  assert.equal(r.code, 0, r.out);
+  assert.match(
+    r.out,
+    /card 1: "price by Buyer type" is on the board from this call already \(#55\); left out/,
+  );
+  assert.equal(r.filed.length, 1);
+  assert.equal(
+    r.filed[0]?.args[r.filed[0].args.indexOf('--title') + 1],
+    'Ask Christian for standard data',
+  );
+});
+
+test('a title is measured in characters, not bytes, though the browser gives the host no locale', () => {
+  // 117 characters, 125 bytes in UTF-8.
+  const title = `Søren og Åse — ${'æ'.repeat(4)} — ${'x'.repeat(95)}`;
+  assert.equal([...title].length, 117);
+  const r = run(card(1, title, 'x'));
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.filed[0]?.args[r.filed[0].args.indexOf('--title') + 1], title);
+});
+
+test('a clone whose origin is not on GitHub: the run stops before Claude Code starts, and files nothing', () => {
+  const r = run(card(1, 'Never', 'x'), { localOrigin: true });
+  assert.equal(r.code, 1, r.out);
+  assert.match(
+    r.last,
+    /origin \(".*origin\.git"\) is not a repository on GitHub, where the cards go; nothing was indexed$/,
+  );
+  assert.ok(!existsSync(path.join(r.dir, 'claude-ran')));
+  assert.equal(r.filed.length, 0);
 });

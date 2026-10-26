@@ -13,11 +13,10 @@
 # check that it landed, and the cards it wrote filed as issues. The human's clone, which may be
 # mid-edit, is only fast-forwarded at the end.
 setopt err_exit no_unset pipe_fail
+# Characters, not bytes, in a title's length: the browser starts the host with no locale at all.
+export LC_ALL=en_US.UTF-8
 
 repo=${LAWCEL_KNOWLEDGE:-$HOME/Documents/git/lawcel-knowledge}
-# The board's cards are this repository's issues: its project
-# (https://github.com/orgs/Lawcel/projects/2) adds a new one in Triage on its own.
-github=Lawcel/lawcel-knowledge
 max_cards=10
 work=$RESCRIBE_RUN_DIR/lawcel-knowledge
 branch=rescribe/$RESCRIBE_RUN_ID
@@ -33,11 +32,25 @@ first_line() { [[ -s $1 ]] && head -1 $1 | tr -d '\r' || true; }
 
 say "recording: $RESCRIBE_RECORDING_DIR"
 
-# The board as it is, so the agent files nothing it already has, and who a card can go to. Read
-# first: without gh nothing else is worth starting.
+# The board's cards are issues of the GitHub repository the clone's origin is, so a clone pointed
+# anywhere else never files on the founders' board. Its project
+# (https://github.com/orgs/Lawcel/projects/2) adds a new issue in Triage on its own.
+origin_url=$(git -C $repo config --get remote.origin.url || true)
+github=${${origin_url%.git}#(git@github.com:|https://github.com/|ssh://git@github.com/)}
+[[ $origin_url == (git@github.com:|https://github.com/|ssh://git@github.com/)* &&
+  $github =~ '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ]] ||
+  fail "$repo's origin (\"$origin_url\") is not a repository on GitHub, where the cards go; nothing was indexed"
+
+# The board as it is, so the agent can leave out what it already has, and who a card can go to.
+# Read first: without gh nothing else is worth starting. One issue to a line or two (a long board
+# on one line would be more than the agent's Read takes), with the call an agent filed it from.
 say "reading $github's issues"
-gh issue list -R $github --state all --limit 1000 --json number,title,state,assignees,body,url \
-  >$RESCRIBE_RUN_DIR/board.json || fail "gh could not read $github's issues (gh auth status); nothing was indexed"
+gh issue list -R $github --state all --limit 1000 --json number,title,state,assignees,body --jq '.[]
+  | "#\(.number) \(.state) \(.title)"
+  + (if (.assignees | length) > 0 then " (assigned: \([.assignees[].login] | join(", ")))" else "" end)
+  + ([.body | scan("From the call \\[([^\\]]+)\\]")] | if length > 0 then " (filed from the call \(.[0][0]))" else "" end)
+  + "\n    " + (.body | gsub("_From the call [^\n]*"; "") | gsub("\\s+"; " ") | .[0:300])' \
+  >$RESCRIBE_RUN_DIR/board.md || fail "gh could not read $github's issues (gh auth status); nothing was indexed"
 gh api --paginate repos/$github/assignees --jq '.[].login' >$RESCRIBE_RUN_DIR/assignable ||
   fail "gh could not read who can be assigned in $github; nothing was indexed"
 assignable=(${(f)"$(<$RESCRIBE_RUN_DIR/assignable)"})
@@ -55,7 +68,7 @@ git -C $repo worktree add --quiet -b $branch $work origin/main
 box=$work/.rescribe
 mkdir -p $box
 cp $RESCRIBE_RECORDING_DIR/transcript.md $RESCRIBE_RECORDING_DIR/meta.json $box/
-cp $RESCRIBE_RUN_DIR/board.json $RESCRIBE_RUN_DIR/assignable.tsv $box/
+cp $RESCRIBE_RUN_DIR/board.md $RESCRIBE_RUN_DIR/assignable.tsv $box/
 
 say "claude -p (restricted) in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $work
@@ -73,6 +86,12 @@ name=$(first_line $box/name)
 cards=($box/cards/*(N/n))
 (($#cards <= max_cards)) ||
   fail "Claude Code wrote $#cards cards, more than $max_cards; nothing was pushed; the work is in $work"
+# A card the board already has from this call (a run filed it and then failed, or the meeting is
+# indexed again) is left out by its title, whatever the agent made of the board.
+gh issue list -R $github --state all --limit 1000 --json number,title,body \
+  --jq ".[] | select(.body | contains(\"/meetings/notes/$name.md)\")) | \"\(.number)\t\(.title)\"" \
+  >$RESCRIBE_RUN_DIR/same-call.tsv || fail "gh could not read $github's issues again; nothing was pushed; the work is in $work"
+same_call=(${(f)"$(<$RESCRIBE_RUN_DIR/same-call.tsv)"})
 provenance="_From the call [$name](https://github.com/$github/blob/main/meetings/notes/$name.md). Filed by an agent (Rescribe, Index in Lawcel run $RESCRIBE_RUN_ID)._"
 for card in $cards; do
   kept=$RESCRIBE_RUN_DIR/cards/${card:t}
@@ -82,6 +101,14 @@ for card in $cards; do
     fail "Card ${card:t} has no one-line title of at most 120 characters; nothing was pushed; the work is in $work"
   grep -q '[^[:space:]]' $card/body.md 2>/dev/null ||
     fail "Card ${card:t} has no body.md; nothing was pushed; the work is in $work"
+  already=
+  for issue in $same_call; do
+    if [[ ${(L)issue#*$'\t'} == "${(L)title}" ]]; then already=${issue%%$'\t'*}; fi
+  done
+  if [[ -n $already ]]; then
+    say "card ${card:t}: \"$title\" is on the board from this call already (#$already); left out"
+    continue
+  fi
   mkdir -p $kept
   print -r -- $title >$kept/title
   print -r -- "$(<$card/body.md)"$'\n\n'"$provenance" >$kept/issue.md
