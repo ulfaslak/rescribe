@@ -8,6 +8,10 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-10-26 · cards · a sandbox whose stand-in lost to the human's shell profile `[learned]`
+
+To self-test Index in Lawcel's cards on a real call, the sandbox put a recording stand-in for `gh` first on PATH and ran `run.sh` with the real HOME, so that `claude` could log in. zsh read `~/.zshenv`, which puts `/opt/homebrew/bin` in front again, so the real `gh` filed lawcel-knowledge #32 and assigned it to Kenneth. The issue number in the log, where the stand-in would have printed #901, caught it after the fact. Fix: [[ENVIRONMENT_NOTES]] § "`~/.zshenv` puts Homebrew first in every zsh" (set `ZDOTDIR`, and check `command -v` through the same shell before the run), and `native/index-in-lawcel.test.ts` sets `ZDOTDIR`.
+
 ### 2026-10-23 · routines · an unattended agent with every permission, fed what strangers said `[learned]`
 
 The first Index in Lawcel ran `claude -p --permission-mode bypassPermissions` on a meeting transcript, with the home directory, the shell, the network and push rights in reach, so anyone on a call could have had it copy `.env` keys into a note and push it, or send mail. The author thought of the transcript as the human's data; it is the words of everyone on the call. Found by the adversarial review. Fixed by running Claude Code `--restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep` in a worktree holding a copy of the meeting, with git in the script (INVARIANTS § "What was said on a call never reaches an agent that can run commands", pinned by `native/routines.test.ts`). Rule: an agent that reads input other people wrote gets only the tools its job needs, and anything that needs more is done by code around it.

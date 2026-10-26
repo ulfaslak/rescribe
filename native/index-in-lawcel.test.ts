@@ -83,6 +83,8 @@ function run(cards: string, extra: Record<string, string> = {}): Run {
   const env = {
     PATH: `${bin}:${process.env['PATH']}`,
     HOME: home,
+    // zsh reads .zshenv from here: the human's own puts Homebrew's gh in front of the stand-in.
+    ZDOTDIR: home,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_AUTHOR_NAME: 'Test',
     GIT_AUTHOR_EMAIL: 'test@example.com',
