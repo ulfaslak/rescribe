@@ -1,0 +1,7 @@
+{
+  "label": "Claude Code in a folder",
+  "description": "Claude Code works in the folder with the transcript to read: it reads and writes files there and nowhere else, then says in a line what it did.",
+  "folder": "Where Claude Code works. It can read and change any file in it, so choose a folder of notes, not one with code or keys.",
+  "order": 10,
+  "timeoutMinutes": 30
+}

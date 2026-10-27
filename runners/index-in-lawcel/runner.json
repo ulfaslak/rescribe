@@ -1,0 +1,12 @@
+{
+  "label": "Index in Lawcel",
+  "description": "Claude Code writes in a fresh worktree of the folder, with the project board read for it; then the script files the transcript, commits, pushes to main, and files the cards Claude wrote as issues on the board. What it puts before and after your prompt is how the script and Claude Code hand work over.",
+  "folder": "The lawcel-knowledge clone. Claude Code works in a worktree of it; the push goes to its origin, and the cards to the GitHub repository origin is.",
+  "defaultFolder": "~/Documents/git/lawcel-knowledge",
+  "order": 20,
+  "timeoutMinutes": 45,
+  "seed": {
+    "label": "Index in Lawcel",
+    "description": "Transcript, notes, CRM, decisions and questions into lawcel-knowledge, pushed; action items on the board"
+  }
+}

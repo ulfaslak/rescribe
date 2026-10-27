@@ -128,7 +128,8 @@ label.check > span {
   align-items: center;
 }
 input,
-select {
+select,
+textarea {
   font: inherit;
   padding: 6px 8px;
   border-radius: 6px;
@@ -155,19 +156,107 @@ ul {
 .recording-item {
   display: grid;
   gap: 4px;
-  padding: 10px 0;
+  padding: 4px 0;
   border-top: 1px solid var(--line);
 }
 .recording-item:first-child {
   border-top: 0;
 }
+.recording-item [hidden] {
+  display: none !important;
+}
+/* The head: the toggle (chevron and title) takes what the rest leaves. */
 .recording-item .title-row {
   display: flex;
   align-items: center;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+}
+.recording-item button.toggle {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 8px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  font-size: 15px;
+  text-align: left;
+}
+/* A chevron drawn with two borders: right when folded, down when open. */
+.recording-item .chevron {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px 0 1px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+.recording-item.open .chevron {
+  transform: rotate(45deg);
+}
+.recording-item button.toggle:hover .chevron {
+  border-color: var(--fg);
 }
 .recording-item .title {
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recording-item.open .title {
+  white-space: normal;
+}
+.recording-item .title-row .when {
+  margin-left: auto;
+}
+.recording-item .title-row .when,
+.recording-item .title-row .duration {
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.recording-item .title-row .pill {
+  flex: none;
+}
+.workflow-badge {
+  flex: none;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.workflow-badge.running {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.workflow-badge.waiting {
+  color: var(--pending);
+  border-color: var(--pending);
+}
+.workflow-badge.done {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.workflow-badge.failed {
+  color: var(--rec);
+  border-color: var(--rec);
+}
+.recording-item .details {
+  display: grid;
+  gap: 4px;
+  padding: 0 0 10px 20px;
 }
 .recording-item button.rename {
   padding: 0 6px;
@@ -273,4 +362,159 @@ body.duplicate main {
   justify-self: start;
   font-size: 13px;
   padding: 4px 10px;
+}
+button.primary,
+.recording-item button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+/* Run workflow…: the picker takes a line of its own in the actions. */
+.workflow-picker {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.workflow-picker select {
+  font-size: 13px;
+  padding: 4px 6px;
+  max-width: 100%;
+}
+.workflow-picker .workflow-line {
+  flex-basis: 100%;
+  margin: 0;
+}
+.workflow-picker .workflow-line:empty {
+  display: none;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.section-head h2 {
+  margin: 0;
+}
+.section-head button {
+  font-size: 13px;
+  padding: 4px 10px;
+}
+#workflows-list {
+  margin-top: 8px;
+}
+.workflow-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.workflow-item:first-child {
+  border-top: 0;
+}
+.workflow-item .workflow-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workflow-item .title {
+  font-weight: 600;
+}
+.workflow-item .runner {
+  font-size: 13px;
+  color: var(--muted);
+}
+.workflow-item .path,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.workflow-item .path {
+  font-size: 13px;
+  word-break: break-all;
+}
+.workflow-item .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.workflow-item .actions button {
+  font-size: 13px;
+  padding: 4px 10px;
+}
+.workflow-item.editing {
+  padding: 14px 0;
+}
+.workflow-editor input.mono {
+  font-size: 14px;
+}
+.prompt-field {
+  display: grid;
+  gap: 6px;
+}
+.prompt-field .caption {
+  font-size: 13px;
+  color: var(--muted);
+}
+.prompt-field textarea {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  padding: 10px 12px;
+  font:
+    13px/1.55 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  tab-size: 2;
+}
+.variables {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.variables .hint {
+  margin: 0 2px 0 0;
+}
+.variables button.variable {
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--accent);
+}
+.variables button.variable:hover {
+  border-color: var(--accent);
+}
+details.wrap summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+details.wrap pre {
+  margin: 2px 0 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+details.wrap p.hint {
+  margin: 6px 0 0;
 }

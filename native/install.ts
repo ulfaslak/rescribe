@@ -1,4 +1,4 @@
-// `npm run install-host`: makes the routines reachable from the browser (DECISIONS § Routines).
+// `npm run install-host`: makes the workflows reachable from the browser (DECISIONS § Workflows).
 // Creates ~/.rescribe/{recordings,runs,bin}, writes ~/.rescribe/bin/rescribe-host (a wrapper that
 // runs native/host.ts from this checkout with this Node: the browser starts hosts with launchd's
 // PATH, where neither is found), and registers it as the native messaging host for Rescribe's
@@ -53,7 +53,7 @@ chmodSync(wrapper, 0o755);
 
 const manifest = {
   name: NATIVE_HOST,
-  description: 'Rescribe routines',
+  description: 'Rescribe workflows',
   path: wrapper,
   type: 'stdio',
   allowed_origins: [`chrome-extension://${extensionId}/`],
@@ -78,6 +78,7 @@ for (const [name, dir] of browsers) {
 console.log(`Native host ${NATIVE_HOST} for extension ${extensionId}`);
 console.log(`  host:       ${wrapper}`);
 console.log(`  recordings: ${p.recordings}`);
-console.log(`  routines:   ${p.routines}`);
+console.log(`  runners:    ${p.runners}`);
+console.log(`  workflows:  ${path.join(p.home, 'workflows')}`);
 for (const line of installed) console.log(`  ${line}`);
 if (installed.length === 0) console.log('  no browser profile found; nothing registered');

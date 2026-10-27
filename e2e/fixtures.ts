@@ -46,8 +46,8 @@ function testBuild(): string {
 }
 
 /**
- * The routines' native host for the test browser: the real native/host.ts, with a home, a
- * recordings folder and routines of the harness's own (e2e/fixtures/routines/), registered in the
+ * The workflows' native host for the test browser: the real native/host.ts, with a home, a
+ * recordings folder and a runner of the harness's own (e2e/fixtures/runners/), registered in the
  * profile, which Chromium reads native messaging hosts from (`<user-data-dir>/NativeMessagingHosts`).
  * The recordings folder is named like helpers.ts `EXPORT_DIR`, since the host checks the Settings
  * folder's name against it; the export itself goes to OPFS, so a spec that wants a run to find
@@ -61,10 +61,18 @@ export const HOST_HOME = path.join(
   `rescribe-e2e-${createHash('sha256').update(process.cwd()).digest('hex').slice(0, 8)}`,
 );
 export const HOST_RECORDINGS = path.join(HOST_HOME, 'export-test');
+/**
+ * The home the host sees (HOME), which a workflow's folder must be inside, with `notes/` in it:
+ * the folder of the workflow the host makes on its first run (the fixture runner's `seed`).
+ */
+export const HOST_USER_HOME = `${HOST_HOME}-home`;
+export const HOST_NOTES = path.join(HOST_USER_HOME, 'notes');
 
 function registerHost(profile: string, extensionDir: string): void {
   rmSync(HOST_HOME, { recursive: true, force: true });
+  rmSync(HOST_USER_HOME, { recursive: true, force: true });
   mkdirSync(HOST_RECORDINGS, { recursive: true });
+  mkdirSync(HOST_NOTES, { recursive: true });
   const wrapper = path.join(HOST_HOME, 'rescribe-host');
   writeFileSync(
     wrapper,
@@ -72,7 +80,8 @@ function registerHost(profile: string, extensionDir: string): void {
       '#!/bin/sh',
       `export RESCRIBE_HOME="${HOST_HOME}"`,
       `export RESCRIBE_RECORDINGS="${HOST_RECORDINGS}"`,
-      `export RESCRIBE_ROUTINES="${path.resolve('e2e/fixtures/routines')}"`,
+      `export HOME="${HOST_USER_HOME}"`,
+      `export RESCRIBE_RUNNERS="${path.resolve('e2e/fixtures/runners')}"`,
       'export RESCRIBE_NOTIFY=0',
       // Chrome drops a host's stderr; the harness keeps it.
       `exec "${process.execPath}" --no-warnings "${path.resolve('native/host.ts')}" "$@" 2>>"${path.join(HOST_HOME, 'host.log')}"`,
@@ -86,7 +95,7 @@ function registerHost(profile: string, extensionDir: string): void {
     path.join(hosts, `${NATIVE_HOST}.json`),
     JSON.stringify({
       name: NATIVE_HOST,
-      description: 'Rescribe routines (e2e)',
+      description: 'Rescribe workflows (e2e)',
       path: wrapper,
       type: 'stdio',
       allowed_origins: [`chrome-extension://${extensionIdForPath(extensionDir)}/`],

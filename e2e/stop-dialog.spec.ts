@@ -1,4 +1,4 @@
-// The stop dialog (src/stop/): a toolbar click while recording opens it; Save, the routines
+// The stop dialog (src/stop/): a toolbar click while recording opens it; Save, the workflows
 // (routines.spec.ts covers them) and Discard; closing it keeps recording; a share that ends leaves the recording `stopped` and opens
 // it; a Meet call that ends opens it while the recording goes on; a save hands over to the
 // processing tab (src/progress/). The toolbar click is driven through the service worker's
@@ -205,7 +205,7 @@ test("the share ends: the recording waits stopped with the badge on SAVE and the
   const r = row(page, rec.id);
   await expect(r).toHaveAttribute('data-status', 'stopped');
   await expect(r.locator('button.save')).toBeVisible();
-  await expect(r.locator('button.save-routine[data-routine="e2e-echo"]')).toBeVisible();
+  await expect(r.locator('button.save-workflow')).toBeEnabled();
   await expect(r.locator('button.discard')).toBeVisible();
   await expect(r.locator('button.re-export, button.save-now, button.rerun')).toHaveCount(0);
 

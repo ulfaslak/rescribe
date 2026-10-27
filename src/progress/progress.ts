@@ -1,6 +1,6 @@
 // The processing tab: a normal tab the service worker opens (`open-progress`) after a save in the
 // stop dialog, so the human sees what happens to the recording next (the video export, the
-// transcription, where it all went, and the routine chosen for it, which runs outside the
+// transcription, where it all went, and the workflow chosen for it, which runs outside the
 // browser) while the app tab, which does the work, stays pinned in the background. A view: the record from IndexedDB once a second (the truth on disk, readable with
 // the app tab closed) plus the app tab's live line for it (`query-progress`). Closing this tab
 // stops nothing; a closed app tab does, and this page says so and offers to open it.
@@ -71,7 +71,7 @@ function view(
     case 'stopped':
       return {
         headline: 'Waiting to be saved',
-        detail: 'Save it, run a routine on it or Discard it in Rescribe.',
+        detail: 'Save it, run a workflow on it or Discard it in Rescribe.',
         kind: 'paused',
       };
     case 'recorded':

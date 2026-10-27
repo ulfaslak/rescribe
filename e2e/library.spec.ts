@@ -22,6 +22,7 @@ import {
   rerun as runPipeline,
   seedExportFolder,
   setSettings,
+  openRows,
   waitForRecording,
 } from './helpers.ts';
 import type { Recording } from '../src/lib/types.ts';
@@ -109,9 +110,11 @@ async function settled(page: Page, id: string): Promise<Recording> {
   return waitForRecording(page, id, (r) => SETTLED.has(r.status), { label: 'settle' });
 }
 
+/** `n` recordings, each row opened (only the newest is, unasked). */
 async function seed(page: Page, n: number, seconds = 2): Promise<Recording[]> {
   const out: Recording[] = [];
   for (let i = 0; i < n; i++) out.push(await record(page, seconds));
+  await openRows(page);
   return out;
 }
 
@@ -595,7 +598,7 @@ test('a row with an action in progress shows it and offers nothing, whatever re-
   const ra = row(page, a!.id);
   await ra.locator('button.re-export').click();
   await expect(ra.locator('.busy')).toHaveText('Exporting…');
-  await expect(ra.locator('button')).toHaveCount(0);
+  await expect(ra.locator('.details button, button.rename')).toHaveCount(0);
   // A recording starts meanwhile: the list is rebuilt; A's row must still show the action and no
   // buttons.
   await page.click('#record-screen');
@@ -603,7 +606,7 @@ test('a row with an action in progress shows it and offers nothing, whatever re-
     timeout: 15_000,
   });
   await expect(ra.locator('.busy')).toHaveText('Exporting…');
-  await expect(ra.locator('button')).toHaveCount(0);
+  await expect(ra.locator('.details button, button.rename')).toHaveCount(0);
   await expect(page.locator('#library-status')).toHaveText(
     `Saved recording.mp4 to ${a!.exportPath}/.`,
     { timeout: 30_000 },
@@ -682,7 +685,7 @@ test('Re-run transcription on a done recording: the row shows the run, ends done
   await ra.locator('button.rerun').click();
   await expect(ra).toHaveAttribute('data-status', 'transcribing', { timeout: 10_000 });
   await expect(ra.locator('.progress')).not.toHaveText('');
-  await expect(ra.locator('button')).toHaveCount(0);
+  await expect(ra.locator('.details button, button.rename')).toHaveCount(0);
   const second = await waitForRecording(
     page,
     a!.id,
@@ -792,7 +795,7 @@ test('a recording queued or running in the pipeline keeps its media through a co
     expect(await opfsSize(page, ['recordings', id, 'mic.pcm']), id).toBeGreaterThan(0);
     expect((await recording(page, id))!.mediaDeleted).toBeUndefined();
   }
-  await expect(row(page, b!.id).locator('button')).toHaveCount(0);
+  await expect(row(page, b!.id).locator('.details button, button.rename')).toHaveCount(0);
   await expect(row(page, b!.id).locator('.progress')).not.toHaveText('');
   const a2 = await waitForRecording(
     page,
@@ -864,4 +867,46 @@ test('a recording saved with Save as… before routines keeps its own folder: th
     await opfsSize(page, [OTHER_EXPORT_DIR, ...a!.exportPath!.split('/'), 'recording.mp4']),
   ).toBe(video);
   expect(await opfsList(page, [EXPORT_DIR])).toEqual(settingsFolderBefore);
+});
+
+test('rows fold to one line: the newest open, an older one only its head until clicked, and the choice kept through a re-render and a reload', async ({
+  context,
+  extensionId,
+}) => {
+  const page = await setUp(context, extensionId);
+  const a = await record(page, 2);
+  const b = await record(page, 2);
+  const [ra, rb] = [row(page, a.id), row(page, b.id)];
+  // The newest is open; the older one shows its head only: title, when, how long, status.
+  await expect(rb).toHaveClass(/\bopen\b/);
+  await expect(rb.locator('.details')).toBeVisible();
+  await expect(ra).not.toHaveClass(/\bopen\b/);
+  await expect(ra.locator('.title')).toHaveText(a.title);
+  await expect(ra.locator('.when')).toBeVisible();
+  await expect(ra.locator('.duration')).toHaveText(/^0:0\d$/);
+  await expect(ra.locator('.pill')).toHaveText(a.status);
+  await expect(ra.locator('.details')).toBeHidden();
+  await expect(ra.locator('button.rename')).toBeHidden();
+  await expect(ra.locator('button.toggle')).toHaveAttribute('aria-expanded', 'false');
+  await page.locator('#recordings').screenshot({ path: 'screenshots/library-folded.png' });
+
+  // Opened by a click on its head; the newest folded the same way.
+  await ra.locator('button.toggle').click();
+  await rb.locator('button.toggle').click();
+  await expect(ra.locator('.details')).toBeVisible();
+  await expect(ra.locator('button.rename')).toBeVisible();
+  await expect(ra.locator('button.toggle')).toHaveAttribute('aria-expanded', 'true');
+  await expect(rb.locator('.details')).toBeHidden();
+
+  // A re-render (a rename of the other) and a reload keep both as the human left them.
+  await ra.locator('button.rename').click();
+  await ra.locator('input.title-input').fill('Opened by hand');
+  await ra.locator('input.title-input').press('Enter');
+  await expect(ra.locator('.title')).toHaveText('Opened by hand');
+  await expect(ra.locator('.details')).toBeVisible();
+  await expect(rb.locator('.details')).toBeHidden();
+  await page.reload();
+  await readyIdle(page);
+  await expect(ra.locator('.details')).toBeVisible();
+  await expect(rb.locator('.details')).toBeHidden();
 });

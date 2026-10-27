@@ -1,4 +1,4 @@
-// The routine chosen for a recording (DECISIONS § Routines), app-tab only: started through the
+// The workflow chosen for a recording (DECISIONS § Workflows), app-tab only: started through the
 // native host once the recording is `done` with its transcript in the folder, then followed until
 // the host says `done` or `failed`, every state written to the record (`Recording.routine`), which
 // is what the row and the processing tab show.
@@ -33,9 +33,16 @@ export function routinesOnOffer(): RoutineList {
   return offered;
 }
 
-/** Ask the host again; the list changes when a routine is added to the clone it runs from. */
+let asked = 0;
+
+/**
+ * Ask the host again: the list changes when a workflow is made, edited or deleted. Only the
+ * latest answer is kept, so a slow one from before a delete cannot offer the deleted workflow.
+ */
 export async function refreshRoutines(): Promise<RoutineList> {
-  offered = await listRoutines();
+  const mine = ++asked;
+  const got = await listRoutines();
+  if (mine === asked) offered = got;
   return offered;
 }
 

@@ -47,6 +47,7 @@ import {
   transcribeRecording,
 } from './pipeline.ts';
 import { initRoutines, refreshRoutines } from './routines.ts';
+import { initWorkflows, reloadWorkflows } from './workflows.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -131,7 +132,7 @@ async function refreshPending(): Promise<void> {
     const rec = stopped[0]!;
     setStatus('stopped');
     note(
-      `"${rec.title}" (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}) is not saved yet: Save it, run a routine on it or Discard it from its row below, or from the toolbar button.`,
+      `"${rec.title}" (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}) is not saved yet: Save it, run a workflow on it or Discard it from its row below, or from the toolbar button.`,
     );
   } else setStatus('idle');
 }
@@ -438,7 +439,7 @@ function onRecorderChange(rec: Recording, phase: RecorderPhase): void {
         pendingId = rec.id;
         setStatus('stopped');
         note(
-          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}), not saved yet: Save it, run a routine on it or Discard it from its row below, or from the toolbar button.`,
+          `Recording ended (${formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)}), not saved yet: Save it, run a workflow on it or Discard it from its row below, or from the toolbar button.`,
         );
         askToSave();
       }
@@ -636,7 +637,7 @@ async function chooseFolder(): Promise<void> {
     const handle = await window.showDirectoryPicker({ id: 'rescribe-export', mode: 'readwrite' });
     await setExportRoot(handle);
     await describeFolder();
-    // The rows' routine buttons depend on which folder it is.
+    // The rows' workflow pickers depend on which folder it is.
     void renderList();
   } catch (err) {
     if ((err as DOMException).name === 'AbortError') {
@@ -797,7 +798,7 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>('#record-screen').addEventListener('click', () => void onRecordScreen());
   $<HTMLButtonElement>('#stop').addEventListener('click', () => void onStop());
   await describeFolder();
-  // Before the first render: the rows offer the routines the host lists (app/routines.ts).
+  // Before the first render: the rows offer the workflows the host lists (app/routines.ts).
   await refreshRoutines();
   await renderList();
   // A duplicate tab is inert (above), so a `recording` answer here can only come from an owner
@@ -817,8 +818,16 @@ async function main(): Promise<void> {
   if (interrupted.length > 0) await renderList();
   // Again after the recovery: a recovered recording may have changed what is waiting.
   await refreshPending();
-  // The routines on offer, and the runs a closed tab left going or waiting (app/routines.ts).
+  // The runs a closed tab left going or waiting (app/routines.ts).
   void initRoutines(() => void renderList());
+  // The Workflows section; a workflow saved or deleted there changes what the rows offer.
+  void initWorkflows(() => void refreshRoutines().then(() => renderList()));
+  // The workflows are files the human may edit by hand too: asked again when the tab comes back.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    void reloadWorkflows();
+    void refreshRoutines().then(() => renderList());
+  });
   // Startup is complete (recovery included); the e2e harness waits for this.
   document.body.dataset['ready'] = 'owner';
 }

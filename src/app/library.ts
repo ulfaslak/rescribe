@@ -1,7 +1,10 @@
 // The recording library (ARCHITECTURE § Pipeline: "any stage can be re-run from the library").
-// One row per Recording: an editable title, the status, what is still on disk, the routine chosen
-// for it and how it went, and the actions that work from OPFS (re-export, re-run transcription,
-// delete media, delete) or on the folder (run a routine). App-tab only.
+// One row per Recording, folded to one line (the title, when, how long, the status, the workflow
+// run on it) until it is opened: then an editable title, what is still on disk, the workflow
+// chosen for it and how it went, and the actions that work from OPFS (re-export, re-run
+// transcription, delete media, delete) or on the folder (Run workflow…, which opens a picker of
+// the workflows the host offers). The newest recording, and one that is live or waits for the
+// human, is open unless the human closed it. App-tab only.
 //
 // app.ts calls renderList() after every recorder phase change and every pipeline phase. Each
 // render re-reads IndexedDB and walks `recordings/` in OPFS once: the walk is both the storage
@@ -208,6 +211,8 @@ async function runAction(
   }
   for (const b of scope.querySelectorAll('button')) b.disabled = true;
   for (const id of ids) inflight.set(id, label);
+  // A row acted on stays open for its outcome, even once a newer recording is the one open unasked.
+  for (const id of ids) if (!opened.has(id)) setOpened(id, true);
   void renderList();
   let out: Outcome;
   let failure: unknown;
@@ -293,7 +298,7 @@ async function reExport(id: string): Promise<Outcome> {
     }
   }
   if (!failed && rec.error) rec = await updateRecording(rec.id, { error: undefined });
-  // A routine waiting for the transcript to reach the folder can start now.
+  // A workflow waiting for the transcript to reach the folder can start now.
   if (!failed) void startWhenReady(rec.id);
   return written.length
     ? `Saved ${written.join(', ')} to ${rec.exportPath}/.`
@@ -324,7 +329,7 @@ async function claim(id: string, what: string): Promise<Recording | string> {
 // --- The decision on a stopped recording (app/decide.ts) ----------------------------------------
 /**
  * Save into the folder from Settings, chosen here first when there is none (a Save must save;
- * cancelled, nothing happens); the permission is re-requested inside the click. With a routine,
+ * cancelled, nothing happens); the permission is re-requested inside the click. With a workflow,
  * it runs once the transcript is in the folder.
  */
 async function saveStopped(id: string, routine?: RoutineInfo): Promise<Outcome> {
@@ -346,7 +351,7 @@ async function saveStopped(id: string, routine?: RoutineInfo): Promise<Outcome> 
   return savedOutcome(rec);
 }
 
-/** A routine on a recording whose transcript is in the folder (app/routines.ts). */
+/** A workflow on a recording whose transcript is in the folder (app/routines.ts). */
 async function runRoutine(id: string, routine: RoutineInfo): Promise<Outcome> {
   const rec = await runRoutineOn(id, routine);
   const run = rec.routine;
@@ -355,8 +360,8 @@ async function runRoutine(id: string, routine: RoutineInfo): Promise<Outcome> {
 }
 
 /**
- * Why the routines cannot run on recordings saved now, or undefined: none on offer (the host is
- * missing), or the Settings folder is not the one the host reads.
+ * Why workflows cannot run on recordings saved now, or undefined: the host could not be asked
+ * (missing), or the Settings folder is not the one it reads.
  */
 async function routineBlocker(): Promise<string | undefined> {
   const list = routinesOnOffer();
@@ -364,24 +369,120 @@ async function routineBlocker(): Promise<string | undefined> {
   return folderMismatch(list, (await getExportRoot())?.name);
 }
 
-/** One button per routine on offer, each a two-step: a routine writes outside Rescribe. */
-function routineButtons(
+/**
+ * Rows whose workflow picker is open, and the workflow chosen in it: a re-render (the pipeline,
+ * the live refresh) rebuilds the row with the picker as it was.
+ */
+const picking = new Map<string, string>();
+const LAST_WORKFLOW_KEY = 'rescribe.lastWorkflow';
+
+/** The workflow a picker opens on: the one last run from a row, while it is on offer. */
+function lastWorkflow(offered: RoutineInfo[]): string | undefined {
+  let last: string | null = null;
+  try {
+    last = localStorage.getItem(LAST_WORKFLOW_KEY);
+  } catch {
+    // storage refused: the first one
+  }
+  return offered.find((w) => w.id === last)?.id ?? offered[0]?.id;
+}
+
+function rememberWorkflow(id: string): void {
+  try {
+    localStorage.setItem(LAST_WORKFLOW_KEY, id);
+  } catch {
+    // a convenience only
+  }
+}
+
+/**
+ * "Run workflow…" (a transcribed row) or "Save and run workflow…" (a waiting one): a button that
+ * opens, in its place, a select of the workflows the host offers with the one line of the chosen
+ * one, the button that does it, and Cancel. Disabled with the reason when none can run: the host
+ * is missing, the Settings folder is not the one it reads, there are no workflows, or one runs
+ * on this recording already.
+ */
+function workflowPicker(
   rec: Recording,
   li: HTMLElement,
   blocker: string | undefined,
-): HTMLButtonElement[] {
-  return routinesOnOffer().routines.map((routine) => {
-    const b = confirmButton(
-      routine.label,
-      `Run ${routine.label} on "${rec.title}"?`,
-      'routine',
-      () => void runAction([rec.id], `${routine.label}…`, li, () => runRoutine(rec.id, routine)),
-    );
-    b.dataset['routine'] = routine.id;
-    b.title = blocker ?? routine.description ?? routine.label;
-    b.disabled = blocker !== undefined || rec.routine?.state === 'running';
-    return b;
+  mode: 'run' | 'save',
+): HTMLElement {
+  const offered = routinesOnOffer().routines;
+  const why =
+    blocker ??
+    (offered.length === 0 ? 'No workflows yet: make one under Workflows below.' : undefined) ??
+    (mode === 'run' && rec.routine?.state === 'running'
+      ? `${rec.routine.label} is running on it.`
+      : undefined);
+  if (why !== undefined) picking.delete(rec.id);
+  let chosen = picking.get(rec.id);
+  // The one chosen is gone (deleted under the open picker): the picker stays, on another.
+  if (chosen !== undefined && !offered.some((w) => w.id === chosen)) {
+    chosen = lastWorkflow(offered)!;
+    picking.set(rec.id, chosen);
+  }
+  if (why !== undefined || chosen === undefined) {
+    const open = document.createElement('button');
+    open.className = mode === 'run' ? 'run-workflow' : 'save-workflow';
+    open.textContent = mode === 'run' ? 'Run workflow…' : 'Save and run workflow…';
+    open.title =
+      why ??
+      (mode === 'run'
+        ? 'Choose a workflow to run on this recording'
+        : 'Save, transcribe, then run a workflow you choose');
+    open.disabled = why !== undefined;
+    open.addEventListener('click', () => {
+      const first = lastWorkflow(offered);
+      if (first === undefined) return;
+      picking.set(rec.id, first);
+      open.replaceWith(workflowPicker(rec, li, blocker, mode));
+      li.querySelector<HTMLSelectElement>('select.workflow-select')?.focus();
+    });
+    return open;
+  }
+  const picker = document.createElement('span');
+  picker.className = 'workflow-picker';
+  const select = document.createElement('select');
+  select.className = 'workflow-select';
+  select.setAttribute('aria-label', 'Workflow');
+  for (const w of offered) {
+    const option = document.createElement('option');
+    option.value = w.id;
+    option.textContent = w.label;
+    select.append(option);
+  }
+  select.value = chosen;
+  const line = span('hint workflow-line', '');
+  const describe = (): void => {
+    line.textContent = offered.find((w) => w.id === select.value)?.description ?? '';
+  };
+  describe();
+  select.addEventListener('change', () => {
+    picking.set(rec.id, select.value);
+    describe();
   });
+  const go = document.createElement('button');
+  go.className = mode === 'run' ? 'run primary' : 'save-run primary';
+  go.textContent = mode === 'run' ? 'Run' : 'Save and run';
+  go.addEventListener('click', () => {
+    const workflow = offered.find((w) => w.id === select.value);
+    if (!workflow) return;
+    picking.delete(rec.id);
+    rememberWorkflow(workflow.id);
+    if (mode === 'run')
+      void runAction([rec.id], `${workflow.label}…`, li, () => runRoutine(rec.id, workflow));
+    else void runAction([rec.id], 'Saving…', li, () => saveStopped(rec.id, workflow));
+  });
+  const cancel = document.createElement('button');
+  cancel.className = 'cancel';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => {
+    picking.delete(rec.id);
+    picker.replaceWith(workflowPicker(rec, li, blocker, mode));
+  });
+  picker.append(select, go, cancel, line);
+  return picker;
 }
 
 function savedOutcome(rec: Recording | undefined): Outcome {
@@ -556,23 +657,92 @@ function span(cls: string, text: string): HTMLSpanElement {
 }
 
 /**
- * One row. `blocker`: why routines cannot run on what is saved now (lib `routineBlocker`), which
- * the routine buttons show instead of running.
+ * Rows the human opened or closed by hand, kept in the tab's session storage so a reload keeps
+ * them so; the others are as `openByDefault` says.
  */
-function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTMLLIElement {
+const OPENED_KEY = 'rescribe.openedRows';
+const opened = ((): Map<string, boolean> => {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(OPENED_KEY) ?? '{}') as Record<
+      string,
+      unknown
+    >;
+    return new Map(
+      Object.entries(stored).filter((e): e is [string, boolean] => typeof e[1] === 'boolean'),
+    );
+  } catch {
+    return new Map();
+  }
+})();
+
+function setOpened(id: string, open: boolean): void {
+  opened.set(id, open);
+  try {
+    sessionStorage.setItem(OPENED_KEY, JSON.stringify(Object.fromEntries(opened)));
+  } catch {
+    // a convenience only
+  }
+}
+
+/**
+ * Open without the human asking: the newest recording (what was just recorded is what one acts
+ * on), and one that is live or waits for them (`stopped`, a decision or an action under way).
+ */
+function openByDefault(rec: Recording, newest: string | undefined): boolean {
+  return (
+    rec.id === newest ||
+    live(rec) ||
+    rec.status === 'stopped' ||
+    isDeciding(rec.id) ||
+    inflight.has(rec.id)
+  );
+}
+
+/** `27 Oct, 14:02`: the head's when; the full date and time is its tooltip. */
+function shortWhen(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/**
+ * One row: the head, always shown (the toggle with the title, the pencil when open, when, how
+ * long, the status, the workflow run on it), and the rest when open. `blocker`: why workflows
+ * cannot run on what is saved now (`routineBlocker`), which the pickers show instead of running.
+ */
+function item(
+  rec: Recording,
+  inv: Inventory,
+  blocker: string | undefined,
+  newest: string | undefined,
+): HTMLLIElement {
   const li = document.createElement('li');
   li.className = 'recording-item';
   li.dataset['id'] = rec.id;
   li.dataset['status'] = rec.status;
+  const isOpen = opened.get(rec.id) ?? openByDefault(rec, newest);
+  li.classList.toggle('open', isOpen);
 
   // An action of ours, or a decision being applied from the stop dialog (the export of a long
   // call takes minutes, and the record reads `stopped` until it is done).
   const busy = inflight.get(rec.id) ?? (isDeciding(rec.id) ? 'Saving…' : undefined);
   const titleRow = document.createElement('div');
   titleRow.className = 'title-row';
-  titleRow.append(span('title', rec.title));
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'toggle';
+  toggle.setAttribute('aria-expanded', String(isOpen));
+  toggle.setAttribute('aria-controls', `rec-${rec.id}`);
+  toggle.title = isOpen ? 'Fold' : 'Open';
+  const chevron = span('chevron', '');
+  chevron.setAttribute('aria-hidden', 'true');
+  toggle.append(chevron, span('title', rec.title));
+  titleRow.append(toggle);
   // No pencil while the recorder or the pipeline holds the record (their writers carry the title
-  // from their start), nor while an action of ours runs on it.
+  // from their start), nor while an action of ours runs on it; shown on an open row only.
   if (!live(rec) && !busy) {
     const rename = document.createElement('button');
     rename.className = 'rename';
@@ -580,25 +750,55 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
     rename.textContent = '✎';
     rename.title = 'Rename';
     rename.setAttribute('aria-label', 'Rename');
+    rename.hidden = !isOpen;
     rename.addEventListener('click', () => editTitle(li, rec));
     titleRow.append(rename);
   }
+  const when = span('when', shortWhen(rec.startedAt));
+  when.title = new Date(rec.startedAt).toLocaleString();
+  titleRow.append(
+    when,
+    span('duration', formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)),
+    span(`pill ${rec.status}`, rec.status),
+  );
+  if (rec.routine) {
+    // The workflow run on it, at a glance; the sentence is on the open row and in the tooltip.
+    const badge = span(`workflow-badge ${rec.routine.state}`, rec.routine.label);
+    badge.title = describeRun(rec.routine, transcriptInFolder(rec));
+    titleRow.append(badge);
+  }
+  li.append(titleRow);
+
+  const body = document.createElement('div');
+  body.className = 'details';
+  body.id = `rec-${rec.id}`;
+  body.hidden = !isOpen;
+  li.append(body);
+  // Anywhere on the head that is not a button of its own opens and folds it too.
+  titleRow.addEventListener('click', (e) => {
+    if (!(e.target as Element).closest('button')) toggle.click();
+  });
+  toggle.addEventListener('click', () => {
+    const open = !li.classList.contains('open');
+    setOpened(rec.id, open);
+    body.hidden = !open;
+    li.classList.toggle('open', open);
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.title = open ? 'Fold' : 'Open';
+    const pencil = titleRow.querySelector<HTMLElement>('button.rename');
+    if (pencil) pencil.hidden = !open;
+  });
 
   const meta = document.createElement('div');
   meta.className = 'meta';
-  meta.append(
-    span('when', new Date(rec.startedAt).toLocaleString()),
-    span('duration', formatDuration((rec.endedAt ?? Date.now()) - rec.startedAt)),
-    span('sources', describeSources(rec)),
-    span(`pill ${rec.status}`, rec.status),
-  );
+  meta.append(span('sources', describeSources(rec)));
   const levels = formatLevels(rec.levels);
   if (levels) meta.append(span('levels', levels));
   if (inv.bytes > 0) meta.append(span('size', `${formatBytes(inv.bytes)} local`));
-  li.append(titleRow, meta);
+  body.append(meta);
 
   if (rec.exportPath)
-    li.append(div('path', `${rec.exportRoot ? `${rec.exportRoot}/` : ''}${rec.exportPath}/`));
+    body.append(div('path', `${rec.exportRoot ? `${rec.exportRoot}/` : ''}${rec.exportPath}/`));
   if (rec.status === 'transcribing' || isTranscribing(rec.id)) {
     // The pipeline's steps (ui/steps.ts); before its first event, one line.
     const p = progress.get(rec.id);
@@ -607,35 +807,35 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
       p ? '' : rec.status === 'transcribing' ? 'Transcribing…' : 'Queued for transcription…',
     );
     if (p) renderSteps(el, p, { headline: true });
-    li.append(el);
+    body.append(el);
   }
-  if (rec.error) li.append(div('hint error', rec.error));
-  if (rec.note) li.append(div('hint', rec.note));
+  if (rec.error) body.append(div('hint error', rec.error));
+  if (rec.note) body.append(div('hint', rec.note));
   if (rec.routine) {
     const run = rec.routine;
-    li.append(div(`hint routine ${run.state}`, describeRun(run, transcriptInFolder(rec))));
+    body.append(div(`hint routine ${run.state}`, describeRun(run, transcriptInFolder(rec))));
     // Where to look while it runs and after it failed: the run's log, outside the browser.
     if (run.log && (run.state === 'running' || run.state === 'failed'))
-      li.append(div('path routine-log', run.log));
+      body.append(div('path routine-log', run.log));
   }
   if (rec.mediaDeleted)
-    li.append(
+    body.append(
       div('hint media-deleted', 'Media deleted from local storage; the exported files remain.'),
     );
 
   if (live(rec)) return li;
   if (busy) {
-    li.append(div('progress busy', busy));
+    body.append(div('progress busy', busy));
     return li;
   }
 
   const actions = document.createElement('div');
   actions.className = 'actions';
   if (rec.status === 'stopped') {
-    // Waiting for the human: the same three choices as the stop dialog, nothing else. Nothing
-    // has been exported and nothing is transcribed until one of them is clicked.
-    li.append(
-      div('hint pending', 'Not saved yet: save it, save it and run a routine, or discard it.'),
+    // Waiting for the human: the same choices as the stop dialog, nothing else. Nothing has been
+    // exported and nothing is transcribed until one of them is clicked.
+    body.append(
+      div('hint pending', 'Not saved yet: save it, save it and run a workflow, or discard it.'),
     );
     const save = document.createElement('button');
     save.className = 'save';
@@ -645,23 +845,10 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
       'click',
       () => void runAction([rec.id], 'Saving…', li, () => saveStopped(rec.id)),
     );
-    // Save with a routine: one click, as in the stop dialog; the routine runs after the transcript.
-    const withRoutine = routinesOnOffer().routines.map((routine) => {
-      const b = document.createElement('button');
-      b.className = 'save-routine';
-      b.dataset['routine'] = routine.id;
-      b.textContent = routine.label;
-      b.title = blocker ?? `Save, transcribe, then: ${routine.description ?? routine.label}`;
-      b.disabled = blocker !== undefined;
-      b.addEventListener(
-        'click',
-        () => void runAction([rec.id], 'Saving…', li, () => saveStopped(rec.id, routine)),
-      );
-      return b;
-    });
     actions.append(
       save,
-      ...withRoutine,
+      // Save with a workflow: it runs once the transcript is in the folder.
+      workflowPicker(rec, li, blocker, 'save'),
       confirmButton(
         'Discard',
         `Discard "${rec.title}"? Nothing was exported.`,
@@ -669,7 +856,7 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
         () => void runAction([rec.id], 'Discarding…', li, () => discardStopped(rec.id)),
       ),
     );
-    li.append(actions);
+    body.append(actions);
     return li;
   }
   // Whatever is on disk can be saved, a failed recording's playable video included.
@@ -690,6 +877,8 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
     );
     actions.append(b);
   }
+  // A workflow needs the transcript in the folder; first, so the thing done most is nearest.
+  if (transcriptInFolder(rec)) actions.prepend(workflowPicker(rec, li, blocker, 'run'));
   if (inv.pcm || inv.segmentsCache) {
     const b = document.createElement('button');
     b.className = 'rerun';
@@ -703,8 +892,6 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
     );
     actions.append(b);
   }
-  // A routine needs the transcript in the folder; it says why not when it cannot run.
-  if (transcriptInFolder(rec)) actions.append(...routineButtons(rec, li, blocker));
   if (inv.mediaBytes > 0) {
     // A recording without a transcript loses the audio a transcript would be made from.
     const consequence =
@@ -727,7 +914,7 @@ function item(rec: Recording, inv: Inventory, blocker: string | undefined): HTML
       () => void runAction([rec.id], 'Deleting…', li, () => remove(rec.id)),
     ),
   );
-  li.append(actions);
+  body.append(actions);
   return li;
 }
 
@@ -800,8 +987,9 @@ async function render(): Promise<void> {
     storageUsage(),
     routineBlocker(),
   ]);
+  const newest = recs[0]?.id;
   $<HTMLUListElement>('#recordings-list').replaceChildren(
-    ...recs.map((rec) => item(rec, inventory(rec, usage), blocker)),
+    ...recs.map((rec) => item(rec, inventory(rec, usage), blocker, newest)),
   );
   $<HTMLElement>('#recordings-empty').hidden = recs.length > 0;
   renderStorage(recs, usage);

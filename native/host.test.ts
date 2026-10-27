@@ -1,14 +1,32 @@
 // The native host as the browser drives it: a process per message, framed on stdin and stdout,
-// against a temporary home, recordings folder and routines directory. The routines here are
-// small shell scripts; what they record of their environment is what a real one would get.
+// against a temporary home, recordings folder and runners directory. The runners here are small
+// shell scripts; what they record of their environment is what a real one would get. The
+// workflows are made the way the app makes them, through the host.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { HostRequest, HostResponse, RunStatus, RunTarget } from '../src/lib/routines.ts';
+import type {
+  HostRequest,
+  HostResponse,
+  RunStatus,
+  RunTarget,
+  Workflow,
+  WorkflowEntry,
+} from '../src/lib/routines.ts';
 import { decodeMessage, encodeMessage } from './lib.ts';
 import { writeStatus } from './store.ts';
 
@@ -18,42 +36,75 @@ after(() => rmSync(root, { recursive: true, force: true }));
 
 const home = path.join(root, 'home');
 const recordings = path.join(home, 'recordings');
-const routines = path.join(root, 'routines');
+const runners = path.join(root, 'runners');
+// The human's home, which a workflow's folder must be in, with a folder of notes.
+const user = path.join(root, 'user');
+const notes = path.join(user, 'notes');
+mkdirSync(notes, { recursive: true });
 const env = {
   ...process.env,
+  HOME: user,
   RESCRIBE_HOME: home,
-  RESCRIBE_ROUTINES: routines,
+  RESCRIBE_RUNNERS: runners,
   RESCRIBE_NOTIFY: '0',
   ANTHROPIC_API_KEY: 'sk-ant-must-not-reach-a-routine',
 };
 
-function routine(id: string, spec: object, script: string): void {
-  const dir = path.join(routines, id);
+function runner(
+  id: string,
+  spec: object,
+  script: string,
+  texts: { prompt?: string; before?: string; after?: string } = {},
+): void {
+  const dir = path.join(runners, id);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, 'routine.json'), JSON.stringify(spec));
+  writeFileSync(path.join(dir, 'runner.json'), JSON.stringify(spec));
   writeFileSync(path.join(dir, 'run.sh'), `#!/bin/sh\n${script}\n`);
   chmodSync(path.join(dir, 'run.sh'), 0o755);
+  writeFileSync(path.join(dir, 'prompt.md'), texts.prompt ?? 'Do it.\n');
+  if (texts.before !== undefined) writeFileSync(path.join(dir, 'before.md'), texts.before);
+  if (texts.after !== undefined) writeFileSync(path.join(dir, 'after.md'), texts.after);
 }
 
-// Records what it was given, says one thing for the human, and succeeds.
-routine(
+// Records what it was given, says one thing for the human, and succeeds. Rescribe makes a
+// workflow of it on its first run (`seed`), as it does Index in Lawcel.
+runner(
   'echo',
-  { label: 'Echo', description: 'Says what it got', order: 1 },
-  'env > "$RESCRIBE_RUN_DIR/env.txt"; echo working; echo "Echoed $RESCRIBE_TITLE" > "$RESCRIBE_RUN_DIR/summary.txt"',
+  {
+    label: 'Echo runner',
+    description: 'Says what it got',
+    folder: 'Anywhere',
+    defaultFolder: '~/notes',
+    order: 1,
+    seed: { label: 'Echo', description: 'Says what it got' },
+  },
+  'env > "$RESCRIBE_RUN_DIR/env.txt"; cp "$RESCRIBE_PROMPT" "$RESCRIBE_RUN_DIR/seen-prompt.md"; echo working; echo "Echoed $RESCRIBE_TITLE" > "$RESCRIBE_RUN_DIR/summary.txt"',
+  {
+    prompt:
+      'Echo {{title}} ({{ date }} {{time}}) with {{participants}} from {{transcript}} in {{folder}}; {{unknown}} stays.\n',
+    before: 'Before {{workflow}}.\n',
+    after: '\nAfter.\n',
+  },
 );
-routine('fails', { label: 'Fails', order: 2 }, 'echo first; echo "the reason it failed"; exit 3');
-routine('slow', { label: 'Slow', order: 3 }, 'sleep 5');
+runner('fails', { label: 'Fails', order: 2 }, 'echo first; echo "the reason it failed"; exit 3');
+runner('slow', { label: 'Slow', order: 3 }, 'sleep 5');
 // Broken ones are not listed.
-routine('nolabel', {}, 'true');
-routine('Bad_Name', { label: 'Bad name' }, 'true');
-writeFileSync(path.join(routines, 'README.md'), '# not a routine\n');
-mkdirSync(path.join(routines, 'noscript'), { recursive: true });
-writeFileSync(path.join(routines, 'noscript', 'routine.json'), '{"label":"No script"}');
+runner('nolabel', {}, 'true');
+runner('Bad_Name', { label: 'Bad name' }, 'true');
+writeFileSync(path.join(runners, 'README.md'), '# not a runner\n');
+mkdirSync(path.join(runners, 'noscript'), { recursive: true });
+writeFileSync(path.join(runners, 'noscript', 'runner.json'), '{"label":"No script"}');
+
+/** 2026-10-23 12:02 in this machine's zone. */
+const STARTED = new Date(2026, 9, 23, 12, 2).getTime();
 
 function recording(exportPath: string, id: string, transcript = true): RunTarget {
   const dir = path.join(recordings, exportPath);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ id }));
+  writeFileSync(
+    path.join(dir, 'meta.json'),
+    JSON.stringify({ id, startedAt: STARTED, participants: ['Ulf', 'Carolina'] }),
+  );
   if (transcript) writeFileSync(path.join(dir, 'transcript.md'), '# A call\n');
   return { id, title: 'A call', folder: 'recordings', exportPath };
 }
@@ -74,9 +125,33 @@ function ask(req: HostRequest): Promise<HostResponse> {
   });
 }
 
+async function save(w: Partial<Workflow>): Promise<Workflow> {
+  const res = await ask({
+    type: 'save-workflow',
+    workflow: { id: '', label: '', runner: 'echo', folder: notes, prompt: 'Do it.', ...w },
+  });
+  assert.ok(res.ok && 'workflow' in res, JSON.stringify(res));
+  return res.workflow;
+}
+
+async function refused(w: Partial<Workflow>): Promise<string> {
+  const res = await ask({
+    type: 'save-workflow',
+    workflow: { id: '', label: 'X', runner: 'echo', folder: notes, prompt: 'Do it.', ...w },
+  });
+  assert.ok(!res.ok, `saved: ${JSON.stringify(w)}`);
+  return res.error;
+}
+
+async function workflows(): Promise<WorkflowEntry[]> {
+  const res = await ask({ type: 'list-workflows' });
+  assert.ok(res.ok && 'workflows' in res, JSON.stringify(res));
+  return res.workflows;
+}
+
 let starts = 0;
-async function run(routineId: string, target: RunTarget, key = `k${++starts}`): Promise<RunStatus> {
-  const res = await ask({ type: 'run-routine', routine: routineId, recording: target, key });
+async function run(workflow: string, target: RunTarget, key = `k${++starts}`): Promise<RunStatus> {
+  const res = await ask({ type: 'run-routine', routine: workflow, recording: target, key });
   assert.ok(res.ok && 'run' in res, JSON.stringify(res));
   assert.equal(res.run.state, 'running');
   return res.run;
@@ -92,18 +167,153 @@ async function settle(runId: string): Promise<RunStatus> {
   throw new Error('still running');
 }
 
-test('lists the routines in order, and where recordings must be', async () => {
+test('the first run makes the seeded workflow; the list offers the workflows, and says where recordings must be', async () => {
+  assert.ok(!existsSync(path.join(home, 'workflows')));
   const res = await ask({ type: 'list-routines' });
   assert.ok(res.ok && 'routines' in res);
-  assert.deepEqual(res.routines, [
-    { id: 'echo', label: 'Echo', description: 'Says what it got' },
-    { id: 'fails', label: 'Fails' },
-    { id: 'slow', label: 'Slow' },
-  ]);
+  assert.deepEqual(res.routines, [{ id: 'echo', label: 'Echo', description: 'Says what it got' }]);
   assert.equal(res.recordings, recordings);
+  // On disk as the human can read and edit it, the runner's prompt as its own.
+  const dir = path.join(home, 'workflows', 'echo');
+  assert.equal(
+    readFileSync(path.join(dir, 'prompt.md'), 'utf8'),
+    readFileSync(path.join(runners, 'echo', 'prompt.md'), 'utf8'),
+  );
+  const stored = JSON.parse(readFileSync(path.join(dir, 'workflow.json'), 'utf8')) as Workflow;
+  assert.equal(stored.runner, 'echo');
+  assert.equal(stored.folder, notes);
 });
 
-test('runs a routine on the recording, outside the host, with its summary at the end', async () => {
+async function get(id: string): Promise<Workflow> {
+  const res = await ask({ type: 'get-workflow', id });
+  assert.ok(res.ok && 'workflow' in res, JSON.stringify(res));
+  return res.workflow;
+}
+
+test('the editor gets the workflows without their prompts, one whole when it edits it, the runners with their texts, and the home folder', async () => {
+  const res = await ask({ type: 'list-workflows' });
+  assert.ok(res.ok && 'workflows' in res);
+  assert.equal(res.home, user);
+  assert.deepEqual(
+    res.runners.map((r) => r.id),
+    ['echo', 'fails', 'slow'],
+  );
+  const echo = res.runners[0]!;
+  assert.equal(echo.label, 'Echo runner');
+  assert.equal(echo.folderHint, 'Anywhere');
+  assert.equal(echo.defaultFolder, '~/notes');
+  assert.equal(echo.before, 'Before {{workflow}}.\n');
+  assert.equal(echo.after, '\nAfter.\n');
+  assert.match(echo.prompt, /^Echo \{\{title\}\}/);
+  assert.ok(!('dir' in echo) && !('script' in echo), 'no paths of the clone');
+  assert.deepEqual(
+    res.workflows.map((w) => [w.id, w.label, w.runner]),
+    [['echo', 'Echo', 'echo']],
+  );
+  // The list stays small whatever the prompts (a native message is at most 1 MB).
+  assert.ok(!('prompt' in res.workflows[0]!));
+  const whole = await get('echo');
+  assert.equal(whole.prompt, echo.prompt);
+  assert.match(whole.version ?? '', /^[0-9a-f]{16}$/);
+  assert.equal(whole.version, res.workflows[0]!.version);
+});
+
+test('a save over a workflow changed on disk since the editor opened it is refused, and the hand edit kept', async () => {
+  const opened = await save({ label: 'Hand and editor' });
+  const file = path.join(home, 'workflows', opened.id, 'prompt.md');
+  writeFileSync(file, 'Edited by hand.\n');
+  const res = await ask({
+    type: 'save-workflow',
+    workflow: { ...opened, prompt: 'From the editor.' },
+  });
+  assert.ok(
+    !res.ok && /was changed on disk since you opened it/.test(res.error),
+    JSON.stringify(res),
+  );
+  assert.equal(readFileSync(file, 'utf8'), 'Edited by hand.\n');
+  // Opened again, it saves.
+  const again = await get(opened.id);
+  assert.equal((await save({ ...again, prompt: 'From the editor.' })).prompt, 'From the editor.');
+  await ask({ type: 'delete-workflow', id: opened.id });
+});
+
+test('a prompt made too long by hand is listed, and refused to the editor with where to shorten it', async () => {
+  const w = await save({ label: 'Long by hand' });
+  writeFileSync(path.join(home, 'workflows', w.id, 'prompt.md'), 'x'.repeat(60_000));
+  assert.ok((await workflows()).some((e) => e.id === w.id));
+  const res = await ask({ type: 'get-workflow', id: w.id });
+  assert.ok(
+    !res.ok && /prompt\.md is longer than 50000 characters/.test(res.error),
+    JSON.stringify(res),
+  );
+  await ask({ type: 'delete-workflow', id: w.id });
+});
+
+test('a new workflow gets an id from its name, kept when it is edited; the same name twice gets two', async () => {
+  const made = await save({ label: 'Mødenoter for Ærø', runner: 'fails', prompt: 'Fail.' });
+  assert.equal(made.id, 'modenoter-for-aero');
+  assert.equal(made.folder, realpathSync(notes));
+  const again = await save({ label: 'Mødenoter for Ærø', runner: 'fails', prompt: 'Fail.' });
+  assert.equal(again.id, 'modenoter-for-aero-2');
+  const edited = await save({
+    ...made,
+    label: 'Meeting notes',
+    description: 'One line',
+    prompt: 'Fail again.\n',
+    folder: '~/notes',
+  });
+  assert.equal(edited.id, made.id);
+  assert.deepEqual(
+    (await workflows()).map((w) => [w.id, w.label]),
+    [
+      ['echo', 'Echo'],
+      ['modenoter-for-aero', 'Meeting notes'],
+      ['modenoter-for-aero-2', 'Mødenoter for Ærø'],
+    ],
+  );
+  assert.equal(
+    readFileSync(path.join(home, 'workflows', made.id, 'prompt.md'), 'utf8'),
+    'Fail again.\n',
+  );
+});
+
+test('a folder a call could do harm from is refused, with a sentence for the human', async () => {
+  mkdirSync(path.join(user, '.ssh'), { recursive: true });
+  mkdirSync(path.join(user, 'Library', 'LaunchAgents'), { recursive: true });
+  mkdirSync(path.join(user, 'Library', 'Mobile Documents', 'notes'), { recursive: true });
+  writeFileSync(path.join(user, 'file.txt'), '');
+  const cases: [string, RegExp][] = [
+    [user, /must be inside your home folder/],
+    ['~', /must be inside your home folder/],
+    [root, /must be inside your home folder/],
+    [tmpdir(), /must be inside your home folder/],
+    ['notes', /must be a full path/],
+    ['', /Name the folder/],
+    [path.join(user, 'missing'), /does not exist/],
+    [path.join(user, 'file.txt'), /is not a folder/],
+    [path.join(user, '.ssh'), /hidden folder/],
+    [path.join(user, 'Library', 'LaunchAgents'), /~\/Library/],
+  ];
+  for (const [folder, error] of cases) assert.match(await refused({ folder }), error, folder);
+  // iCloud Drive is a folder of documents.
+  const icloud = await save({ label: 'iCloud', folder: '~/Library/Mobile Documents/notes' });
+  assert.equal(
+    icloud.folder,
+    realpathSync(path.join(user, 'Library', 'Mobile Documents', 'notes')),
+  );
+  await ask({ type: 'delete-workflow', id: icloud.id });
+});
+
+test('a workflow needs a name on one line, a runner there is and a prompt', async () => {
+  assert.match(await refused({ label: '  ' }), /Give the workflow a name/);
+  assert.match(await refused({ label: 'Two\nlines' }), /name must be one line/);
+  assert.match(await refused({ runner: 'nope' }), /no runner "nope"/);
+  assert.match(await refused({ prompt: ' \n ' }), /Write the prompt/);
+  assert.match(await refused({ id: 'never-made' }), /no workflow "never-made" any more/);
+  assert.match(await refused({ id: '../../etc' }), /no workflow "\.\.\/\.\.\/etc" any more/);
+});
+
+test('runs a workflow on the recording, outside the host: its runner, its folder, its prompt filled in, and its summary at the end', async () => {
   const target = recording('2026-10-23 12-02 Meet - Ulf - Carolina', 'rec-1');
   const started = await run('echo', target);
   assert.match(started.runId, /^\d{8}-\d{6}-echo-[0-9a-f]{4}$/);
@@ -113,10 +323,19 @@ test('runs a routine on the recording, outside the host, with its summary at the
   assert.ok(done.endedAt! >= done.startedAt);
   const runDir = path.dirname(done.log);
   assert.match(readFileSync(done.log, 'utf8'), /working/);
-  // It ran from the run's own copy of the routine.
+  // It ran from the run's own copy of the runner.
   assert.equal(
-    readFileSync(path.join(runDir, 'routine', 'run.sh'), 'utf8').includes('Echoed'),
+    readFileSync(path.join(runDir, 'runner', 'run.sh'), 'utf8').includes('Echoed'),
     true,
+  );
+  // Copies of the recording's files for Claude Code to read.
+  const inbox = path.join(runDir, 'recording');
+  assert.equal(readFileSync(path.join(inbox, 'transcript.md'), 'utf8'), '# A call\n');
+  assert.ok(existsSync(path.join(inbox, 'meta.json')));
+  // The runner's before, the workflow's prompt, the runner's after, the variables filled in.
+  assert.equal(
+    readFileSync(path.join(runDir, 'seen-prompt.md'), 'utf8'),
+    `Before Echo.\n\nEcho A call (2026-10-23 12:02) with Ulf, Carolina from ${inbox}/transcript.md in ${realpathSync(notes)}; {{unknown}} stays.\n\nAfter.\n`,
   );
   const seen = readFileSync(path.join(runDir, 'env.txt'), 'utf8');
   assert.match(
@@ -124,6 +343,9 @@ test('runs a routine on the recording, outside the host, with its summary at the
     new RegExp(`^RESCRIBE_RECORDING_DIR=${path.join(recordings, target.exportPath)}$`, 'm'),
   );
   assert.match(seen, new RegExp(`^RESCRIBE_RUN_DIR=${runDir}$`, 'm'));
+  assert.match(seen, new RegExp(`^RESCRIBE_PROMPT=${runDir}/prompt.md$`, 'm'));
+  assert.match(seen, new RegExp(`^RESCRIBE_FOLDER=${realpathSync(notes)}$`, 'm'));
+  assert.match(seen, /^RESCRIBE_WORKFLOW=Echo$/m);
   assert.match(seen, /^RESCRIBE_TITLE=A call$/m);
   assert.doesNotMatch(seen, /ANTHROPIC_API_KEY/);
   assert.match(seen, /^PATH=.*\/\.local\/bin:\/opt\/homebrew\/bin:/m);
@@ -149,14 +371,16 @@ test('a start asked again under the same key gets the same run, not a second one
   await settle(other.runId);
 });
 
-test('a failing routine fails with the last line it printed', async () => {
-  const done = await settle((await run('fails', recording('fails', 'rec-2'))).runId);
+test('a failing run fails with the last line it printed', async () => {
+  const w = await save({ label: 'Fails', runner: 'fails' });
+  const done = await settle((await run(w.id, recording('fails', 'rec-2'))).runId);
   assert.equal(done.state, 'failed');
   assert.equal(done.message, 'the reason it failed');
 });
 
 test('a run whose supervisor is gone is failed, not running forever', async () => {
-  const started = await run('slow', recording('slow', 'rec-3'));
+  const w = await save({ label: 'Slow', runner: 'slow' });
+  const started = await run(w.id, recording('slow', 'rec-3'));
   const dir = path.dirname(started.log);
   // As after a restart: the status still says running, with a pid nobody has.
   const s = JSON.parse(readFileSync(path.join(dir, 'status.json'), 'utf8')) as { pid: number };
@@ -198,13 +422,72 @@ test('refuses a recording it cannot vouch for, with a sentence for the human', a
     assert.ok(!res.ok, target.exportPath);
     assert.match(res.error, error);
   }
-  const unknown = await ask({
-    type: 'run-routine',
-    routine: 'nope',
-    recording: recording('ok', 'rec-7'),
-    key: 'u',
-  });
-  assert.ok(!unknown.ok && /No routine "nope"/.test(unknown.error));
   const notARun = await ask({ type: 'routine-status', runId: '../../etc' });
   assert.ok(!notARun.ok && /Not a run id/.test(notARun.error));
+});
+
+test('a workflow edited by hand to a folder the editor refuses, or to a runner that is gone, does not run', async () => {
+  const w = await save({ label: 'Hand edited' });
+  const file = path.join(home, 'workflows', w.id, 'workflow.json');
+  const stored = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  writeFileSync(file, JSON.stringify({ ...stored, folder: user }));
+  const res = await ask({
+    type: 'run-routine',
+    routine: w.id,
+    recording: recording('hand', 'rec-10'),
+    key: 'h1',
+  });
+  assert.ok(!res.ok && /must be inside your home folder/.test(res.error), JSON.stringify(res));
+  writeFileSync(file, JSON.stringify({ ...stored, runner: 'gone' }));
+  const gone = await ask({
+    type: 'run-routine',
+    routine: w.id,
+    recording: recording('hand', 'rec-10'),
+    key: 'h2',
+  });
+  assert.ok(!gone.ok && /runs with "gone", which is not in/.test(gone.error), JSON.stringify(gone));
+  // Not offered either.
+  const list = await ask({ type: 'list-routines' });
+  assert.ok(list.ok && 'routines' in list);
+  assert.ok(!list.routines.some((r) => r.id === w.id));
+  await ask({ type: 'delete-workflow', id: w.id });
+});
+
+test('a deleted workflow goes to the trash, is not offered or run, and the seed does not come back', async () => {
+  const res = await ask({ type: 'delete-workflow', id: 'echo' });
+  assert.ok(res.ok && 'deleted' in res && res.deleted === 'echo', JSON.stringify(res));
+  const trash = readdirSync(path.join(home, 'workflows', '.trash', 'echo'));
+  assert.equal(trash.length, 1);
+  assert.ok(existsSync(path.join(home, 'workflows', '.trash', 'echo', trash[0]!, 'prompt.md')));
+  assert.ok(!(await workflows()).some((w) => w.id === 'echo'));
+  const list = await ask({ type: 'list-routines' });
+  assert.ok(list.ok && 'routines' in list);
+  assert.ok(!list.routines.some((r) => r.id === 'echo'));
+  const ran = await ask({
+    type: 'run-routine',
+    routine: 'echo',
+    recording: recording('deleted', 'rec-11'),
+    key: 'd1',
+  });
+  assert.ok(!ran.ok && /There is no workflow "echo": it was deleted/.test(ran.error));
+  const again = await ask({ type: 'delete-workflow', id: 'echo' });
+  assert.ok(!again.ok && /There is no workflow "echo"/.test(again.error));
+  const traversal = await ask({ type: 'delete-workflow', id: '../runs' });
+  assert.ok(!traversal.ok);
+  assert.ok(existsSync(path.join(home, 'runs')));
+});
+
+test("a deleted workflow's id is never given again: a run waiting on it fails, it does not start the new one", async () => {
+  // "Echo" was deleted above; a new "Echo" must not take its id.
+  const again = await save({ label: 'Echo' });
+  assert.equal(again.id, 'echo-2');
+  const ran = await ask({
+    type: 'run-routine',
+    routine: 'echo',
+    recording: recording('waited', 'rec-12'),
+    key: 'w1',
+  });
+  assert.ok(!ran.ok && /There is no workflow "echo"/.test(ran.error));
+  const gone = await ask({ type: 'get-workflow', id: 'echo' });
+  assert.ok(!gone.ok && /There is no workflow "echo"/.test(gone.error));
 });

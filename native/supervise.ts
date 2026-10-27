@@ -1,12 +1,15 @@
-// One run of a routine, started detached by native/host.ts: `node supervise.ts <runDir>`. Runs the
-// routine's run.sh with the recording's directory in its environment (lib.ts `routineEnv`), its
-// output into the run's log.txt, then writes the outcome into status.json and tells the human
-// with a macOS notification. Lives in a session of its own, so neither the host's exit nor the
-// browser's takes it down; a run that outlives its routine's `timeoutMinutes` is stopped.
+// One run of a workflow, started detached by native/host.ts: `node supervise.ts <runDir>`. Runs the
+// run's copy of the runner's run.sh with the recording and the workflow in its environment
+// (lib.ts `routineEnv`), its output into the run's log.txt, then writes the outcome into
+// status.json and tells the human with a macOS notification. Lives in a session of its own, so
+// neither the host's exit nor the browser's takes it down; a run that outlives its runner's
+// `timeoutMinutes` is stopped.
 //
-// What a routine gets: RESCRIBE_RECORDING_DIR (the recording's directory: transcript.md,
+// What a runner gets: RESCRIBE_RECORDING_DIR (the recording's directory: transcript.md,
 // transcript.json, meta.json, the video), RESCRIBE_RUN_DIR (this run's directory, for anything
-// it keeps), RESCRIBE_RUN_ID, RESCRIBE_TITLE. Exit 0 is done. Its one line for the human is
+// it keeps; `recording/` there holds copies of the transcript and meta.json), RESCRIBE_PROMPT
+// (the prompt, filled in), RESCRIBE_FOLDER (the workflow's folder, checked), RESCRIBE_WORKFLOW
+// (its name), RESCRIBE_RUN_ID, RESCRIBE_TITLE. Exit 0 is done. Its one line for the human is
 // RESCRIBE_RUN_DIR/summary.txt when it writes one, else the last line it printed.
 import { spawn } from 'node:child_process';
 import { existsSync, openSync, readFileSync } from 'node:fs';
@@ -68,6 +71,9 @@ const child = spawn(spec.script, [], {
     RESCRIBE_RUN_DIR: dir,
     RESCRIBE_RUN_ID: spec.runId,
     RESCRIBE_TITLE: spec.recording.title,
+    RESCRIBE_PROMPT: spec.prompt,
+    RESCRIBE_FOLDER: spec.folder,
+    RESCRIBE_WORKFLOW: spec.label,
   }),
 });
 writeStatus(dir, { ...readStatus(dir), pid: process.pid });

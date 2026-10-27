@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Index in Lawcel: the transcript into lawcel-knowledge, notes from it, synced with git, and the
-# call's action items as cards on the founders' board (routines/README.md). Started by
-# native/supervise.ts with RESCRIBE_RECORDING_DIR, RESCRIBE_RUN_DIR and RESCRIBE_RUN_ID. The last
-# line it prints is what the human reads when it fails.
+# call's action items as cards on the founders' board (runners/README.md). Started by
+# native/supervise.ts with RESCRIBE_RECORDING_DIR, RESCRIBE_RUN_DIR, RESCRIBE_RUN_ID,
+# RESCRIBE_FOLDER (the workflow's folder: the lawcel-knowledge clone) and RESCRIBE_PROMPT (the
+# workflow's prompt, filled in). The last line it prints is what the human reads when it fails.
 #
 # What was said on the call is not trusted: anyone on it can talk to the agent that reads it. So
 # Claude Code runs restricted to the five file tools (no shell, no web search, no messages to
@@ -16,11 +17,10 @@ setopt err_exit no_unset pipe_fail
 # Characters, not bytes, in a title's length: the browser starts the host with no locale at all.
 export LC_ALL=en_US.UTF-8
 
-repo=${LAWCEL_KNOWLEDGE:-$HOME/Documents/git/lawcel-knowledge}
+repo=$RESCRIBE_FOLDER
 max_cards=10
 work=$RESCRIBE_RUN_DIR/lawcel-knowledge
 branch=rescribe/$RESCRIBE_RUN_ID
-here=${0:A:h}
 export GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1
 
 say() { print -r -- "[index-in-lawcel] $*"; }
@@ -76,8 +76,9 @@ cp $RESCRIBE_RUN_DIR/board.md $RESCRIBE_RUN_DIR/assignable.tsv $box/
 
 say "claude -p (restricted) in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $work
-claude -p "$(<$here/prompt.md)" --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
-  --permission-mode acceptEdits --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
+# The prompt on stdin, not as an argument: one that starts with "-" would be taken for an option.
+claude -p --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
+  --add-dir $RESCRIBE_RUN_DIR/recording --permission-mode acceptEdits --model opus --output-format stream-json --verbose <$RESCRIBE_PROMPT >$RESCRIBE_RUN_DIR/trace.jsonl ||
   fail "Claude Code exited with an error; see $RESCRIBE_RUN_DIR/trace.jsonl"
 
 name=$(first_line $box/name)
@@ -159,6 +160,20 @@ rm -rf $box
 
 # A meeting indexed again may leave nothing to commit: its notes on origin/main are already its own.
 git add -A
+# What steers the founders' later agents, which have a shell (CLAUDE.md, AGENTS.md, and hidden
+# files: settings, hooks, commands), is not the call's to write: put back as it is on origin/main
+# (the agent's version kept in the run's set-aside/) and named.
+for touched in ${(0)"$(git diff --cached --name-only -z)"}; do
+  if [[ /$touched == */.* || ${touched:t} == (CLAUDE.md|CLAUDE.local.md|AGENTS.md|GEMINI.md) ]]; then
+    if [[ -f $touched ]]; then
+      mkdir -p $RESCRIBE_RUN_DIR/set-aside/${touched:h}
+      cp -p $touched $RESCRIBE_RUN_DIR/set-aside/$touched
+    fi
+    git reset --quiet HEAD -- $touched
+    git checkout --quiet HEAD -- $touched 2>/dev/null || rm -f -- $touched
+    problems+=("$touched was changed by the agent and left out")
+  fi
+done
 # Anything new at the top of the repository is named: a card written there instead of in .rescribe/
 # would otherwise be pushed, and lost to the board, without a word.
 for added in ${(0)"$(git diff --cached --name-only --diff-filter=A -z)"}; do
