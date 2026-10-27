@@ -52,8 +52,10 @@ test('a runner that runs Claude Code runs it restricted to the file tools, never
       // Restricted mode alone still offers web search and messages to other sessions.
       const tools = /--tools[ =]([\w,]+)/.exec(call)?.[1]?.split(',').sort();
       assert.deepEqual(tools, ['Edit', 'Glob', 'Grep', 'Read', 'Write'], `${r.id}: ${call}`);
-      // The prompt is the workflow's, as the host filled it in.
-      assert.match(call, /claude -p "\$\(<\$RESCRIBE_PROMPT\)"/, `${r.id}: ${call}`);
+      // The prompt is the workflow's, as the host filled it in, on stdin: as an argument, one that
+      // starts with "-" is taken for an option.
+      assert.match(call, /<\$RESCRIBE_PROMPT\b/, `${r.id}: ${call}`);
+      assert.match(call, /^\s*claude -p --/, `${r.id}: no prompt argument in: ${call}`);
     }
   }
 });
@@ -66,6 +68,24 @@ test('the one Rescribe makes on its first run is Index in Lawcel, as it was befo
   );
 });
 
+test("a runner's hand-over is in its own after.md, never in the prompt the human edits", () => {
+  // What a script reads back from Claude Code must not be lost when the human rewrites the prompt,
+  // and must change with the script when a PR changes it.
+  const lawcel = listRunners(dir).find((r) => r.id === 'index-in-lawcel')!;
+  for (const file of [
+    '.rescribe/name',
+    '.rescribe/commit-message',
+    '.rescribe/summary',
+    '.rescribe/cards/<n>/',
+  ]) {
+    assert.ok(lawcel.after?.includes(file), `after.md names ${file}`);
+    assert.ok(!lawcel.prompt.includes(file), `prompt.md leaves ${file} to after.md`);
+  }
+  const claude = listRunners(dir).find((r) => r.id === 'claude')!;
+  assert.match(claude.after ?? '', /`summary` next to the transcript/);
+  assert.doesNotMatch(claude.prompt, /summary/);
+});
+
 // --- runners/claude/run.sh --------------------------------------------------------------------
 const CLAUDE_SH = path.join(dir, 'claude', 'run.sh');
 const root = mkdtempSync(path.join(tmpdir(), 'rescribe-runner-'));
@@ -75,7 +95,7 @@ after(() => rmSync(root, { recursive: true, force: true }));
 // FAKE_SUMMARY is that line (none when empty); FAKE_FAIL makes it exit as Claude Code does on an
 // error.
 const CLAUDE = `#!/bin/sh
-printf '%s' "$2" > "$RESCRIBE_RUN_DIR/seen-prompt"
+cat > "$RESCRIBE_RUN_DIR/seen-prompt"
 printf '%s\\n' "$@" > "$RESCRIBE_RUN_DIR/seen-args"
 pwd -P > "$RESCRIBE_RUN_DIR/seen-cwd"
 [ -n "$FAKE_FAIL" ] && { echo '{"type":"result","is_error":true}'; exit 1; }
@@ -102,7 +122,7 @@ function runClaude(env: Record<string, string> = {}): {
   mkdirSync(folder);
   mkdirSync(path.join(run, 'recording'));
   writeFileSync(path.join(run, 'recording', 'transcript.md'), '# Meet - Acme\n');
-  writeFileSync(path.join(run, 'prompt.md'), 'Write notes from "Meet - Acme".\n');
+  writeFileSync(path.join(run, 'prompt.md'), '- Write notes from "Meet - Acme".\n');
   writeFileSync(path.join(bin, 'claude'), CLAUDE);
   chmodSync(path.join(bin, 'claude'), 0o755);
   const r = spawnSync('/bin/zsh', [CLAUDE_SH], {
@@ -134,7 +154,7 @@ test('Claude Code in a folder: the prompt given in the folder, restricted, with 
   assert.equal(r.code, 0, r.last);
   assert.equal(
     readFileSync(path.join(r.run, 'seen-prompt'), 'utf8'),
-    'Write notes from "Meet - Acme".',
+    '- Write notes from "Meet - Acme".\n',
   );
   assert.equal(readFileSync(path.join(r.run, 'seen-cwd'), 'utf8').trim(), realpathSync(r.folder));
   const args = readFileSync(path.join(r.run, 'seen-args'), 'utf8').split('\n');

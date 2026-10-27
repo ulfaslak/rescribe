@@ -37,8 +37,9 @@ const REPO = 'rescribe-sandbox/none';
 const GITHUB_URL = `git@github.com:${REPO}.git`;
 const NOTE_URL = `https://github.com/${REPO}/blob/main/meetings/notes/${NAME}.md`;
 const TRANSCRIPT = '# Meet - Lawcel\n\n**Ulf** [0:00]\n\nHej.\n';
+// A first line that would be an option on the command line.
 const PROMPT =
-  'Index "Meet - Lawcel" as the workflow\'s prompt says, with "quotes" and $HOME left as they are.\n';
+  '- Index "Meet - Lawcel" as the workflow\'s prompt says, with "quotes" and $HOME left as they are.\n';
 const provenance = (run: string, name = NAME, url = NOTE_URL) =>
   `_From the call [${name}](${url}). Filed by an agent (Rescribe, Index in Lawcel run ${run})._`;
 
@@ -62,7 +63,7 @@ const ISSUES: Issue[] = [
 // The agent: a note, the hand-over, and whatever `cards` writes into .rescribe/cards.
 const CLAUDE = `#!/bin/sh
 touch "$RESCRIBE_RUN_DIR/claude-ran"
-printf '%s' "$2" > "$RESCRIBE_RUN_DIR/seen-prompt"
+cat > "$RESCRIBE_RUN_DIR/seen-prompt"
 printf '%s\\n' "$@" > "$RESCRIBE_RUN_DIR/seen-args"
 cp .rescribe/board.md "$RESCRIBE_RUN_DIR/seen-board.md"
 cp .rescribe/assignable.tsv "$RESCRIBE_RUN_DIR/seen-assignable.tsv"
@@ -241,7 +242,7 @@ it('the cards are filed after the notes are on origin/main, each ending in where
   );
 
   // Claude Code was given the workflow's prompt as it is, and the host's copies to read.
-  assert.equal(readFileSync(path.join(r.dir, 'seen-prompt'), 'utf8'), PROMPT.trimEnd());
+  assert.equal(readFileSync(path.join(r.dir, 'seen-prompt'), 'utf8'), PROMPT);
   const args = readFileSync(path.join(r.dir, 'seen-args'), 'utf8').split('\n');
   assert.equal(args[args.indexOf('--add-dir') + 1], path.join(r.dir, 'recording'));
 

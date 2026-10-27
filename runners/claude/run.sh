@@ -23,8 +23,10 @@ fail() {
 [[ -d $RESCRIBE_FOLDER ]] || fail "$RESCRIBE_FOLDER is not there any more; nothing was done"
 print -r -- "[claude] $RESCRIBE_WORKFLOW: claude -p (restricted) in $RESCRIBE_FOLDER, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $RESCRIBE_FOLDER
-claude -p "$(<$RESCRIBE_PROMPT)" --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
-  --add-dir $inbox --permission-mode acceptEdits --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
+# The prompt on stdin, not as an argument: one that starts with "-" (a list, front matter) would be
+# taken for an option.
+claude -p --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
+  --add-dir $inbox --permission-mode acceptEdits --model opus --output-format stream-json --verbose <$RESCRIBE_PROMPT >$RESCRIBE_RUN_DIR/trace.jsonl ||
   fail "Claude Code exited with an error; see $RESCRIBE_RUN_DIR/trace.jsonl"
 
 # Its one line, for the notification and the row. Without one the work is done all the same.

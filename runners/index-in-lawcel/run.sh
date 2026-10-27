@@ -76,8 +76,9 @@ cp $RESCRIBE_RUN_DIR/board.md $RESCRIBE_RUN_DIR/assignable.tsv $box/
 
 say "claude -p (restricted) in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $work
-claude -p "$(<$RESCRIBE_PROMPT)" --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
-  --add-dir $RESCRIBE_RUN_DIR/recording --permission-mode acceptEdits --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
+# The prompt on stdin, not as an argument: one that starts with "-" would be taken for an option.
+claude -p --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
+  --add-dir $RESCRIBE_RUN_DIR/recording --permission-mode acceptEdits --model opus --output-format stream-json --verbose <$RESCRIBE_PROMPT >$RESCRIBE_RUN_DIR/trace.jsonl ||
   fail "Claude Code exited with an error; see $RESCRIBE_RUN_DIR/trace.jsonl"
 
 name=$(first_line $box/name)

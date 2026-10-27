@@ -274,16 +274,23 @@ export function folderRules(p: Paths, home: string): FolderRules {
   return { home, rescribe: p.home, repo: REPO };
 }
 
+/**
+ * A path as the disk has it: symlinks resolved and, through the system's realpath, each name in
+ * the case it was made with (`realpathSync` keeps the case it is given, and on the Mac's
+ * case-insensitive disk `~/library` is `~/Library`).
+ */
 function real(dir: string): string {
   try {
-    return realpathSync(dir);
+    return realpathSync.native(dir);
   } catch {
     return path.resolve(dir);
   }
 }
 
+/** Compared without case as well: a path the disk did not resolve keeps the case it was given. */
+const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 const within = (dir: string, parent: string): boolean =>
-  dir === parent || dir.startsWith(parent + path.sep);
+  same(dir, parent) || dir.toLowerCase().startsWith(parent.toLowerCase() + path.sep);
 
 /**
  * The folder a workflow's Claude Code may read and write, checked, as an absolute path without
@@ -308,14 +315,18 @@ export function checkFolder(folder: string, rules: FolderRules): string {
   if (!stat.isDirectory()) throw new Error(`${given} is not a folder.`);
   const dir = real(given);
   const home = real(rules.home);
-  if (!within(dir, home) || dir === home)
+  if (!within(dir, home) || same(dir, home))
     throw new Error(`The folder must be inside your home folder (${home}), not ${dir}.`);
   const [top, second] = path.relative(home, dir).split(path.sep);
   if (top?.startsWith('.'))
     throw new Error(
       `${dir} is in ~/${top}, a hidden folder that holds settings, keys or programs: choose a folder of your own documents.`,
     );
-  if (top === 'Library' && second !== 'Mobile Documents' && second !== 'CloudStorage')
+  if (
+    same(top ?? '', 'Library') &&
+    !same(second ?? '', 'Mobile Documents') &&
+    !same(second ?? '', 'CloudStorage')
+  )
     throw new Error(
       `${dir} is in ~/Library, which holds what macOS runs: choose a folder of your own documents (iCloud Drive is fine).`,
     );
