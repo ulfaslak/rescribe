@@ -50,6 +50,21 @@
         <p class="hint" id="library-status" aria-live="polite"></p>
       </section>
 
+      <section id="workflows">
+        <div class="section-head">
+          <h2>Workflows</h2>
+          <button type="button" id="new-workflow" disabled>New workflow</button>
+        </div>
+        <p class="hint">
+          What Claude Code does with a recording once its transcript is in the folder. Choose one
+          when a recording stops, or with Run workflow… on a recording.
+        </p>
+        <p class="hint error" id="workflows-note" hidden></p>
+        <p class="hint" id="workflows-empty" hidden>No workflows yet.</p>
+        <ul id="workflows-list"></ul>
+        <p class="hint" id="workflows-status" aria-live="polite"></p>
+      </section>
+
       <section id="settings">
         <h2>Settings</h2>
         <form id="settings-form">

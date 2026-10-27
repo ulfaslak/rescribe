@@ -449,3 +449,12 @@ export async function toolbarClick(
 /** Whether a start dialog is gone: the overlay out of its page, or the window closed. */
 export const dialogClosed = (dialog: Frame): boolean =>
   isOverlay(dialog) ? dialog.isDetached() : dialog.page().isClosed();
+
+/**
+ * Open every folded row of the library (app/library.ts: only the newest, and a live or waiting
+ * one, start open). The tab keeps them open across re-renders and reloads.
+ */
+export async function openRows(page: Page): Promise<void> {
+  const folded = page.locator('.recording-item:not(.open) > .title-row button.toggle');
+  for (let n = await folded.count(); n > 0; n = await folded.count()) await folded.first().click();
+}

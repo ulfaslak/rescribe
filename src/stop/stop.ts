@@ -1,13 +1,13 @@
 // The stop dialog: a small popup window the service worker opens on a toolbar click while a
 // recording runs or waits `stopped`, and when the app tab asks (the call ended, the share ended).
 // A view over the app tab's pending recording (`query-pending`) that asks what should happen to
-// it: Save, Save with one of the routines the native host offers (ui/routines.ts; DECISIONS §
-// Routines), or Discard. It sends one `decide` message and closes. It never touches the recorder
+// it: Save, Save with one of the workflows the native host offers (ui/routines.ts; DECISIONS §
+// Workflows), or Discard. It sends one `decide` message and closes. It never touches the recorder
 // or the records; its one write is the Settings folder when none is chosen yet, and its one
 // prompt is the folder permission, requested inside its own click because the app tab, hidden
 // behind the call, cannot prompt. Closing the window decides nothing: a live recording goes on.
 // A save also opens the processing tab (progress/) at once, which follows the export, the
-// transcription and the routine; this window stays until the export answers, says where the
+// transcription and the workflow; this window stays until the export answers, says where the
 // video went, and closes.
 import { formatDuration } from '../lib/format.ts';
 import type { DecideResult, Decision, PendingInfo } from '../lib/messages.ts';
@@ -52,7 +52,7 @@ function status(text: string, isError = false): void {
   el.className = `hint${isError ? ' error' : ''}`;
 }
 
-/** Why the routines cannot run (the host is missing, the folder is not its own), or undefined. */
+/** Why the workflows cannot run (the host is missing, the folder is not its own), or undefined. */
 let routineBlocker: string | undefined;
 
 function setEnabled(enabled: boolean): void {
@@ -60,7 +60,7 @@ function setEnabled(enabled: boolean): void {
     b.disabled = !enabled || (b.classList.contains('routine') && routineBlocker !== undefined);
 }
 
-/** The window as tall as what it shows: the routines are known only once the host answered. */
+/** The window as tall as what it shows: the workflows are known only once the host answered. */
 async function fitWindow(): Promise<void> {
   const want = document.documentElement.scrollHeight;
   if (Math.abs(want - window.innerHeight) < 4) return;
@@ -76,7 +76,7 @@ async function fitWindow(): Promise<void> {
 }
 
 /**
- * One button per routine the host offers, under Save: the same save, and the routine once the
+ * One button per workflow the host offers, under Save: the same save, and the workflow once the
  * transcript is in the folder. None, and a line saying why, when the host cannot be asked;
  * disabled, with the reason, when the Settings folder is not the one the host reads.
  */
@@ -84,9 +84,9 @@ async function renderRoutines(): Promise<void> {
   const [list, root] = await Promise.all([listRoutines(), getExportRoot()]);
   const note = $<HTMLElement>('#routines-note');
   routineBlocker = list.error ?? folderMismatch(list, root?.name);
-  // Said even when there are no routines to show: a host that stopped answering is news.
+  // Said even when there are no workflows to show: a host that stopped answering is news.
   note.hidden = routineBlocker === undefined;
-  note.textContent = list.error ? `No routines: ${list.error}` : (routineBlocker ?? '');
+  note.textContent = list.error ? `No workflows: ${list.error}` : (routineBlocker ?? '');
   for (const routine of list.routines) {
     const b = document.createElement('button');
     b.className = 'choice routine';
@@ -168,7 +168,7 @@ async function send(action: Decision, routine?: RoutineInfo): Promise<void> {
   setEnabled(false);
   status(action === 'discard' ? 'Discarding…' : 'Saving…');
   // A save: the processing tab opens now and follows the export, the transcription and the
-  // routine; this window waits for the export's answer like a discard does, then closes. Not
+  // workflow; this window waits for the export's answer like a discard does, then closes. Not
   // closed at once: tearing the window down within milliseconds of a picker's handle being stored
   // crashed Chrome for Testing (ENVIRONMENT_NOTES), and the answer is worth its line here anyway.
   if (action !== 'discard') void post({ type: 'open-progress', id: info.id });
@@ -184,8 +184,8 @@ async function send(action: Decision, routine?: RoutineInfo): Promise<void> {
 }
 
 /**
- * Save, with a routine or without: the folder from Settings, chosen here first when there is none
- * (a routine is never offered then: the folder must be the host's); the permission inside this
+ * Save, with a workflow or without: the folder from Settings, chosen here first when there is none
+ * (a workflow is never offered then: the folder must be the host's); the permission inside this
  * click.
  */
 async function onSave(routine?: RoutineInfo): Promise<void> {
@@ -218,7 +218,7 @@ function main(): void {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') void close();
   });
-  // The routines first: the buttons are enabled with Save, on the first answer from the app tab.
+  // The workflows first: the buttons are enabled with Save, on the first answer from the app tab.
   void renderRoutines().then(() => {
     if (info && !finished) setEnabled(true);
   });
