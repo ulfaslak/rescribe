@@ -1,4 +1,4 @@
-// The native host's pure half (DECISIONS § Routines): Chrome's native messaging framing, where
+// The native host's pure half (DECISIONS § Workflows): Chrome's native messaging framing, where
 // things live, the extension id Chrome derives from an unpacked extension's path, a run's id and
 // the environment a routine runs in. No I/O here; native/store.ts touches the disk.
 import { createHash } from 'node:crypto';

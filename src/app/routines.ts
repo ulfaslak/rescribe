@@ -1,4 +1,4 @@
-// The routine chosen for a recording (DECISIONS § Routines), app-tab only: started through the
+// The workflow chosen for a recording (DECISIONS § Workflows), app-tab only: started through the
 // native host once the recording is `done` with its transcript in the folder, then followed until
 // the host says `done` or `failed`, every state written to the record (`Recording.routine`), which
 // is what the row and the processing tab show.
