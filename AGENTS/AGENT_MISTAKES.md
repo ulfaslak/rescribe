@@ -8,6 +8,22 @@ Format: `### YYYY-MM-DD · #<issue or PR> · <category>` then two or three sente
 
 ---
 
+### 2026-10-27 · workflows · a path check compared strings the disk compares without case `[learned]`
+
+The workflow folder check resolved paths with `realpathSync`, which keeps the case it is given, and compared them case-sensitively, so `~/library/LaunchAgents` and a lowercase path into the clone's runners passed on the Mac's case-insensitive disk. A security check on paths must compare what the disk would open, not what was typed. Found by the adversarial review. Codified in `native/workflows.ts` `checkFolder` (`realpathSync.native`, comparisons without case), pinned by the case variants in `native/workflows.test.ts`.
+
+### 2026-10-27 · workflows · a script's contract moved into a file the human edits `[learned]`
+
+Making Index in Lawcel's prompt editable copied the whole `prompt.md` into the workflow once, and with it the hand-over `run.sh` parses (`.rescribe/name`, the cards' files): a prompt rewritten by the human, or a later PR to `run.sh`, would break every run. What code reads back stays with the code. Found by the adversarial review. Codified in DECISIONS § Workflows (a runner's hand-over is in its `before.md`/`after.md`) and `native/runners.test.ts` (Index in Lawcel's `after.md` names the hand-over, its `prompt.md` does not).
+
+### 2026-10-27 · workflows · text the human writes passed to a CLI as an argument `[learned]`
+
+`claude -p "$(<prompt)"` was fine while the prompt was fixed, but a workflow's prompt starting with `-` (a list, front matter) is parsed as an option and the run dies after the board read and the worktree. Free text goes on stdin. Found by the adversarial review, confirmed against the real CLI with a dead endpoint. Codified in both runners (`<$RESCRIBE_PROMPT`) and `native/runners.test.ts` (no prompt argument; the stand-ins' prompts start with `-`).
+
+### 2026-10-27 · workflows · a row open by default folded under its own action's outcome `[learned]`
+
+The newest row starts open; after a Re-export on it, a new recording became the newest and the row folded while its outcome was due. An action on a row is the human opening it. Found by `e2e/library.spec.ts` ("a row with an action in progress…") once rows folded. Codified in `src/app/library.ts` `runAction` (an action marks its row opened), recorded in DECISIONS § Form factor.
+
 ### 2026-10-26 · cards · a re-index with nothing new failed on its own commit `[learned]`
 
 `run.sh` ran `git commit` unconditionally, so indexing a meeting again when lawcel-knowledge already had all of it ended the run failed, with git's "nothing to commit, working tree clean" as the reason. Since 2026-10-23, and harmless until cards: a re-index whose only news is a card would never have filed it. The second sandbox run on the Holm call caught it. Fix: an empty index skips the commit and the push (`native/index-in-lawcel.test.ts` "a meeting indexed again with nothing new").
