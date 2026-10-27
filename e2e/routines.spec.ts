@@ -6,14 +6,7 @@
 // of which it makes the workflow "E2E echo" on its first run. The export goes to OPFS, so a test
 // that wants the host to find the recording writes its directory on disk (`mirror`) the way the
 // export would have.
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import {
@@ -398,11 +391,7 @@ test('the Workflows section: made with a variable put in at the cursor, a folder
   await expect(items).toHaveCount(1);
   await expect(section.locator('#workflows-status')).toContainText('Deleted "Call notes".');
   expect(stored('call-notes')).toBeUndefined();
-  expect(
-    readdirSync(path.join(HOST_HOME, 'workflows', '.trash')).some((d) =>
-      d.startsWith('call-notes-'),
-    ),
-  ).toBe(true);
+  expect(existsSync(path.join(HOST_HOME, 'workflows', '.trash', 'call-notes'))).toBe(true);
   await r.locator('button.run-workflow').click();
   await expect(r.locator('select.workflow-select option')).toHaveText(['E2E echo']);
 });

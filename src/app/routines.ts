@@ -33,9 +33,16 @@ export function routinesOnOffer(): RoutineList {
   return offered;
 }
 
-/** Ask the host again; the list changes when a routine is added to the clone it runs from. */
+let asked = 0;
+
+/**
+ * Ask the host again: the list changes when a workflow is made, edited or deleted. Only the
+ * latest answer is kept, so a slow one from before a delete cannot offer the deleted workflow.
+ */
 export async function refreshRoutines(): Promise<RoutineList> {
-  offered = await listRoutines();
+  const mine = ++asked;
+  const got = await listRoutines();
+  if (mine === asked) offered = got;
   return offered;
 }
 

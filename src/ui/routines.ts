@@ -12,6 +12,7 @@ import {
   type RunStatus,
   type RunTarget,
   type Workflow,
+  type WorkflowEntry,
 } from '../lib/routines.ts';
 
 /**
@@ -138,7 +139,8 @@ export function routineStatus(runId: string): Promise<RunStatus> {
 }
 
 export interface WorkflowList {
-  workflows: Workflow[];
+  /** Without their prompts: `getWorkflow` has one whole. */
+  workflows: WorkflowEntry[];
   runners: RunnerInfo[];
   /** The human's home directory, for folders shown as `~/…`. */
   home: string;
@@ -150,6 +152,14 @@ export async function listWorkflows(): Promise<WorkflowList> {
   if (!res.ok) throw new Error(res.error);
   if (!('workflows' in res)) throw new Error('Unexpected answer from the host.');
   return { workflows: res.workflows, runners: res.runners, home: res.home };
+}
+
+/** One workflow whole, for the editor. Throws with the host's reason: deleted, too long. */
+export async function getWorkflow(id: string): Promise<Workflow> {
+  const res = await ask({ type: 'get-workflow', id }, EDIT_TIMEOUT_MS);
+  if (!res.ok) throw new Error(res.error);
+  if (!('workflow' in res)) throw new Error('Unexpected answer from the host.');
+  return res.workflow;
 }
 
 /** Saved as it is on disk now (a new one with its id). Throws with the host's reason: a folder it refuses. */

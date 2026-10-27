@@ -4,9 +4,20 @@
 // runner, the folder, and the prompt Claude Code is given, with the variables it can use and what
 // the runner puts around it. A save or a delete goes to the host, which checks it; then the list
 // is asked again and `onChange` lets the rows' pickers and the stop dialog's list catch up.
-import { PROMPT_VARIABLES, type RunnerInfo, type Workflow } from '../lib/routines.ts';
+import {
+  PROMPT_VARIABLES,
+  type RunnerInfo,
+  type Workflow,
+  type WorkflowEntry,
+} from '../lib/routines.ts';
 import { confirmButton } from '../ui/confirm.ts';
-import { deleteWorkflow, listWorkflows, saveWorkflow, type WorkflowList } from '../ui/routines.ts';
+import {
+  deleteWorkflow,
+  getWorkflow,
+  listWorkflows,
+  saveWorkflow,
+  type WorkflowList,
+} from '../ui/routines.ts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -21,6 +32,10 @@ let list: WorkflowList | undefined;
 let listError: string | undefined;
 /** The workflow being edited: its id, '' for a new one, undefined when the editor is closed. */
 let editing: string | undefined;
+/** What the editor opened on: the host's whole workflow (`getWorkflow`), or a blank one. */
+let draft: Workflow | undefined;
+/** Asks of the list in flight: only the latest answer is shown, so a slow one from before a delete cannot bring it back. */
+let asked = 0;
 let changed: () => void = () => undefined;
 
 function status(text: string, isError = false): void {
@@ -58,13 +73,18 @@ function el<K extends keyof HTMLElementTagNameMap>(
  * failure, takes away the list it stands in; the next render, when it closes, shows the news.
  */
 async function load(): Promise<void> {
+  const mine = ++asked;
+  let got: WorkflowList | undefined;
+  let error: string | undefined;
   try {
-    list = await listWorkflows();
-    listError = undefined;
+    got = await listWorkflows();
   } catch (err) {
-    if (editing === undefined) list = undefined;
-    listError = describe(err);
+    error = describe(err);
   }
+  if (mine !== asked) return;
+  if (got) list = got;
+  else if (editing === undefined) list = undefined;
+  listError = error;
   if (editing === undefined) render();
 }
 
@@ -77,8 +97,9 @@ function render(): void {
   $<HTMLElement>('#workflows-empty').hidden =
     !list || list.workflows.length > 0 || editing !== undefined;
   const items: HTMLLIElement[] = [];
-  if (list && editing === '') items.push(editor(blank()));
-  for (const w of list?.workflows ?? []) items.push(w.id === editing ? editor(w) : row(w));
+  if (list && editing === '' && draft) items.push(editor(draft));
+  for (const w of list?.workflows ?? [])
+    items.push(w.id === editing && draft ? editor(draft) : row(w));
   $<HTMLUListElement>('#workflows-list').replaceChildren(...items);
   if (editing !== undefined)
     $<HTMLUListElement>('#workflows-list')
@@ -98,13 +119,32 @@ function blank(): Workflow {
   };
 }
 
-function open(id: string): void {
+/** The editor on a new workflow (''), or on one the host gives whole first. */
+async function open(id: string): Promise<void> {
+  status(id ? 'Opening…' : '');
+  let w: Workflow;
+  if (id) {
+    try {
+      w = await getWorkflow(id);
+    } catch (err) {
+      status(`Could not open it: ${describe(err)}`, true);
+      return;
+    }
+    // Another editor opened while the host answered: that one stays.
+    if (editing !== undefined) return;
+  } else w = blank();
   editing = id;
+  draft = w;
   status('');
   render();
 }
 
-function row(w: Workflow): HTMLLIElement {
+function close(): void {
+  editing = undefined;
+  draft = undefined;
+}
+
+function row(w: WorkflowEntry): HTMLLIElement {
   const li = el('li', 'workflow-item');
   li.dataset['id'] = w.id;
   const head = el('div', 'workflow-head');
@@ -124,7 +164,7 @@ function row(w: Workflow): HTMLLIElement {
   const edit = el('button', 'edit', 'Edit');
   edit.type = 'button';
   edit.disabled = editing !== undefined;
-  edit.addEventListener('click', () => open(w.id));
+  edit.addEventListener('click', () => void open(w.id));
   const del = confirmButton('Delete', `Delete "${w.label}"?`, 'delete', () => void remove(w));
   del.disabled = editing !== undefined;
   actions.append(edit, del);
@@ -132,7 +172,7 @@ function row(w: Workflow): HTMLLIElement {
   return li;
 }
 
-async function remove(w: Workflow): Promise<void> {
+async function remove(w: WorkflowEntry): Promise<void> {
   status(`Deleting "${w.label}"…`);
   try {
     await deleteWorkflow(w.id);
@@ -256,6 +296,7 @@ function editor(w: Workflow): HTMLLIElement {
 
   const current = (): Workflow => ({
     id: w.id,
+    ...(w.version ? { version: w.version } : {}),
     label: label.value,
     ...(description.value.trim() ? { description: description.value } : {}),
     runner: runner.value,
@@ -278,7 +319,7 @@ function editor(w: Workflow): HTMLLIElement {
       cancel.classList.add('armed');
       return;
     }
-    editing = undefined;
+    close();
     status('');
     render();
   });
@@ -324,7 +365,7 @@ function editor(w: Workflow): HTMLLIElement {
       formStatus.textContent = describe(err);
       return;
     }
-    editing = undefined;
+    close();
     await load();
     changed();
     status(`Saved "${saved.label}".`);
@@ -340,7 +381,7 @@ function editor(w: Workflow): HTMLLIElement {
  */
 export async function initWorkflows(onChange: () => void): Promise<void> {
   changed = onChange;
-  $<HTMLButtonElement>('#new-workflow').addEventListener('click', () => open(''));
+  $<HTMLButtonElement>('#new-workflow').addEventListener('click', () => void open(''));
   await load();
 }
 

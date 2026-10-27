@@ -16,8 +16,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { RunnerInfo, Workflow } from '../src/lib/routines.ts';
+import type { RunnerInfo, Workflow, WorkflowEntry } from '../src/lib/routines.ts';
 import { REPO, type Paths } from './lib.ts';
 
 /** A runner on disk: what the editor sees, plus where it is, how long it may take, and its seed. */
@@ -201,11 +202,12 @@ export function ensureWorkflows(p: Paths, runners: Runner[], home: string): void
   }
 }
 
-function readStored(dir: string): StoredWorkflow & { prompt: string } {
-  const stored = JSON.parse(readFileSync(path.join(dir, 'workflow.json'), 'utf8')) as Record<
-    string,
-    unknown
-  >;
+type Read = StoredWorkflow & { prompt: string; version: string };
+
+function readStored(dir: string): Read {
+  const json = readFileSync(path.join(dir, 'workflow.json'), 'utf8');
+  const prompt = readFileSync(path.join(dir, 'prompt.md'), 'utf8');
+  const stored = JSON.parse(json) as Record<string, unknown>;
   const label = str(stored['label']);
   const runner = str(stored['runner']);
   const folder = str(stored['folder']);
@@ -219,11 +221,18 @@ function readStored(dir: string): StoredWorkflow & { prompt: string } {
     folder,
     createdAt: typeof stored['createdAt'] === 'number' ? stored['createdAt'] : 0,
     updatedAt: typeof stored['updatedAt'] === 'number' ? stored['updatedAt'] : 0,
-    prompt: readFileSync(path.join(dir, 'prompt.md'), 'utf8'),
+    prompt,
+    // Both files as they are: a hand edit of either is a new version.
+    version: createHash('sha256')
+      .update(json)
+      .update('\0')
+      .update(prompt)
+      .digest('hex')
+      .slice(0, 16),
   };
 }
 
-function toWorkflow(id: string, s: StoredWorkflow & { prompt: string }): Workflow {
+function toWorkflow(id: string, s: Read): Workflow {
   return {
     id,
     label: s.label,
@@ -231,7 +240,33 @@ function toWorkflow(id: string, s: StoredWorkflow & { prompt: string }): Workflo
     runner: s.runner,
     folder: s.folder,
     prompt: s.prompt,
+    version: s.version,
   };
+}
+
+/** What the list carries: no prompt (a native message to the browser is at most 1 MB). */
+export function entry(w: Workflow): WorkflowEntry {
+  const { prompt: _prompt, ...rest } = w;
+  return rest;
+}
+
+/** One workflow for the editor, prompt and all; its prompt must fit a native message. */
+export function getWorkflow(p: Paths, id: string): Workflow {
+  const w = readWorkflow(p, id);
+  if (!w) throw new Error(`There is no workflow "${id}": it was deleted.`);
+  if (w.prompt.length > MAX_PROMPT)
+    throw new Error(
+      `${path.join(workflowsDir(p), id, 'prompt.md')} is longer than ${MAX_PROMPT} characters: shorten it there.`,
+    );
+  return w;
+}
+
+/**
+ * An id that names no workflow, now or in the trash: records name a workflow by id, and a run
+ * waiting on a deleted one must fail, not start whatever took its name.
+ */
+function taken(root: string, id: string): boolean {
+  return existsSync(path.join(root, id)) || existsSync(path.join(root, '.trash', id));
 }
 
 /** Every workflow, oldest first. A broken one (a hand edit) is skipped with a line on stderr. */
@@ -370,7 +405,8 @@ function oneLine(v: unknown, what: string, max: number, required: boolean): stri
 /**
  * A workflow saved as the editor sent it, checked: a name, a runner there is, a folder
  * `checkFolder` allows, a prompt. A new one (no id) gets an id from its name, made unique; an
- * existing one keeps its id and when it was made. Answers it as it is on disk now.
+ * existing one keeps its id and when it was made, and is saved only over the version the editor
+ * opened (`version`): a hand edit since is not thrown away. Answers it as it is on disk now.
  */
 export function saveWorkflow(
   p: Paths,
@@ -394,15 +430,21 @@ export function saveWorkflow(
   if (id) {
     if (!ID.test(id) || !existsSync(path.join(root, id)))
       throw new Error(`There is no workflow "${id}" any more: it was deleted.`);
+    let current: Read | undefined;
     try {
-      createdAt = readStored(path.join(root, id)).createdAt || createdAt;
+      current = readStored(path.join(root, id));
     } catch {
       // a broken one is rewritten whole
     }
+    if (current && current.version !== w.version)
+      throw new Error(
+        `"${current.label}" was changed on disk since you opened it: Cancel, then Edit it again.`,
+      );
+    createdAt = current?.createdAt || createdAt;
   } else {
     const base = slugFor(label);
     id = base;
-    for (let n = 2; existsSync(path.join(root, id)); n++) id = `${base}-${n}`;
+    for (let n = 2; taken(root, id); n++) id = `${base}-${n}`;
   }
   writeWorkflowFiles(
     path.join(root, id),
@@ -419,15 +461,18 @@ export function saveWorkflow(
   return readWorkflow(p, id)!;
 }
 
-/** Into `workflows/.trash/<id>-<when>/`, so a prompt deleted by mistake can be got back by hand. */
+/**
+ * Into `workflows/.trash/<id>/<when>/`, so a prompt deleted by mistake can be got back by hand,
+ * and its id is never given again (`taken`).
+ */
 export function deleteWorkflow(p: Paths, id: string, now = new Date()): void {
   const root = workflowsDir(p);
   if (!ID.test(id) || !existsSync(path.join(root, id)))
     throw new Error(`There is no workflow "${id}".`);
-  const trash = path.join(root, '.trash');
+  const trash = path.join(root, '.trash', id);
   mkdirSync(trash, { recursive: true });
   const stamp = now.toISOString().replace(/[:.]/g, '-');
-  renameSync(path.join(root, id), path.join(trash, `${id}-${stamp}`));
+  renameSync(path.join(root, id), path.join(trash, stamp));
 }
 
 /** A runner's directory copied for one run: a shell reads its script as it goes, so a pull must not change it under a run. */

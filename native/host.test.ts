@@ -25,6 +25,7 @@ import type {
   RunStatus,
   RunTarget,
   Workflow,
+  WorkflowEntry,
 } from '../src/lib/routines.ts';
 import { decodeMessage, encodeMessage } from './lib.ts';
 import { writeStatus } from './store.ts';
@@ -142,7 +143,7 @@ async function refused(w: Partial<Workflow>): Promise<string> {
   return res.error;
 }
 
-async function workflows(): Promise<Workflow[]> {
+async function workflows(): Promise<WorkflowEntry[]> {
   const res = await ask({ type: 'list-workflows' });
   assert.ok(res.ok && 'workflows' in res, JSON.stringify(res));
   return res.workflows;
@@ -183,7 +184,13 @@ test('the first run makes the seeded workflow; the list offers the workflows, an
   assert.equal(stored.folder, notes);
 });
 
-test('the editor gets the workflows, prompt and all, the runners with their texts, and the home folder', async () => {
+async function get(id: string): Promise<Workflow> {
+  const res = await ask({ type: 'get-workflow', id });
+  assert.ok(res.ok && 'workflow' in res, JSON.stringify(res));
+  return res.workflow;
+}
+
+test('the editor gets the workflows without their prompts, one whole when it edits it, the runners with their texts, and the home folder', async () => {
   const res = await ask({ type: 'list-workflows' });
   assert.ok(res.ok && 'workflows' in res);
   assert.equal(res.home, user);
@@ -203,6 +210,43 @@ test('the editor gets the workflows, prompt and all, the runners with their text
     res.workflows.map((w) => [w.id, w.label, w.runner]),
     [['echo', 'Echo', 'echo']],
   );
+  // The list stays small whatever the prompts (a native message is at most 1 MB).
+  assert.ok(!('prompt' in res.workflows[0]!));
+  const whole = await get('echo');
+  assert.equal(whole.prompt, echo.prompt);
+  assert.match(whole.version ?? '', /^[0-9a-f]{16}$/);
+  assert.equal(whole.version, res.workflows[0]!.version);
+});
+
+test('a save over a workflow changed on disk since the editor opened it is refused, and the hand edit kept', async () => {
+  const opened = await save({ label: 'Hand and editor' });
+  const file = path.join(home, 'workflows', opened.id, 'prompt.md');
+  writeFileSync(file, 'Edited by hand.\n');
+  const res = await ask({
+    type: 'save-workflow',
+    workflow: { ...opened, prompt: 'From the editor.' },
+  });
+  assert.ok(
+    !res.ok && /was changed on disk since you opened it/.test(res.error),
+    JSON.stringify(res),
+  );
+  assert.equal(readFileSync(file, 'utf8'), 'Edited by hand.\n');
+  // Opened again, it saves.
+  const again = await get(opened.id);
+  assert.equal((await save({ ...again, prompt: 'From the editor.' })).prompt, 'From the editor.');
+  await ask({ type: 'delete-workflow', id: opened.id });
+});
+
+test('a prompt made too long by hand is listed, and refused to the editor with where to shorten it', async () => {
+  const w = await save({ label: 'Long by hand' });
+  writeFileSync(path.join(home, 'workflows', w.id, 'prompt.md'), 'x'.repeat(60_000));
+  assert.ok((await workflows()).some((e) => e.id === w.id));
+  const res = await ask({ type: 'get-workflow', id: w.id });
+  assert.ok(
+    !res.ok && /prompt\.md is longer than 50000 characters/.test(res.error),
+    JSON.stringify(res),
+  );
+  await ask({ type: 'delete-workflow', id: w.id });
 });
 
 test('a new workflow gets an id from its name, kept when it is edited; the same name twice gets two', async () => {
@@ -412,11 +456,9 @@ test('a workflow edited by hand to a folder the editor refuses, or to a runner t
 test('a deleted workflow goes to the trash, is not offered or run, and the seed does not come back', async () => {
   const res = await ask({ type: 'delete-workflow', id: 'echo' });
   assert.ok(res.ok && 'deleted' in res && res.deleted === 'echo', JSON.stringify(res));
-  const trash = readdirSync(path.join(home, 'workflows', '.trash'));
-  assert.ok(
-    trash.some((d) => d.startsWith('echo-')),
-    trash.join(),
-  );
+  const trash = readdirSync(path.join(home, 'workflows', '.trash', 'echo'));
+  assert.equal(trash.length, 1);
+  assert.ok(existsSync(path.join(home, 'workflows', '.trash', 'echo', trash[0]!, 'prompt.md')));
   assert.ok(!(await workflows()).some((w) => w.id === 'echo'));
   const list = await ask({ type: 'list-routines' });
   assert.ok(list.ok && 'routines' in list);
@@ -433,4 +475,19 @@ test('a deleted workflow goes to the trash, is not offered or run, and the seed 
   const traversal = await ask({ type: 'delete-workflow', id: '../runs' });
   assert.ok(!traversal.ok);
   assert.ok(existsSync(path.join(home, 'runs')));
+});
+
+test("a deleted workflow's id is never given again: a run waiting on it fails, it does not start the new one", async () => {
+  // "Echo" was deleted above; a new "Echo" must not take its id.
+  const again = await save({ label: 'Echo' });
+  assert.equal(again.id, 'echo-2');
+  const ran = await ask({
+    type: 'run-routine',
+    routine: 'echo',
+    recording: recording('waited', 'rec-12'),
+    key: 'w1',
+  });
+  assert.ok(!ran.ok && /There is no workflow "echo"/.test(ran.error));
+  const gone = await ask({ type: 'get-workflow', id: 'echo' });
+  assert.ok(!gone.ok && /There is no workflow "echo"/.test(gone.error));
 });

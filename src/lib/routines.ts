@@ -32,7 +32,15 @@ export interface Workflow extends RoutineInfo {
   folder: string;
   /** What Claude Code is told, with `{{variables}}` (PROMPT_VARIABLES). */
   prompt: string;
+  /**
+   * The files as the host read them (a hash), sent back with a save: a save over files changed
+   * since (a hand edit) is refused rather than throwing the edit away.
+   */
+  version?: string;
 }
+
+/** A workflow as the list carries it: no prompt, which `get-workflow` gives when it is edited. */
+export type WorkflowEntry = Omit<Workflow, 'prompt'>;
 
 /** A runner as the host lists it for the editor: `runners/<id>/runner.json` and its texts. */
 export interface RunnerInfo {
@@ -94,6 +102,7 @@ export type HostRequest =
   | { type: 'run-routine'; routine: string; recording: RunTarget; key: string }
   | { type: 'routine-status'; runId: string }
   | { type: 'list-workflows' }
+  | { type: 'get-workflow'; id: string }
   /** A new one has an empty `id`; the answer has the one the host gave it. */
   | { type: 'save-workflow'; workflow: Workflow }
   | { type: 'delete-workflow'; id: string };
@@ -116,7 +125,7 @@ export type HostResponse =
   | { ok: true; routines: RoutineInfo[]; recordings: string }
   | { ok: true; run: RunStatus }
   /** `home`: the human's home directory, for showing folders as `~/…`. */
-  | { ok: true; workflows: Workflow[]; runners: RunnerInfo[]; home: string }
+  | { ok: true; workflows: WorkflowEntry[]; runners: RunnerInfo[]; home: string }
   | { ok: true; workflow: Workflow }
   | { ok: true; deleted: string }
   | { ok: false; error: string };

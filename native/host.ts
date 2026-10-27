@@ -2,8 +2,8 @@
 // the extension (`chrome.runtime.sendNativeMessage`), it answers once and exits. Installed by
 // native/install.ts, which points the browser at a wrapper that runs this file with Node.
 //
-// `list-routines`: the workflows, for the stop dialog and the rows. `list-workflows`,
-// `save-workflow`, `delete-workflow`: the Workflows section's (workflows.ts). `run-routine`: the
+// `list-routines`: the workflows, for the stop dialog and the rows. `list-workflows` (no prompts),
+// `get-workflow`, `save-workflow`, `delete-workflow`: the Workflows section's (workflows.ts). `run-routine`: the
 // workflow and the recording's directory checked (store.ts `resolveRecording`), a run directory
 // made with the runner's copy, the recording's files and the prompt filled in, and the supervisor
 // (supervise.ts) started detached in a session of its own, so the run outlives this process,
@@ -44,7 +44,9 @@ import {
   copyRunner,
   deleteWorkflow,
   ensureWorkflows,
+  entry,
   folderRules,
+  getWorkflow,
   listRunners,
   listWorkflows,
   readWorkflow,
@@ -209,11 +211,14 @@ function handle(req: HostRequest): HostResponse {
       const runners = setUp(p);
       return {
         ok: true,
-        workflows: listWorkflows(p),
+        workflows: listWorkflows(p).map(entry),
         runners: runners.map(runnerInfo),
         home: home(),
       };
     }
+    case 'get-workflow':
+      setUp(p);
+      return { ok: true, workflow: getWorkflow(p, req.id) };
     case 'save-workflow': {
       const runners = setUp(p);
       return {
