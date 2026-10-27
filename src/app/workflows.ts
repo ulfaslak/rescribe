@@ -106,7 +106,11 @@ function row(w: Workflow): HTMLLIElement {
   const head = el('div', 'workflow-head');
   head.append(el('span', 'title', w.label));
   const runner = runnerOf(w.runner);
-  const badge = el('span', 'runner', runner?.label ?? `${w.runner} (not in this Rescribe)`);
+  const badge = el(
+    'span',
+    'runner',
+    `runs with ${runner?.label ?? `${w.runner}, which is not in this Rescribe`}`,
+  );
   badge.title = runner?.description ?? 'Its runner is not in the clone the host runs from.';
   head.append(badge);
   li.append(head);

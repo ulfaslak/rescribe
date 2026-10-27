@@ -171,9 +171,10 @@ ul {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  cursor: pointer;
 }
 .recording-item button.toggle {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -184,15 +185,22 @@ ul {
   font-size: 15px;
   text-align: left;
 }
+/* A chevron drawn with two borders: right when folded, down when open. */
 .recording-item .chevron {
   flex: none;
-  width: 12px;
-  font-size: 11px;
-  color: var(--muted);
+  width: 7px;
+  height: 7px;
+  margin: 0 3px 0 1px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
   transition: transform 0.15s;
 }
 .recording-item.open .chevron {
-  transform: rotate(90deg);
+  transform: rotate(45deg);
+}
+.recording-item button.toggle:hover .chevron {
+  border-color: var(--fg);
 }
 .recording-item .title {
   font-weight: 600;
@@ -202,6 +210,9 @@ ul {
 }
 .recording-item.open .title {
   white-space: normal;
+}
+.recording-item .title-row .when {
+  margin-left: auto;
 }
 .recording-item .title-row .when,
 .recording-item .title-row .duration {
@@ -415,10 +426,7 @@ button.primary,
   font-weight: 600;
 }
 .workflow-item .runner {
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
+  font-size: 13px;
   color: var(--muted);
 }
 .workflow-item .path,

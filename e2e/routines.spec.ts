@@ -305,7 +305,7 @@ test('the Workflows section: made with a variable put in at the cursor, a folder
   // The one the host made on its first run.
   await expect(items).toHaveCount(1);
   await expect(items.first().locator('.title')).toHaveText('E2E echo');
-  await expect(items.first().locator('.runner')).toHaveText('E2E echo');
+  await expect(items.first().locator('.runner')).toHaveText('runs with E2E echo');
   await expect(items.first().locator('.path')).toHaveText('~/notes');
 
   // New: the runner's prompt and folder to start from; a variable goes in at the cursor.

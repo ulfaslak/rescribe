@@ -735,7 +735,9 @@ function item(
   toggle.setAttribute('aria-expanded', String(isOpen));
   toggle.setAttribute('aria-controls', `rec-${rec.id}`);
   toggle.title = isOpen ? 'Fold' : 'Open';
-  toggle.append(span('chevron', '▸'), span('title', rec.title));
+  const chevron = span('chevron', '');
+  chevron.setAttribute('aria-hidden', 'true');
+  toggle.append(chevron, span('title', rec.title));
   titleRow.append(toggle);
   // No pencil while the recorder or the pipeline holds the record (their writers carry the title
   // from their start), nor while an action of ours runs on it; shown on an open row only.
@@ -770,6 +772,10 @@ function item(
   body.id = `rec-${rec.id}`;
   body.hidden = !isOpen;
   li.append(body);
+  // Anywhere on the head that is not a button of its own opens and folds it too.
+  titleRow.addEventListener('click', (e) => {
+    if (!(e.target as Element).closest('button')) toggle.click();
+  });
   toggle.addEventListener('click', () => {
     const open = !li.classList.contains('open');
     setOpened(rec.id, open);
