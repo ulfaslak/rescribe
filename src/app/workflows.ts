@@ -52,16 +52,20 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
-/** Ask the host again and show what it says; the editor stays closed. */
+/**
+ * Ask the host again and show what it says. An editor opened while the host was being asked is
+ * left as it is: the answer neither rebuilds it (what was typed would go) nor, when it is a
+ * failure, takes away the list it stands in; the next render, when it closes, shows the news.
+ */
 async function load(): Promise<void> {
   try {
     list = await listWorkflows();
     listError = undefined;
   } catch (err) {
-    list = undefined;
+    if (editing === undefined) list = undefined;
     listError = describe(err);
   }
-  render();
+  if (editing === undefined) render();
 }
 
 function render(): void {

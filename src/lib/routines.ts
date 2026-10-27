@@ -57,10 +57,10 @@ export interface RunnerInfo {
  * fills them in when a run starts (`renderPrompt`). The names are fixed: a prompt names them.
  */
 export const PROMPT_VARIABLES = [
-  { name: 'title', means: "the recording's title in Rescribe" },
+  { name: 'title', means: "the recording's title in Rescribe, which whoever named the call chose" },
   { name: 'date', means: 'the day it started: 2026-10-27' },
   { name: 'time', means: 'when it started: 14:02' },
-  { name: 'participants', means: 'who was on the call, as Meet named them' },
+  { name: 'participants', means: 'who was on the call, by the names each chose in Meet' },
   { name: 'transcript', means: 'the transcript, a file Claude Code can read' },
   { name: 'folder', means: "the workflow's folder" },
   { name: 'workflow', means: "the workflow's name" },

@@ -160,6 +160,20 @@ rm -rf $box
 
 # A meeting indexed again may leave nothing to commit: its notes on origin/main are already its own.
 git add -A
+# What steers the founders' later agents, which have a shell (CLAUDE.md, AGENTS.md, and hidden
+# files: settings, hooks, commands), is not the call's to write: put back as it is on origin/main
+# (the agent's version kept in the run's set-aside/) and named.
+for touched in ${(0)"$(git diff --cached --name-only -z)"}; do
+  if [[ /$touched == */.* || ${touched:t} == (CLAUDE.md|CLAUDE.local.md|AGENTS.md|GEMINI.md) ]]; then
+    if [[ -f $touched ]]; then
+      mkdir -p $RESCRIBE_RUN_DIR/set-aside/${touched:h}
+      cp -p $touched $RESCRIBE_RUN_DIR/set-aside/$touched
+    fi
+    git reset --quiet HEAD -- $touched
+    git checkout --quiet HEAD -- $touched 2>/dev/null || rm -f -- $touched
+    problems+=("$touched was changed by the agent and left out")
+  fi
+done
 # Anything new at the top of the repository is named: a card written there instead of in .rescribe/
 # would otherwise be pushed, and lost to the board, without a word.
 for added in ${(0)"$(git diff --cached --name-only --diff-filter=A -z)"}; do

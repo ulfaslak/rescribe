@@ -150,7 +150,7 @@ What remains: the stop dialog's path on a fresh call, the row, the processing ta
 
 **Steps**:
 
-1. Open the Rescribe tab. **Workflows** lists one, **Index in Lawcel**, runs with Index in Lawcel, `~/Documents/git/lawcel-knowledge`. **Edit** shows its prompt, the one Index in Lawcel always had, with `{{workflow}}` in its first line; **Cancel**.
+1. Open the Rescribe tab. **Workflows** lists one, **Index in Lawcel**, runs with Index in Lawcel, `~/Documents/git/lawcel-knowledge`. **Edit** shows its prompt, the three steps Index in Lawcel always had (the name, the notes, the board), and "Index in Lawcel puts text before and after your prompt" shows the rest of what it always said (the worktree, `.rescribe/`, the hand-over); **Cancel**.
 2. **New workflow**: a name (say "Call notes"), a line, **Runs with** Claude Code in a folder, a folder of notes of yours (say `~/Library/Mobile Documents/com~apple~CloudDocs/project-knowledge`, or a new `~/Documents/notes`), and a prompt; click `{{date}}` and `{{title}}` to put them in it. Open "Claude Code in a folder puts text before and after your prompt" and read what it adds. **Add workflow**.
 3. **Recordings**: older recordings are one line each; the newest is open. Click one open and closed again.
 4. Record a short call or screen with a few sentences. At the end the stop window shows **Save**, **Index in Lawcel**, **Call notes** with its line, and **Discard**. Click **Call notes**.
