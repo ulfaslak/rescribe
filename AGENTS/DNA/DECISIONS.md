@@ -15,7 +15,7 @@ A recording waiting `stopped` never blocks a new one: the toolbar button on a ca
 A keyboard command (`toggle-recording`) mirrors the button.
 Transcription never blocks recording: `query-status` answers the recorder's state, so Start Capture starts a new recording while the previous one transcribes and the pipeline queues it; the start dialog says what runs in the background. Not a lock: a missed call costs more than a later transcript.
 Recording anything other than the current tab (a window, the whole screen) starts from the app tab, through Chrome's own picker.
-The library's rows fold to one line, the title, when, how long, the status and the workflow run on it (2026-10-27, the human: the recordings took up too much space), and open on a click to everything else. Open without asking: the newest recording and one that is live or waits for the human; the human's own opening or closing holds for the tab's session (`sessionStorage`). Not a separate page per recording: the row is where its actions are.
+The library's rows fold to one line, the title, when, how long, the status and the workflow run on it (2026-10-27, the human: the recordings took up too much space), and open on a click to everything else. Open without asking: the newest recording and one that is live or waits for the human; the human's own opening or closing holds for the tab's session (`sessionStorage`), and an action on a row counts as opening it, so its outcome stays in view when a newer recording arrives. Not a separate page per recording: the row is where its actions are.
 
 ## Capture
 

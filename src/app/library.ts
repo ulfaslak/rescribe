@@ -211,6 +211,8 @@ async function runAction(
   }
   for (const b of scope.querySelectorAll('button')) b.disabled = true;
   for (const id of ids) inflight.set(id, label);
+  // A row acted on stays open for its outcome, even once a newer recording is the one open unasked.
+  for (const id of ids) if (!opened.has(id)) setOpened(id, true);
   void renderList();
   let out: Outcome;
   let failure: unknown;
