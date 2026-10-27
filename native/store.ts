@@ -1,34 +1,26 @@
-// The native host's disk (DECISIONS § Routines): the routines in `routines/<id>/`, the recording
-// a run is for under the recordings folder, and each run's directory under `runs/<runId>/`
-// (run.json: what to run; status.json: how it went; log.txt: what it printed).
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+// The native host's disk (DECISIONS § Workflows): the recording a run is for under the recordings
+// folder, and each run's directory under `runs/<runId>/` (run.json: what to run; status.json: how
+// it went; log.txt: what it printed). The workflows and their runners are in workflows.ts.
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { RoutineInfo, RunStatus, RunTarget } from '../src/lib/routines.ts';
+import type { RunStatus, RunTarget } from '../src/lib/routines.ts';
 import { isRunId } from './lib.ts';
-
-/** A routine on disk: what the extension sees, plus where it is and how long it may take. */
-export interface Routine extends RoutineInfo {
-  dir: string;
-  script: string;
-  /** Minutes before the supervisor stops it; `routine.json` `timeoutMinutes`, 60 by default. */
-  timeoutMinutes: number;
-}
 
 /** What the host hands the supervisor: `runs/<runId>/run.json`. */
 export interface RunSpec {
   runId: string;
   /** The extension's name for this start (lib/routines.ts `runKey`): one run per key. */
   key: string;
+  /** The workflow's id and name, as they were when it started. */
   routine: string;
   label: string;
+  runner: string;
+  /** The run's copy of the runner's run.sh. */
   script: string;
+  /** The prompt with its variables filled in, before and after included (`prompt.md` here). */
+  prompt: string;
+  /** The workflow's folder, checked (workflows.ts `checkFolder`). */
+  folder: string;
   timeoutMinutes: number;
   recordingDir: string;
   recording: RunTarget;
@@ -38,63 +30,6 @@ export interface RunSpec {
 export interface StoredStatus extends RunStatus {
   pid?: number;
   exitCode?: number | null;
-}
-
-const DEFAULT_TIMEOUT_MINUTES = 60;
-
-function isExecutable(file: string): boolean {
-  try {
-    return statSync(file).isFile() && (statSync(file).mode & 0o111) !== 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Every `routines/<id>/` with a `routine.json` (`label`, optional `description`, `order`,
- * `timeoutMinutes`) and an executable `run.sh`, by `order` then label. A broken one is skipped
- * with a line on stderr (Chrome keeps the host's stderr in its log).
- */
-export function listRoutines(dir: string): Routine[] {
-  if (!existsSync(dir)) return [];
-  const out: (Routine & { order: number })[] = [];
-  for (const id of readdirSync(dir).sort()) {
-    if (id.startsWith('.') || id.startsWith('_')) continue;
-    const rdir = path.join(dir, id);
-    if (!statSync(rdir).isDirectory()) continue; // README.md
-    // The id goes into the run's id (lib.ts `isRunId`), so it has that shape or is not a routine.
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
-      process.stderr.write(
-        `[rescribe-host] routine ${id} skipped: name it in lowercase and dashes\n`,
-      );
-      continue;
-    }
-    const script = path.join(rdir, 'run.sh');
-    try {
-      const spec = JSON.parse(readFileSync(path.join(rdir, 'routine.json'), 'utf8')) as Record<
-        string,
-        unknown
-      >;
-      if (typeof spec['label'] !== 'string' || !spec['label']) throw new Error('no label');
-      if (!isExecutable(script)) throw new Error('run.sh missing or not executable');
-      out.push({
-        id,
-        label: spec['label'],
-        ...(typeof spec['description'] === 'string' ? { description: spec['description'] } : {}),
-        dir: rdir,
-        script,
-        timeoutMinutes:
-          typeof spec['timeoutMinutes'] === 'number' && spec['timeoutMinutes'] > 0
-            ? spec['timeoutMinutes']
-            : DEFAULT_TIMEOUT_MINUTES,
-        order: typeof spec['order'] === 'number' ? spec['order'] : 100,
-      });
-    } catch (err) {
-      process.stderr.write(`[rescribe-host] routine ${id} skipped: ${String(err)}\n`);
-    }
-  }
-  out.sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
-  return out.map(({ order: _order, ...r }) => r);
 }
 
 /**

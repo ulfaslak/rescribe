@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Index in Lawcel: the transcript into lawcel-knowledge, notes from it, synced with git, and the
-# call's action items as cards on the founders' board (routines/README.md). Started by
-# native/supervise.ts with RESCRIBE_RECORDING_DIR, RESCRIBE_RUN_DIR and RESCRIBE_RUN_ID. The last
-# line it prints is what the human reads when it fails.
+# call's action items as cards on the founders' board (runners/README.md). Started by
+# native/supervise.ts with RESCRIBE_RECORDING_DIR, RESCRIBE_RUN_DIR, RESCRIBE_RUN_ID,
+# RESCRIBE_FOLDER (the workflow's folder: the lawcel-knowledge clone) and RESCRIBE_PROMPT (the
+# workflow's prompt, filled in). The last line it prints is what the human reads when it fails.
 #
 # What was said on the call is not trusted: anyone on it can talk to the agent that reads it. So
 # Claude Code runs restricted to the five file tools (no shell, no web search, no messages to
@@ -16,11 +17,10 @@ setopt err_exit no_unset pipe_fail
 # Characters, not bytes, in a title's length: the browser starts the host with no locale at all.
 export LC_ALL=en_US.UTF-8
 
-repo=${LAWCEL_KNOWLEDGE:-$HOME/Documents/git/lawcel-knowledge}
+repo=$RESCRIBE_FOLDER
 max_cards=10
 work=$RESCRIBE_RUN_DIR/lawcel-knowledge
 branch=rescribe/$RESCRIBE_RUN_ID
-here=${0:A:h}
 export GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1
 
 say() { print -r -- "[index-in-lawcel] $*"; }
@@ -76,8 +76,8 @@ cp $RESCRIBE_RUN_DIR/board.md $RESCRIBE_RUN_DIR/assignable.tsv $box/
 
 say "claude -p (restricted) in $work, trace in $RESCRIBE_RUN_DIR/trace.jsonl"
 cd $work
-claude -p "$(<$here/prompt.md)" --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
-  --permission-mode acceptEdits --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
+claude -p "$(<$RESCRIBE_PROMPT)" --restricted --strict-mcp-config --tools Read,Write,Edit,Glob,Grep \
+  --add-dir $RESCRIBE_RUN_DIR/recording --permission-mode acceptEdits --model opus --output-format stream-json --verbose >$RESCRIBE_RUN_DIR/trace.jsonl ||
   fail "Claude Code exited with an error; see $RESCRIBE_RUN_DIR/trace.jsonl"
 
 name=$(first_line $box/name)

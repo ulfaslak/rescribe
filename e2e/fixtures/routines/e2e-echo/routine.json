@@ -1,6 +1,0 @@
-{
-  "label": "E2E echo",
-  "description": "Writes down what it was given",
-  "order": 1,
-  "timeoutMinutes": 1
-}

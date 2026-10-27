@@ -15,10 +15,10 @@ export interface Paths {
   home: string;
   /** `~/.rescribe/recordings`: the folder Rescribe saves into, the only one a routine reads. */
   recordings: string;
-  /** `~/.rescribe/runs`: one directory per run (status, log, whatever the routine keeps). */
+  /** `~/.rescribe/runs`: one directory per run (status, log, whatever the runner keeps). */
   runs: string;
-  /** `<repo>/routines`: one directory per routine. */
-  routines: string;
+  /** `<repo>/runners`: one directory per runner, the code that runs a workflow. */
+  runners: string;
 }
 
 export function paths(env: NodeJS.ProcessEnv): Paths {
@@ -27,7 +27,7 @@ export function paths(env: NodeJS.ProcessEnv): Paths {
     home,
     recordings: env['RESCRIBE_RECORDINGS'] ?? path.join(home, 'recordings'),
     runs: path.join(home, 'runs'),
-    routines: env['RESCRIBE_ROUTINES'] ?? path.join(REPO, 'routines'),
+    runners: env['RESCRIBE_RUNNERS'] ?? path.join(REPO, 'runners'),
   };
 }
 
@@ -59,12 +59,12 @@ export function extensionIdForPath(dir: string): string {
   return [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
 }
 
-/** `20261023-140211-index-in-lawcel-3f9a`: sortable, and says what ran. */
-export function makeRunId(now: Date, routine: string, rand: string): string {
+/** `20261023-140211-index-in-lawcel-3f9a`: sortable, and says which workflow ran. */
+export function makeRunId(now: Date, workflow: string, rand: string): string {
   const p = (n: number): string => String(n).padStart(2, '0');
   const day = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}`;
   const time = `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
-  return `${day}-${time}-${routine}-${rand}`;
+  return `${day}-${time}-${workflow}-${rand}`;
 }
 
 /** A run id as the host made it; anything else is refused before it becomes a path. */
