@@ -28,6 +28,16 @@ The host runs runners from the clone it was installed from (`npm run install-hos
 
 Claude Code in a folder: `claude -p` in the workflow's folder, with the run's copies of the recording to read. Its `before.md` tells Claude Code that it is headless, and gives the call (title, names, transcript) as material, never instructions; hidden files and agent instructions in the folder (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.envrc`…) are kept before the run and put back after it, new ones set aside in `set-aside/`, and the summary names them; its `after.md` asks for one line saying what it did, in `summary` next to the transcript, which becomes the run's summary (cut to 200 characters). A run without one is still done.
 
+## index-in-notes-repo
+
+Index in Lawcel without the board, for any git repository of notes whose origin takes a push to `main`: the transcript filed, the meeting's notes written and whatever else the notes' own conventions ask for, pushed. What is particular to the notes is theirs, not this runner's: their `CLAUDE.md` (which `claude -p` loads in the worktree) and the workflow's prompt, which can name a playbook in them.
+
+- `run.sh` makes a worktree of the workflow's folder (a git clone; anything else stops it before anything starts) from `origin/main` under the run directory, and copies `transcript.md` and `meta.json` into its `.rescribe/`.
+- `claude -p --restricted` writes the markdown and hands back where the transcript goes (`.rescribe/transcript-path`), a commit subject and a summary.
+- `run.sh` files the transcript there only if the place is a markdown file inside the repository (letters, digits, `.`, `_`, `-`, `/`), in no hidden folder, not an agent's instructions, not a folder, and not another meeting's transcript on `origin/main` (one whose first three lines, the title and the start, differ; the same meeting transcribed again is replaced). Otherwise it stops before the push and keeps the worktree. Anything else in `.rescribe/`, anything new at the top of the repository, and a change to a hidden file or an agent's instructions (put back, kept in `set-aside/`) are named in the summary under "To look at", with the hand-over kept in `handover/`. Then it commits, rebases on `origin/main` and pushes, counts the run pushed only once its commit is on `origin/main` (a meeting indexed again that changes nothing commits nothing), and fast-forwards the human's clone when nothing is in the way.
+
+It needs `claude` logged in on the subscription and the clone's push to work without a prompt.
+
 ## index-in-lawcel
 
 Files the transcript as `lawcel-knowledge/meetings/transcripts/<date>-<names>.md`, writes the meeting note and updates the CRM, decisions, questions and reminders there, pushes to `main`, and files the call's action items as cards on the founders' board ([Project management](https://github.com/orgs/Lawcel/projects/2)).

@@ -32,6 +32,7 @@ Make and change them under **Workflows** in the Rescribe tab: a name, a line abo
 
 - **Claude Code in a folder**: Claude Code reads the transcript and reads and writes files in the folder, nothing else (no shell, no web), and says in a line what it did. Choose a folder of notes, not one with code or keys: anyone on the call could try to steer it, and Rescribe refuses folders that hold keys, settings or Rescribe's own files.
 - **Index in Lawcel**: Claude Code copies the transcript into `lawcel-knowledge/meetings/transcripts/<date>-<names>.md`, writes the meeting's note, updates the CRM, decisions, questions and reminders, and pushes to `main`; the call's action items become cards on the founders' board. Rescribe starts with this one workflow.
+- **Index in a notes repo**: the same for any git repository of notes, without the board. Claude Code works in a worktree of it, follows its `CLAUDE.md` and your prompt, and says where the transcript goes; the script files it there (never over another meeting's transcript), commits and pushes to `main`. Point a workflow of it at your clone, and say in its prompt how your notes are kept, or which playbook in them to follow.
 
 The workflows are files in `~/.rescribe/workflows/<id>/` (`workflow.json`, `prompt.md`); a deleted one goes to `.trash/` there. The runners are code in `runners/` (see `runners/README.md`).
 
