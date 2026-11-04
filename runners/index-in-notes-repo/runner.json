@@ -1,0 +1,8 @@
+{
+  "label": "Index in a notes repo",
+  "description": "Claude Code writes in a fresh worktree of a git repository of notes, following its CLAUDE.md and your prompt; then the script files the transcript where Claude Code says, commits and pushes to main. What it puts before and after your prompt is how the script and Claude Code hand work over.",
+  "folder": "A git clone of your notes, whose origin takes a push to main without prompting. Claude Code works in a worktree of it; your clone is fast-forwarded afterwards.",
+  "defaultFolder": "~/Documents/git",
+  "order": 30,
+  "timeoutMinutes": 45
+}

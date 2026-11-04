@@ -81,6 +81,15 @@ test("a runner's hand-over is in its own after.md, never in the prompt the human
     assert.ok(lawcel.after?.includes(file), `after.md names ${file}`);
     assert.ok(!lawcel.prompt.includes(file), `prompt.md leaves ${file} to after.md`);
   }
+  const notes = listRunners(dir).find((r) => r.id === 'index-in-notes-repo')!;
+  for (const file of [
+    '.rescribe/transcript-path',
+    '.rescribe/commit-message',
+    '.rescribe/summary',
+  ]) {
+    assert.ok(notes.after?.includes(file), `after.md names ${file}`);
+    assert.ok(!notes.prompt.includes(file), `prompt.md leaves ${file} to after.md`);
+  }
   const claude = listRunners(dir).find((r) => r.id === 'claude')!;
   assert.match(claude.after ?? '', /`summary` next to the transcript/);
   assert.doesNotMatch(claude.prompt, /summary/);
