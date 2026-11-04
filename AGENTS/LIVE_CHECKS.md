@@ -159,3 +159,17 @@ What remains: the stop dialog's path on a fresh call, the row, the processing ta
 
 **Success criteria**: the note is in your folder, with the date and the title where the prompt put them, and nothing else in the folder changed; the row ends `Call notes: done at …` with the notification's line and a green **Call notes** on its head. `~/.rescribe/workflows/` holds `index-in-lawcel/` and `call-notes/`, each a `workflow.json` and a `prompt.md`.
 **On failure**: the editor's red line under **Save** is the host's reason for refusing (a folder outside home, hidden or in `~/Library`, or Rescribe's own). A run's reason is on the row and in `~/.rescribe/runs/<runId>/` (`log.txt`, `trace.jsonl`, `prompt.md`: the prompt exactly as Claude Code got it). `Claude Code wrote no summary`: the work may still be there; the run's `trace.jsonl` says what it did. No Workflows section content and `No workflows: … not installed`: run `npm run install-host` in the primary clone.
+
+### Index in a notes repo on a real call: Index in ulfaslak-knowledge
+
+**Trigger**: Index in a notes repo merged and pulled in the primary clone; the workflow **Index in ulfaslak-knowledge** in `~/.rescribe/workflows/` (made 2026-11-04 through the host's `save-workflow`); `~/Documents/git/ulfaslak-knowledge` cloned with a push that never prompts. Then the next call that belongs in Ulf's personal knowledge base (not Lawcel, not PyMC Labs).
+
+**Steps**:
+1. At the end of the call the stop window shows **Index in ulfaslak-knowledge** with its line. Click it.
+2. Wait for the notification `Index in ulfaslak-knowledge: done` with the note's file name and the gist.
+3. In ulfaslak-knowledge: `git log -1 origin/main` is `notes <date> <topic>: …` with `Indexed by Rescribe (Index in ulfaslak-knowledge, run …)` in its body; `meetings/transcripts/<name>.md` is the transcript alone; `meetings/notes/<name>.md` follows the template; the organization, people, project and `reminders.md` changed as `playbooks/index-meeting.md` asks. Your clone was fast-forwarded. `git worktree list` there shows no `rescribe/` branch.
+
+**Success criteria**: all of the above, and a note you would have accepted from a session where you asked for it by hand.
+**On failure**: as for Index in Lawcel above (the run's directory has `log.txt`, `trace.jsonl`, `handover/`, and the worktree `notes/` after a failure). `is another meeting's transcript`: the agent chose a name already taken; finish in the kept worktree or run the workflow again from the row. A note wrong in substance: the workflow's prompt (Workflows, Edit) or ulfaslak-knowledge's `playbooks/index-meeting.md`.
+
+**Passed through the host (2026-11-04):** the workflow saved with `save-workflow` and run with `run-routine` (framed messages as the browser sends them, to the host of this branch's worktree) on the human's 2026-11-04 11:03 Teams recording, which names no participant but Ulf. Run `20261104-141104-index-in-ulfaslak-knowledge-ec25` reached `done` in 2.4 minutes on the subscription and pushed `38ec166`: the transcript as `meetings/transcripts/2026-11-04-gf-forsikring.md`, the note, the organization updated, a person (the speaker identified from the earlier transcript and marked "probably"), a project hub, two reminders; the clone fast-forwarded, no `rescribe/` branch left. Pending: step 1, the stop window in Brave.
