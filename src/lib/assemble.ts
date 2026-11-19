@@ -94,6 +94,8 @@ export interface AssembleInput {
   events: EventLine[];
   /** The extension's manifest version, recorded in meta.json. */
   rescribeVersion: string;
+  /** Where Edda's encoder ran, when the Danish + English model transcribed a channel this run. */
+  danishBackend?: Backend;
   /** Epoch ms of this assembly. Default Date.now(). */
   now?: number;
 }
@@ -119,6 +121,8 @@ export interface TranscriptMetaFile {
   selfTile?: SelfTile;
   model: string;
   backend: Backend;
+  /** Where Edda's encoder ran (Danish + English): the GPU unless it had none or refused. */
+  danishBackend?: Backend;
   container: Recording['container'];
   exportPath?: string;
   levels?: Recording['levels'];
@@ -218,6 +222,7 @@ export function assembleTranscript(input: AssembleInput): Assembled {
       ...(platform.self !== undefined ? { selfTile: platform.self } : {}),
       model: settings.model,
       backend: settings.backend,
+      ...(input.danishBackend !== undefined ? { danishBackend: input.danishBackend } : {}),
       container: recording.container,
       ...(recording.exportPath !== undefined ? { exportPath: recording.exportPath } : {}),
       ...(recording.levels !== undefined ? { levels: recording.levels } : {}),

@@ -2,7 +2,7 @@
 // All times in Segment, Word, SpeakerInterval and Turn are seconds from recording start
 // (t = 0 at the first captured sample). Only Recording.startedAt/endedAt/transcribedAt are
 // wall-clock epoch ms.
-import type { Backend } from './asr/engine.ts';
+import { DANISH_ENGLISH_MODEL, type Backend } from './asr/engine.ts';
 import type { RoutineRun } from './routines.ts';
 
 export type ChannelId = 'mic' | 'display';
@@ -77,6 +77,8 @@ export interface Segment {
   end: number;
   text: string;
   words?: Word[];
+  /** The language the Danish + English model routed this region as; absent for Parakeet alone. */
+  language?: 'da' | 'en';
 }
 
 /** Where a piece of speaker evidence came from. Higher-priority sources win in attribution. */
@@ -113,7 +115,7 @@ export const FRAME_RATES: readonly FrameRate[] = [5, 10, 30];
  * Bumped when a stored setting must be read against a new default; `migrateSettings` in
  * lib/settings.ts carries a stored object from each older version to this one.
  */
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 
 export interface Settings {
   /** Directory name template under the export folder. Tokens: {date} {time} {title}. */
@@ -126,7 +128,7 @@ export interface Settings {
   micByDefault: boolean;
   /** The microphone to record, a `MediaDeviceInfo.deviceId`; absent or empty: the default device. */
   micDeviceId?: string;
-  /** parakeet.js model key. */
+  /** A speech model key from `MODELS` (lib/asr/engine.ts). */
   model: string;
   /** Where the speech engine runs (DECISIONS § Speech recognition: WASM by default). */
   backend: Backend;
@@ -142,7 +144,7 @@ export const DEFAULT_SETTINGS: Settings = {
   container: 'webm',
   frameRate: 5,
   micByDefault: true,
-  model: 'parakeet-tdt-0.6b-v3',
+  model: DANISH_ENGLISH_MODEL,
   backend: 'wasm',
   autoTranscribe: true,
   settingsVersion: SETTINGS_VERSION,

@@ -236,9 +236,12 @@ export class ProgressTracker {
           loaded += d.loaded;
           total += d.total;
         }
-        delete model.fraction;
+        // Bytes moving take the share back to a sliding bar. A download that only opens (a
+        // cached file, or the next of several models after one has loaded) does not: the share
+        // stays full so the job never moves backwards.
+        if (r.loaded > 0 || r.total > 0) delete model.fraction;
         if (total > 0) model.detail = `${mb(loaded)} of ${mb(total)} MB`;
-        else delete model.detail;
+        else if (model.fraction !== 1) delete model.detail;
       } else {
         // The bytes are all here; the share stays full so the job never moves backwards.
         model.fraction = 1;

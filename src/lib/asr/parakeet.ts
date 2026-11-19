@@ -32,6 +32,7 @@
 import * as ort from 'onnxruntime-web';
 import { getModelConfig, getModelFile, ParakeetModel } from 'parakeet.js';
 import type { AsrEngine, Backend, EngineOptions, Progress, Transcription } from './engine.ts';
+import { assertWebGpu, failOnDroppedWebGpu } from './webgpu.ts';
 
 export interface ParakeetEngineConfig {
   /**
@@ -99,7 +100,7 @@ export class ParakeetEngine implements AsrEngine {
 
       // Phase 2, load: ORT session creation. No finer progress exists.
       onProgress?.({ phase: 'load', loaded: 0, total: 1 });
-      this.model = await failOnDroppedWebGpu(backend, () =>
+      this.model = await failOnDroppedWebGpu(backend, releaseSessions, () =>
         ParakeetModel.fromUrls({
           encoderUrl,
           encoderDataUrl,
@@ -159,44 +160,5 @@ function releaseSessions(model: ParakeetModel): void {
       continue;
     }
     session.release().catch((err: unknown) => console.warn('[rescribe] session release', err));
-  }
-}
-
-/** A WebGPU load must not quietly become fp32 on WASM, slower than the int8 default. */
-async function assertWebGpu(): Promise<void> {
-  const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown | null> } }).gpu;
-  const adapter = gpu ? await gpu.requestAdapter() : null;
-  if (!adapter) {
-    throw new Error('WebGPU is not available in this browser; switch the backend to WASM');
-  }
-}
-
-/**
- * ORT drops an execution provider it cannot initialise with only a console.warn ("removing
- * requested execution provider ..." in onnxruntime-web/dist/ort.mjs) and runs on WASM. For the
- * WebGPU backend that is the silent degradation `assertWebGpu` guards against one step earlier;
- * catch it here too, at the moment it happens.
- */
-async function failOnDroppedWebGpu<T extends ParakeetModel>(
-  backend: Backend,
-  create: () => Promise<T>,
-): Promise<T> {
-  if (backend !== 'webgpu') return create();
-  const originalWarn = console.warn;
-  let dropped: string | undefined;
-  console.warn = (...args: unknown[]) => {
-    const text = args.map(String).join(' ');
-    if (/removing requested execution provider "webgpu"/.test(text)) dropped = text;
-    originalWarn.apply(console, args);
-  };
-  try {
-    const model = await create();
-    if (dropped) {
-      releaseSessions(model);
-      throw new Error(`WebGPU refused by ONNX Runtime, not running on WASM instead: ${dropped}`);
-    }
-    return model;
-  } finally {
-    console.warn = originalWarn;
   }
 }

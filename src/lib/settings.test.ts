@@ -19,6 +19,22 @@ describe('migrateSettings', () => {
     assert.equal(out.settingsVersion, SETTINGS_VERSION);
   });
 
+  it('drops the Parakeet model a version-1 object carries, so the Danish + English default applies', () => {
+    const out = migrateSettings({ model: 'parakeet-tdt-0.6b-v3', settingsVersion: 1 });
+    assert.equal(out.model, undefined);
+    assert.equal({ ...DEFAULT_SETTINGS, ...out }.model, 'danish-english');
+  });
+
+  it('keeps Parakeet chosen at the current version, drops a model this build does not offer', () => {
+    const kept = migrateSettings({
+      model: 'parakeet-tdt-0.6b-v3',
+      settingsVersion: SETTINGS_VERSION,
+    });
+    assert.equal(kept.model, 'parakeet-tdt-0.6b-v3');
+    const odd = migrateSettings({ model: 'whisper-huge', settingsVersion: SETTINGS_VERSION });
+    assert.equal(odd.model, undefined);
+  });
+
   it('stamps an empty store with the version and nothing else', () => {
     assert.deepEqual(migrateSettings({}), { settingsVersion: SETTINGS_VERSION });
   });

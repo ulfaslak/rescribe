@@ -17,7 +17,8 @@
 import { assembleTranscript, parseEventLog } from '../lib/assemble.ts';
 import { channelPhrase, ProgressTracker, type PipelineProgress } from '../lib/progress.ts';
 import { loadSettings } from '../lib/settings.ts';
-import type { ChannelId, Recording, Segment } from '../lib/types.ts';
+import type { ChannelId, Recording, Segment, Settings } from '../lib/types.ts';
+import { DANISH_ENGLISH_MODEL, type Backend } from '../lib/asr/engine.ts';
 import { exportArtifacts, ExportError } from '../storage/export.ts';
 import {
   getChannelFile,
@@ -117,15 +118,34 @@ function emit(id: string, p: PipelineProgress): void {
 }
 
 /** A channel with audio on disk: a step of the plan. */
+/**
+ * Where Edda's encoder runs for the Danish + English model (DECISIONS § Speech recognition): on
+ * WebGPU when the setting says so, and also when it says WASM but the browser has a WebGPU
+ * adapter, because on WASM a Danish call takes about as long as the call. The worker falls back
+ * to WASM if ONNX Runtime refuses the adapter. Undefined for Parakeet alone.
+ */
+async function danishBackend(settings: Settings): Promise<Backend | undefined> {
+  if (settings.model !== DANISH_ENGLISH_MODEL) return undefined;
+  if (settings.backend === 'webgpu') return 'webgpu';
+  const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown | null> } }).gpu;
+  const adapter = gpu ? await gpu.requestAdapter().catch(() => null) : null;
+  return adapter ? 'webgpu' : 'wasm';
+}
+
 async function hasAudio(id: string, channel: ChannelId): Promise<boolean> {
   const file = await getChannelFile(id, channel);
   return file !== undefined && file.size > 0;
 }
 
+/**
+ * Where Edda's encoder ran (`danishBackend`) is written but not compared: fp16 on WebGPU and int8
+ * on WASM give the same text, and a GPU coming or going must not re-transcribe kept channels.
+ */
 interface CachedSegments {
   model: string;
   backend: string;
   rescribeVersion: string;
+  danishBackend?: Backend;
   segments: Segment[];
 }
 
@@ -191,7 +211,12 @@ function finish(rec: Recording, tracker: ProgressTracker | undefined): Recording
 async function run(id: string, earlier: string | undefined): Promise<Recording> {
   const settings = await loadSettings();
   const rescribeVersion = chrome.runtime.getManifest().version;
-  const key = { model: settings.model, backend: settings.backend, rescribeVersion };
+  const key = {
+    model: settings.model,
+    backend: settings.backend,
+    rescribeVersion,
+    danishBackend: await danishBackend(settings),
+  };
   let tracker: ProgressTracker | undefined;
   const fail = async (error: string): Promise<Recording> =>
     finish(await updateRecording(id, { status: 'failed', error }), tracker);
@@ -230,6 +255,8 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
   // 3. Transcribe, one channel at a time.
   const segments: Segment[] = [];
   let found = false;
+  /** Where Edda ran on the channels transcribed now (a kept channel says nothing). */
+  let danishRan: Backend | undefined;
   for (const { channel, cached } of channels) {
     const kept = cache.get(channel);
     if (cached && kept) {
@@ -255,6 +282,7 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
         last = p.phase;
         progress(t.report(channel, p, Date.now()));
       });
+      danishRan = transcriber.danishRanOn ?? danishRan;
     } catch (err) {
       const stage =
         last === 'transcribe'
@@ -271,7 +299,11 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
       await writeArtifact(
         id,
         segmentsArtifactName(channel),
-        JSON.stringify({ ...key, segments: out } satisfies CachedSegments),
+        JSON.stringify({
+          ...key,
+          danishBackend: transcriber.danishRanOn,
+          segments: out,
+        } satisfies CachedSegments),
       );
     } catch (err) {
       return fail(`Could not save the transcription of ${name(channel)}: ${message(err)}`);
@@ -306,6 +338,7 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
       segments,
       events,
       rescribeVersion,
+      danishBackend: danishRan,
       now: transcribedAt,
     });
     await writeArtifact(id, 'transcript.md', assembled.markdown);

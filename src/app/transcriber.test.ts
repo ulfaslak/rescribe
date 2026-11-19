@@ -137,6 +137,26 @@ test('a load-stage error fails only that job and keeps the worker', async () => 
   assert.equal(workers.length, 1);
 });
 
+test('a load-stage error under Danish + English restarts the worker: three models share its heap', async () => {
+  const { workers, transcriber } = setup();
+  const opts = { model: 'danish-english', backend: 'wasm' as const };
+  const p1 = settled(transcriber.transcribeChannel(pcm(), 'mic', opts));
+  workers[0]!.reply({ type: 'error', jobId: 'job-1', stage: 'load', message: 'OOM' });
+  assert.equal((await p1).status, 'rejected');
+  assert.equal(workers[0]!.terminated, true);
+  const p2 = transcriber.transcribeChannel(pcm(), 'mic', opts);
+  assert.equal(workers.length, 2, 'a fresh worker for the next job');
+  workers[1]!.reply({
+    type: 'result',
+    jobId: 'job-2',
+    segments: [],
+    backend: 'wasm',
+    danishBackend: 'webgpu',
+  });
+  assert.deepEqual(await p2, []);
+  assert.equal(transcriber.danishRanOn, 'webgpu');
+});
+
 test('a worker crash fails every pending job and the next job respawns', async () => {
   const { workers, transcriber, opts } = setup();
   const p1 = settled(transcriber.transcribeChannel(pcm(), 'mic', opts));

@@ -1,4 +1,6 @@
 // Transcribe worker: one channel per job. VAD → per voiced region, the ASR engine → Segment[].
+// The Danish + English model adds a language pass between the two: whisper-base scores windows of
+// regions Danish or English (route.ts), and each region goes to Edda or Parakeet accordingly.
 // Spawned by src/app/transcriber.ts as `new Worker(chrome.runtime.getURL('workers/transcribe.js'),
 // { type: 'module' })`. Jobs are serialised; the model stays loaded across jobs and reloads only
 // when a job asks for another model or backend, or after a transcribe failure (the engine may be
@@ -9,9 +11,13 @@
 // (30 s = 1.9 MB), so the peak beyond the input itself is one region plus the engine's own working
 // set. A 3-hour channel costs 345 MB as Int16 or 690 MB as Float32; pass Int16.
 import type { ChannelId, Segment } from '../lib/types.ts';
-import { detectVoice } from '../lib/vad.ts';
+import { detectVoice, type Region } from '../lib/vad.ts';
 import { SAMPLE_RATE, sliceRegion, toSegment } from '../lib/asr/regions.ts';
+import { lidWindows, routeRegions, type RouteLanguage } from '../lib/asr/route.ts';
+import { EddaEngine, WhisperLanguageId } from '../lib/asr/whisper.ts';
 import {
+  DANISH_ENGLISH_MODEL,
+  PARAKEET_MODEL,
   sameEngineOptions,
   type AsrEngine,
   type Backend,
@@ -31,6 +37,8 @@ export interface TranscribeRequest {
   pcm: Float32Array | Int16Array;
   model: string;
   backend: Backend;
+  /** EngineOptions.danishBackend: where Edda's encoder runs. */
+  danishBackend?: Backend;
   /** Recording-relative seconds of `pcm[0]`; every segment and word time adds it. Default 0. */
   offsetS?: number;
 }
@@ -61,6 +69,8 @@ export interface ResultMessage {
   segments: Segment[];
   /** The backend the engine ran on. A load refuses to degrade, so it is the one requested. */
   backend: Backend;
+  /** Where Edda's encoder ran (Danish + English): WASM after a fallback from WebGPU. */
+  danishBackend?: Backend;
 }
 
 export interface ErrorMessage {
@@ -80,7 +90,18 @@ export type WorkerResponse = ProgressMessage | ResultMessage | ErrorMessage;
 // chrome-extension://<id>/workers/transcribe.js, so resolve from there.
 const WASM_PATHS = new URL('/vendor/ort/', self.location.href).href;
 
-let engine: AsrEngine | undefined;
+/**
+ * What the worker holds loaded for one `EngineOptions`: Parakeet always, and for the Danish +
+ * English model the language ID and Edda as well. All three stay loaded across jobs (about 1.7 GB
+ * of the WASM heap at int8), so the second channel of a recording loads nothing.
+ */
+interface Recognisers {
+  options: EngineOptions;
+  parakeet: AsrEngine;
+  danish?: { lid: WhisperLanguageId; edda: EddaEngine };
+}
+
+let held: Recognisers | undefined;
 let queue: Promise<void> = Promise.resolve();
 
 self.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
@@ -93,32 +114,76 @@ function post(message: WorkerResponse): void {
   self.postMessage(message);
 }
 
-function createEngine(options: EngineOptions): AsrEngine {
-  // Parakeet is the only engine today (DECISIONS § Speech recognition). Another engine would be
-  // chosen here by `options.model`.
-  return new ParakeetEngine(options, { wasmPaths: WASM_PATHS });
+function dropRecognisers(): void {
+  held?.parakeet.dispose();
+  held?.danish?.lid.dispose();
+  held?.danish?.edda.dispose();
+  held = undefined;
 }
 
-function dropEngine(): void {
-  engine?.dispose();
-  engine = undefined;
-}
-
-async function ensureEngine(
+async function ensureRecognisers(
   options: EngineOptions,
   onProgress: (p: Progress) => void,
-): Promise<AsrEngine> {
-  if (engine && sameEngineOptions(engine.options, options)) return engine;
-  dropEngine();
-  const next = createEngine(options);
+): Promise<Recognisers> {
+  if (held && sameEngineOptions(held.options, options)) return held;
+  dropRecognisers();
+  if (options.model !== PARAKEET_MODEL && options.model !== DANISH_ENGLISH_MODEL)
+    throw new Error(`unknown speech model ${options.model}`);
+  const loaded: { dispose(): void }[] = [];
+  const load = async <T extends { load(p: (p: Progress) => void): Promise<void>; dispose(): void }>(
+    r: T,
+  ): Promise<T> => {
+    loaded.push(r);
+    await r.load(onProgress);
+    return r;
+  };
   try {
-    await next.load(onProgress);
+    const next: Recognisers = { options, parakeet: undefined as unknown as AsrEngine };
+    if (options.model === DANISH_ENGLISH_MODEL) {
+      // The small one first, so a broken network fails in seconds, not after 650 MB.
+      const lid = await load(new WhisperLanguageId({ wasmPaths: WASM_PATHS }));
+      next.parakeet = await load(
+        new ParakeetEngine(
+          { model: PARAKEET_MODEL, backend: options.backend },
+          { wasmPaths: WASM_PATHS },
+        ),
+      );
+      const edda = await load(new EddaEngine(options, { wasmPaths: WASM_PATHS }));
+      next.danish = { lid, edda };
+    } else {
+      next.parakeet = await load(new ParakeetEngine(options, { wasmPaths: WASM_PATHS }));
+    }
+    held = next;
+    return next;
   } catch (err) {
-    next.dispose();
+    for (const r of loaded) r.dispose();
     throw err;
   }
-  engine = next;
-  return next;
+}
+
+/**
+ * The language of every region: whisper-base on windows of regions (route.ts), or undefined for
+ * Parakeet alone. A window's regions are joined end to end into one input of at most 30 s.
+ */
+async function languages(
+  rec: Recognisers,
+  pcm: Float32Array | Int16Array,
+  regions: Region[],
+): Promise<RouteLanguage[] | undefined> {
+  if (!rec.danish) return undefined;
+  const windows = lidWindows(regions);
+  const pDanish: number[] = [];
+  for (const w of windows) {
+    const parts = w.map((i) => sliceRegion(pcm, regions[i]!));
+    const joined = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) {
+      joined.set(p, at);
+      at += p.length;
+    }
+    pDanish.push(await rec.danish.lid.pDanish(joined));
+  }
+  return routeRegions(regions, windows, pDanish);
 }
 
 async function runJob(request: TranscribeRequest): Promise<void> {
@@ -127,9 +192,12 @@ async function runJob(request: TranscribeRequest): Promise<void> {
   const progress = (p: Omit<ProgressMessage, 'type' | 'jobId'>) =>
     post({ type: 'progress', jobId, ...p });
 
-  let asr: AsrEngine;
+  let rec: Recognisers;
   try {
-    asr = await ensureEngine({ model: request.model, backend: request.backend }, progress);
+    rec = await ensureRecognisers(
+      { model: request.model, backend: request.backend, danishBackend: request.danishBackend },
+      progress,
+    );
   } catch (err) {
     post({ type: 'error', jobId, stage: 'load', message: describe(err) });
     return;
@@ -142,6 +210,16 @@ async function runJob(request: TranscribeRequest): Promise<void> {
     const lengthS = offsetS + pcm.length / SAMPLE_RATE;
     const voicedTotalS = regions.reduce((sum, r) => sum + (r.end - r.start), 0);
     let voicedDoneS = 0;
+    // The language pass takes a while on a long channel: say the channel's step has begun, but
+    // without the voiced seconds, so the pace (and the time left) starts with the recognition.
+    progress({
+      phase: 'transcribe',
+      loaded: 0,
+      total: regions.length,
+      regionCount: regions.length,
+      lengthS,
+    });
+    const langs = await languages(rec, pcm, regions);
     const segments: Segment[] = [];
     for (let i = 0; i < regions.length; i++) {
       const region = regions[i]!;
@@ -156,9 +234,11 @@ async function runJob(request: TranscribeRequest): Promise<void> {
         voicedDoneS,
         voicedTotalS,
       });
+      const language = langs?.[i];
+      const asr = language === 'da' && rec.danish ? rec.danish.edda : rec.parakeet;
       const { words } = await asr.transcribe(sliceRegion(pcm, region), SAMPLE_RATE);
       const segment = toSegment(channel, region, words, offsetS);
-      if (segment) segments.push(segment);
+      if (segment) segments.push(language ? { ...segment, language } : segment);
       voicedDoneS += region.end - region.start;
     }
     progress({
@@ -170,11 +250,17 @@ async function runJob(request: TranscribeRequest): Promise<void> {
       voicedDoneS: voicedTotalS,
       voicedTotalS,
     });
-    post({ type: 'result', jobId, segments, backend: asr.options.backend });
+    post({
+      type: 'result',
+      jobId,
+      segments,
+      backend: rec.options.backend,
+      danishBackend: rec.danish?.edda.ranOn,
+    });
   } catch (err) {
     // A region that blew the WASM heap or lost the GPU device leaves the engine unusable, and
     // an aborted Emscripten runtime throws on every later call. Never hand this engine out again.
-    dropEngine();
+    dropRecognisers();
     post({ type: 'error', jobId, stage: 'transcribe', message: describe(err) });
   }
 }
