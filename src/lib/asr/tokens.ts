@@ -62,6 +62,27 @@ export class WhisperVocab {
 }
 
 /**
+ * Repeats of one block after which decoding stops at once: a decoder stuck on a phrase, not a
+ * speaker saying "nej, nej, nej, nej". Fewer repeats are left alone unless the window runs to the
+ * token cap (whisper.ts).
+ */
+export const RUNAWAY_REPEATS = 16;
+
+/**
+ * Whether a short output is Edda inventing words for a region without speech (a cough, a laugh,
+ * keys). Edda's no-speech token is dead after fine-tuning (0.000 on everything), but its mean
+ * token log-probability parts them: −0.09 to −0.56 on real speech, −0.76 to −1.16 on noise, clicks,
+ * a cough and a laugh that came out as "Tester en to tre fire fem…" (2026-11-19, the human's
+ * calls). Long outputs are kept whatever their score: noise does not talk for long, and a hard
+ * stretch of real speech must not vanish.
+ */
+export function soundsInvented(logprobs: readonly number[], maxTokens = 16, floor = -0.7): boolean {
+  if (logprobs.length === 0 || logprobs.length >= maxTokens) return false;
+  const mean = logprobs.reduce((a, b) => a + b, 0) / logprobs.length;
+  return mean < floor;
+}
+
+/**
  * Where a decoder caught in a loop started repeating: the length to keep, or undefined when the
  * tail is not a loop. A loop is the same block of 1–`maxPeriod` tokens repeated back to back at
  * the end, `minRepeats` times or more (a single token needs twice that). The first copy stays.

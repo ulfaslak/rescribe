@@ -21,7 +21,7 @@ import { getModelFile } from 'parakeet.js';
 import type { AsrEngine, Backend, EngineOptions, Progress, Transcription } from './engine.ts';
 import { assertWebGpu, failOnDroppedWebGpu } from './webgpu.ts';
 import { logMel, WHISPER_SAMPLES } from './mel.ts';
-import { loopStart, spreadWords, WhisperVocab } from './tokens.ts';
+import { loopStart, RUNAWAY_REPEATS, soundsInvented, spreadWords, WhisperVocab } from './tokens.ts';
 
 export interface WhisperSpec {
   /** Prefixes the file names in download progress, so two repos' `encoder_model_int8.onnx` differ. */
@@ -195,13 +195,16 @@ export class WhisperModel {
     });
     const cache: Feeds = {};
     const tokens: number[] = [];
+    const logprobs: number[] = [];
     while (tokens.length < MAX_NEW_TOKENS) {
-      const next = argmaxText(lastRow(out['logits']!), v.eot);
+      const { token: next, logprob } = pickText(lastRow(out['logits']!), v.eot);
       if (next === v.eot) break;
       tokens.push(next);
-      const loop = loopStart(tokens);
-      if (loop !== undefined) {
-        tokens.length = loop;
+      logprobs.push(logprob);
+      // Stop early only on a loop no speaker makes (tokens.ts); an ordinary one is trimmed below.
+      const runaway = loopStart(tokens, RUNAWAY_REPEATS);
+      if (runaway !== undefined) {
+        tokens.length = runaway;
         break;
       }
       // The prompt step returns the cross-attention cache too; later steps only the self-attention
@@ -212,6 +215,9 @@ export class WhisperModel {
       }
       out = await this.decoderWithPast.run({ input_ids: ids([next]), ...cache });
     }
+    // A window that ran to the cap without an end is a decoder in a loop: keep the first copy.
+    if (tokens.length >= MAX_NEW_TOKENS) tokens.length = loopStart(tokens) ?? tokens.length;
+    if (soundsInvented(logprobs.slice(0, tokens.length))) return '';
     return v.decode(tokens);
   }
 
@@ -235,11 +241,17 @@ function lastRow(logits: ort.Tensor): Float32Array {
   return (logits.data as Float32Array).subarray((seq - 1) * vocab, seq * vocab);
 }
 
-/** The likeliest text token or the end: every other special token (timestamps, tasks) is out. */
-function argmaxText(logits: Float32Array, eot: number): number {
+/**
+ * The likeliest text token or the end, every other special token (timestamps, tasks) out, and its
+ * log-probability among those.
+ */
+function pickText(logits: Float32Array, eot: number): { token: number; logprob: number } {
   let best = 0;
   for (let i = 1; i <= eot; i++) if (logits[i]! > logits[best]!) best = i;
-  return best;
+  const max = logits[best]!;
+  let sum = 0;
+  for (let i = 0; i <= eot; i++) sum += Math.exp(logits[i]! - max);
+  return { token: best, logprob: -Math.log(sum) };
 }
 
 /** Edda as an `AsrEngine`: Danish only, text with words spread over the region (tokens.ts). */
@@ -247,6 +259,8 @@ export class EddaEngine implements AsrEngine {
   readonly options: EngineOptions;
   private readonly wasmPaths: string;
   private model: WhisperModel | undefined;
+  /** Where the encoder actually runs: the worker reports it with every result. */
+  ranOn: Backend = 'wasm';
 
   constructor(options: EngineOptions, config: { wasmPaths: string }) {
     this.options = options;
@@ -254,27 +268,44 @@ export class EddaEngine implements AsrEngine {
   }
 
   /**
-   * On `danishBackend` (else `backend`). WebGPU the app picked because an adapter exists, not
-   * because the human chose it, falls back to WASM when ONNX Runtime refuses it: slower, but a
-   * transcript. WebGPU the human chose fails loudly, as Parakeet's does.
+   * WebGPU the app picked because an adapter exists, not the human's backend setting: if it fails,
+   * at load or later (the GPU lost after the Mac slept, in a worker kept all day), Edda moves to
+   * WASM, slower but a transcript. WebGPU the human chose fails loudly, as Parakeet's does.
    */
+  private get mayFallBack(): boolean {
+    return this.ranOn === 'webgpu' && this.options.backend !== 'webgpu';
+  }
+
   async load(onProgress?: (p: Progress) => void): Promise<void> {
-    const { backend } = this.options;
-    const preferred = this.options.danishBackend ?? backend;
+    this.ranOn = this.options.danishBackend ?? this.options.backend;
     try {
-      this.model = await WhisperModel.load(EDDA, this.wasmPaths, preferred, onProgress);
+      this.model = await WhisperModel.load(EDDA, this.wasmPaths, this.ranOn, onProgress);
     } catch (err) {
-      if (preferred !== 'webgpu' || backend === 'webgpu') throw err;
-      console.warn('[rescribe] Edda on WebGPU failed, loading it on WASM instead:', err);
-      this.model = await WhisperModel.load(EDDA, this.wasmPaths, 'wasm', onProgress);
+      if (!this.mayFallBack) throw err;
+      await this.fallBack(err, onProgress);
     }
+  }
+
+  private async fallBack(err: unknown, onProgress?: (p: Progress) => void): Promise<void> {
+    console.warn('[rescribe] Edda on WebGPU failed, running it on WASM instead:', err);
+    this.model?.dispose();
+    this.model = undefined;
+    this.ranOn = 'wasm';
+    this.model = await WhisperModel.load(EDDA, this.wasmPaths, 'wasm', onProgress);
   }
 
   async transcribe(pcm: Float32Array, sampleRate: 16000): Promise<Transcription> {
     if (!this.model) throw new Error('EddaEngine: load() before transcribe()');
     // A region is at most 30 s (VAD maxRegionS), one Whisper window; guard anyway.
     const window = pcm.length > WHISPER_SAMPLES ? pcm.subarray(0, WHISPER_SAMPLES) : pcm;
-    const text = await this.model.transcribe(window, 'da');
+    let text: string;
+    try {
+      text = await this.model.transcribe(window, 'da');
+    } catch (err) {
+      if (!this.mayFallBack) throw err;
+      await this.fallBack(err);
+      text = await this.model!.transcribe(window, 'da');
+    }
     return { text, words: spreadWords(text, window.length / sampleRate) };
   }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loopStart, spreadWords, WhisperVocab } from './tokens.ts';
+import { loopStart, RUNAWAY_REPEATS, soundsInvented, spreadWords, WhisperVocab } from './tokens.ts';
 
 // Byte-level BPE: a space is written Ġ, the UTF-8 bytes of æ (C3 A6) as Ã¦.
 const vocab = new WhisperVocab(
@@ -49,4 +49,19 @@ test('spreadWords shares the span by characters, in order, inside it', () => {
 test('spreadWords: nothing to place', () => {
   assert.deepEqual(spreadWords('   ', 3), []);
   assert.deepEqual(spreadWords('ja', 0), []);
+});
+
+test('loopStart with RUNAWAY_REPEATS leaves "nej, nej, nej, nej" alone', () => {
+  const nej = [7, 8];
+  const tokens = [1, ...nej, ...nej, ...nej, ...nej, 3, 4];
+  assert.equal(loopStart(tokens.slice(0, 9), RUNAWAY_REPEATS), undefined);
+  const stuck = [1, ...Array.from({ length: RUNAWAY_REPEATS }, () => nej).flat()];
+  assert.equal(loopStart(stuck, RUNAWAY_REPEATS), 3);
+});
+
+test('soundsInvented: short and unsure is noise, sure or long is speech', () => {
+  assert.equal(soundsInvented([-0.8, -0.9, -0.7]), true);
+  assert.equal(soundsInvented([-0.1, -0.3, -0.2]), false);
+  assert.equal(soundsInvented(new Array<number>(40).fill(-1)), false);
+  assert.equal(soundsInvented([]), false);
 });

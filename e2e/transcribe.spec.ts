@@ -48,6 +48,7 @@ interface JobReport {
   progress: Progress[];
   ms: number;
   backend?: string;
+  danishBackend?: string;
   error?: string;
   stage?: string;
 }
@@ -89,7 +90,8 @@ function runJob(page: Page, job: JobSpec): Promise<JobReport> {
         if (m.type === 'progress') {
           const { type: _t, jobId: _j, ...rest } = m;
           progress.push({ ...rest, at: Math.round(performance.now() - t0) });
-        } else if (m.type === 'result') done({ segments: m.segments, backend: m.backend });
+        } else if (m.type === 'result')
+          done({ segments: m.segments, backend: m.backend, danishBackend: m.danishBackend });
         else done({ segments: [], error: m.message, stage: m.stage });
       };
       worker.onerror = (e) => done({ segments: [], error: `worker error: ${e.message}` });
@@ -329,6 +331,8 @@ async function routeDanishAndEnglish(
       `segments: ${JSON.stringify(danish.segments.map((s) => [s.language, s.text]))}`,
   );
   expect(danish.error, danish.error).toBeUndefined();
+  // Edda ran where it was asked to: a silent fallback to WASM would pass every other check.
+  expect(danish.danishBackend).toBe(danishBackend);
   expect(danish.segments.length).toBeGreaterThan(0);
   expect(danish.segments.every((s) => s.language === 'da')).toBe(true);
   expect(daHits(danish.segments)).toBeGreaterThan(0.8);

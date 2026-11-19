@@ -69,6 +69,8 @@ export interface ResultMessage {
   segments: Segment[];
   /** The backend the engine ran on. A load refuses to degrade, so it is the one requested. */
   backend: Backend;
+  /** Where Edda's encoder ran (Danish + English): WASM after a fallback from WebGPU. */
+  danishBackend?: Backend;
 }
 
 export interface ErrorMessage {
@@ -96,7 +98,7 @@ const WASM_PATHS = new URL('/vendor/ort/', self.location.href).href;
 interface Recognisers {
   options: EngineOptions;
   parakeet: AsrEngine;
-  danish?: { lid: WhisperLanguageId; edda: AsrEngine };
+  danish?: { lid: WhisperLanguageId; edda: EddaEngine };
 }
 
 let held: Recognisers | undefined;
@@ -249,7 +251,13 @@ async function runJob(request: TranscribeRequest): Promise<void> {
       voicedDoneS: voicedTotalS,
       voicedTotalS,
     });
-    post({ type: 'result', jobId, segments, backend: rec.options.backend });
+    post({
+      type: 'result',
+      jobId,
+      segments,
+      backend: rec.options.backend,
+      danishBackend: rec.danish?.edda.ranOn,
+    });
   } catch (err) {
     // A region that blew the WASM heap or lost the GPU device leaves the engine unusable, and
     // an aborted Emscripten runtime throws on every later call. Never hand this engine out again.
