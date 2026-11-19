@@ -210,15 +210,14 @@ async function runJob(request: TranscribeRequest): Promise<void> {
     const lengthS = offsetS + pcm.length / SAMPLE_RATE;
     const voicedTotalS = regions.reduce((sum, r) => sum + (r.end - r.start), 0);
     let voicedDoneS = 0;
-    // The language pass takes a while on a long channel: say the channel's step has begun.
+    // The language pass takes a while on a long channel: say the channel's step has begun, but
+    // without the voiced seconds, so the pace (and the time left) starts with the recognition.
     progress({
       phase: 'transcribe',
       loaded: 0,
       total: regions.length,
       regionCount: regions.length,
       lengthS,
-      voicedDoneS,
-      voicedTotalS,
     });
     const langs = await languages(rec, pcm, regions);
     const segments: Segment[] = [];

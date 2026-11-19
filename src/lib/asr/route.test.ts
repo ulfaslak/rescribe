@@ -31,10 +31,10 @@ test('lidWindows: no regions, no windows', () => {
   assert.deepEqual(lidWindows([]), []);
 });
 
-test('routeRegions: one odd window in a Danish call stays Danish', () => {
+test('routeRegions: one unsure window in a Danish call stays Danish', () => {
   const rs = regions(20, 10, 10);
   const ws = lidWindows(rs); // 3 regions per window
-  const p = ws.map((_, i) => (i === 3 ? 0.03 : 0.9));
+  const p = ws.map((_, i) => (i === 3 ? 0.4 : 0.95));
   const langs = routeRegions(rs, ws, p);
   assert.ok(langs.every((l) => l === 'da'));
 });
@@ -59,4 +59,31 @@ test('routeRegions: an English call is English throughout', () => {
       ws.map(() => 0),
     ).every((l) => l === 'en'),
   );
+});
+
+test('routeRegions: a sure English answer inside a Danish call stays English', () => {
+  // Four 30 s Danish windows around one 20 s English answer, all within the smoothing radius.
+  const rs: Region[] = [
+    { start: 0, end: 30 },
+    { start: 31, end: 61 },
+    { start: 62, end: 82 },
+    { start: 83, end: 113 },
+    { start: 114, end: 144 },
+  ];
+  const ws = lidWindows(rs);
+  assert.equal(ws.length, 5);
+  const langs = routeRegions(rs, ws, [0.98, 0.98, 0.02, 0.98, 0.98]);
+  assert.deepEqual(langs, ['da', 'da', 'en', 'da', 'da']);
+});
+
+test('routeRegions: an unsure or short window follows its neighbours', () => {
+  const rs: Region[] = [
+    { start: 0, end: 30 },
+    { start: 31, end: 61 },
+    { start: 62, end: 66 }, // 4 s, too short to be sure of itself
+    { start: 67, end: 97 },
+  ];
+  const ws = lidWindows(rs);
+  assert.deepEqual(routeRegions(rs, ws, [0.95, 0.95, 0.03, 0.95]), ['da', 'da', 'da', 'da']);
+  assert.deepEqual(routeRegions(rs, ws, [0.95, 0.4, 0.95, 0.95]), ['da', 'da', 'da', 'da']);
 });

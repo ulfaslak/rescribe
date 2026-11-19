@@ -250,6 +250,24 @@ describe('ProgressTracker', () => {
     assert.equal(seen[7]!.steps[1]!.state, 'running');
   });
 
+  it('several models loading one after another never move the share backwards', () => {
+    const t = new ProgressTracker(both, t0);
+    t.startChannel('mic');
+    const shares: number[] = [];
+    const step = (r: Parameters<ProgressTracker['report']>[1]) => {
+      const phase = t.report('mic', r, t0 + shares.length);
+      shares.push(t.snapshot(phase, t0 + shares.length).overall);
+    };
+    // Three cached models, each opening with an empty download marker, then loading.
+    for (let i = 0; i < 3; i++) {
+      step({ phase: 'download', loaded: 0, total: 0 });
+      step({ phase: 'load', loaded: 0, total: 1 });
+      step({ phase: 'load', loaded: 1, total: 1 });
+    }
+    for (let i = 1; i < shares.length; i++)
+      assert.ok(shares[i]! >= shares[i - 1]!, `share fell at report ${i}: ${shares.join(', ')}`);
+  });
+
   it('a failed run ends where it stopped: no full share, no step in the line', () => {
     const t = new ProgressTracker({ ...both, model: false }, t0);
     t.startChannel('mic');

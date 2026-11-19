@@ -137,6 +137,10 @@ async function hasAudio(id: string, channel: ChannelId): Promise<boolean> {
   return file !== undefined && file.size > 0;
 }
 
+/**
+ * Where Edda's encoder ran (`danishBackend`) is written but not compared: fp16 on WebGPU and int8
+ * on WASM give the same text, and a GPU coming or going must not re-transcribe kept channels.
+ */
 interface CachedSegments {
   model: string;
   backend: string;

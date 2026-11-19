@@ -7,7 +7,11 @@
 // short turns costs one encoder pass per half minute of speech, not one per "mm". A window's score
 // is then smoothed with its neighbours' (a duration-weighted mean over the windows centred within
 // `radiusS`): a single window that sounds English in a Danish call (a name, a quote, a laugh) does
-// not flip, a minute of English does.
+// not flip, a minute of English does. A window sure of itself (`minSureS` of voice and a score
+// past `sure` either way) keeps its own language: an English guest's 20 s answer in a Danish call
+// stays English, which smoothing alone would hand to Edda. Measured on the human's calls
+// (2026-11-19): 125 Danish windows of 25 s, lowest P(Danish) 0.65; every English window 0.00.
+// Windows of 10 s did dip to 0.02 inside Danish, hence the 15 s floor.
 import type { Region } from '../vad.ts';
 
 export type RouteLanguage = 'da' | 'en';
@@ -18,6 +22,10 @@ export interface RouteOptions {
   radiusS: number;
   /** A smoothed P(Danish) at or above this goes to Edda. */
   threshold: number;
+  /** A window with this much voice whose own P(Danish) is under 1 − `sure` or over `sure`… */
+  minSureS: number;
+  /** …is not smoothed. */
+  sure: number;
 }
 
 export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
@@ -25,6 +33,8 @@ export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
   maxSpanS: 60,
   radiusS: 45,
   threshold: 0.5,
+  minSureS: 15,
+  sure: 0.9,
 };
 
 /** Region indices grouped into language-ID windows, in order. Every region is in exactly one. */
@@ -75,7 +85,9 @@ export function routeRegions(
       weight += other.voiced;
       sum += other.voiced * (pDanish[j] ?? 0);
     });
-    const p = weight > 0 ? sum / weight : (pDanish[i] ?? 0);
+    const own = pDanish[i] ?? 0;
+    const sure = info[i]!.voiced >= opts.minSureS && (own >= opts.sure || own <= 1 - opts.sure);
+    const p = sure ? own : weight > 0 ? sum / weight : own;
     const lang: RouteLanguage = p >= opts.threshold ? 'da' : 'en';
     for (const r of w) out[r] = lang;
   });
