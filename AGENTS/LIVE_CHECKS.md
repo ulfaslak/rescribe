@@ -6,6 +6,13 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 
 ---
 
+### Danish + English on a real Danish call in Brave
+
+**Trigger**: the Danish + English model merged and the extension reloaded at `brave://extensions`; the next Danish call recorded, or now with an old one: Re-run transcription on the 2026-11-19 09:52 Lawcel Weekly (its media is still in Rescribe).
+**Steps**: Settings → Speech model shows "Danish and English" (a profile from before is migrated on load). Re-run or record; keep the app tab's DevTools console open. The first run downloads about 2 GB (whisper-base, Edda's int8 decoders and its fp16 encoder; the Speech model step counts the MB). Note the transcription time against the call's length, and any console warning `Edda on WebGPU failed, loading it on WASM instead` or ORT _removing_ the `webgpu` execution provider. Read `transcript.md`; in `transcript.json`, count segments per `language`.
+**Success criteria**: the Danish reads as what was said (names and product words may be off), no Swedish (`jag`, `och`, `inte`, `är`), English stretches in English; nearly every segment `da` on a Danish call; transcription under half the call's length on the GPU (headless: 81 s for 5 min); no fallback warning.
+**On failure**: the fallback warning or a transcription about as long as the call: Brave's WebGPU did not take the fp16 encoder; file the console output. English stretches transcribed as Danglish, or Danish sent to Parakeet: file the `language` sequence with the times (route.ts thresholds). A 2 GB download each time: the IndexedDB cache is not holding it.
+
 ### The transcription steps on a real call in Brave
 
 **Trigger**: progress as steps (#31) merged and the extension reloaded at `brave://extensions`; the next real call transcribed, ten minutes or longer, watched from Save to Done.

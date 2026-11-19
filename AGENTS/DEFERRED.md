@@ -6,6 +6,18 @@ Remove an entry in the PR that resolves it.
 
 ---
 
+### Edda costs one full 30 s Whisper window per voiced region
+
+**What**: Whisper encodes 30 s whatever the input, so a 2 s "ja okay" region costs Edda as much as a 30 s monologue, and a channel of short turns (median region 5 s on a group call) pays the most. Packing several regions into one window would cut the windows two to five times, but Edda's timestamp tokens are broken (one start time per window, no segment ends), so its text cannot be split back into the regions, and a window spanning two remote speakers would give one segment to one of them. Also: the decoder runs int8 on WASM at about 50 ms a token, a large share of a WebGPU window.
+**Why deferred**: on WebGPU Danish + English already runs at 0.27× real time on a real call, against 0.21× for Parakeet alone; packing needs the pipeline's speaker evidence in the worker (break windows at speaker changes) or a second alignment model.
+**Trigger**: a real Danish call on the GPU takes more than half its length to transcribe, or a machine without WebGPU becomes the human's. Then: fp16 decoders on WebGPU first (measure), packing at speaker-change boundaries second.
+
+### The int8 merged Whisper decoder
+
+**What**: Edda ships two decoders (`decoder_model`, `decoder_with_past_model`, 330 MB together at int8) because onnxruntime's `quantize_dynamic` breaks optimum's merged decoder (its If subgraph fails with a MatMul shape mismatch when `EnableSubgraph` is on, and quantizes nothing when it is off). The two share their embedding, downloaded twice.
+**Why deferred**: 160 MB of a one-time download.
+**Trigger**: a later onnxruntime quantizes the merged decoder correctly, or the download size becomes a complaint.
+
 ### The loaded model stays in memory for the life of the app tab
 
 **What**: `app/pipeline.ts` keeps one `Transcriber` (one worker, the model loaded) after the first transcription; ARCHITECTURE § Runtime topology says the worker lives as long as the app tab. The pinned tab lives all day, so the int8 model's working set (about 1 GB on WASM) stays resident between calls. Freeing it after an idle period costs a reload from the cache (seconds) on the next recording.
