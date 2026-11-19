@@ -4,7 +4,8 @@
 // the privacy invariant (e2e/privacy.ts), including that a cached model loads with zero requests.
 //
 // The first run in a fresh profile downloads the int8 model (about 650 MB); later runs load it
-// from the profile's IndexedDB. The WebGPU variant needs the 2.4 GB fp32 encoder and is skipped
+// from the profile's IndexedDB. The Danish + English test adds whisper-base (76 MB) and Edda
+// (about 980 MB). The WebGPU variant needs the 2.4 GB fp32 encoder and is skipped
 // unless RESCRIBE_E2E_WEBGPU=1.
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
@@ -273,7 +274,7 @@ async function transcribeFixtureThroughWorker(
   const bogus = await runJob(page, { samples, kind: 'int16', model: 'no-such-model', backend });
   log(`job 9 (bogus model) → ${bogus.stage}: ${bogus.error}`);
   expect(bogus.stage).toBe('load');
-  expect(bogus.error).toMatch(/^Failed to download encoder-model\S* 401/);
+  expect(bogus.error).toMatch(/unknown speech model no-such-model/);
   expect(bogus.segments).toEqual([]);
   const again = await runJob(page, { samples, kind: 'int16', model: MODEL, backend });
   expect(again.error, again.error).toBeUndefined();
@@ -290,6 +291,74 @@ async function transcribeFixtureThroughWorker(
   expect(wordHitRate(fresh.segments)).toBeGreaterThan(0.8);
   expect(phases(fresh)).toEqual(['download', 'load', 'transcribe']);
   expect(net.networkRequests().slice(requestsBeforeSpawn)).toEqual([]);
+}
+
+/** Lower-case letters of a text, Danish ones included. */
+const danishWords = (text: string): string[] => text.toLowerCase().match(/[a-zæøå]+/g) ?? [];
+
+/**
+ * The Danish + English model on a Danish fixture, then an English one, then the two in one
+ * channel with a pause between: Danish regions go to Edda and come out Danish, English regions
+ * to Parakeet, each segment says which, and a fresh worker loads all three models from the cache.
+ */
+async function routeDanishAndEnglish(page: Page, net: NetworkWatch): Promise<void> {
+  const da = Array.from(readWav16kMono('e2e/fixtures/speech-da.wav'));
+  const en = Array.from(readWav16kMono('e2e/fixtures/speech.wav'));
+  const daText = danishWords(readFileSync('e2e/fixtures/speech-da.txt', 'utf8'));
+  const log = (msg: string) => console.log(`[danish-english] ${msg}`);
+  const daHits = (segments: Segment[]) => {
+    const got = new Set(danishWords(segments.map((s) => s.text).join(' ')));
+    return daText.filter((w) => got.has(w)).length / daText.length;
+  };
+  const model = 'danish-english';
+
+  const danish = await runJob(page, { samples: da, kind: 'int16', model, backend: 'wasm' });
+  const daS = da.length / SAMPLE_RATE;
+  const daTranscribeMs =
+    danish.ms - (danish.progress.find((p) => p.phase === 'transcribe')?.at ?? 0);
+  log(
+    `danish: ${danish.ms} ms, ${daTranscribeMs} ms transcribing ${daS.toFixed(1)} s, ` +
+      `segments: ${JSON.stringify(danish.segments.map((s) => [s.language, s.text]))}`,
+  );
+  expect(danish.error, danish.error).toBeUndefined();
+  expect(danish.segments.length).toBeGreaterThan(0);
+  expect(danish.segments.every((s) => s.language === 'da')).toBe(true);
+  expect(daHits(danish.segments)).toBeGreaterThan(0.8);
+  assertWellFormed(danish.segments, 0, daS);
+
+  // Same worker: nothing loads again.
+  const english = await runJob(page, { samples: en, kind: 'int16', model, backend: 'wasm' });
+  log(
+    `english: ${english.ms} ms, ${JSON.stringify(english.segments.map((s) => [s.language, s.text]))}`,
+  );
+  expect(english.error, english.error).toBeUndefined();
+  expect(phases(english)).toEqual(['transcribe']);
+  expect(english.segments.every((s) => s.language === 'en')).toBe(true);
+  expect(wordHitRate(english.segments)).toBeGreaterThan(0.8);
+
+  // Both in one channel, far enough apart that the language pass sees them in separate windows
+  // and the smoothing radius (45 s) does not reach across.
+  const gap = new Array<number>(100 * SAMPLE_RATE).fill(0);
+  const both = await runJob(page, {
+    samples: [...da, ...gap, ...en],
+    kind: 'int16',
+    model,
+    backend: 'wasm',
+  });
+  log(`both: ${JSON.stringify(both.segments.map((s) => [s.start, s.language]))}`);
+  expect(both.error, both.error).toBeUndefined();
+  expect(both.segments.map((s) => s.language)).toEqual(['da', 'en']);
+  expect(daHits([both.segments[0]!])).toBeGreaterThan(0.8);
+  expect(wordHitRate([both.segments[1]!])).toBeGreaterThan(0.8);
+
+  // A fresh worker loads all three from the cache with no request at all.
+  await terminateWorker(page);
+  const before = net.networkRequests().length;
+  const fresh = await runJob(page, { samples: da, kind: 'int16', model, backend: 'wasm' });
+  log(`fresh worker: ${fresh.ms} ms`);
+  expect(fresh.error, fresh.error).toBeUndefined();
+  expect(daHits(fresh.segments)).toBeGreaterThan(0.8);
+  expect(net.networkRequests().slice(before)).toEqual([]);
 }
 
 function logPageProblems(page: Page): void {
@@ -312,6 +381,20 @@ test.describe('transcribe worker', () => {
     await transcribeFixtureThroughWorker(page, 'wasm', net);
 
     console.log(`[privacy] origins seen: ${net.origins().join(', ')}`);
+    net.assertOnlyAllowed();
+    net.stop();
+  });
+
+  test('danish-english: Danish to Edda, English to Parakeet, routed per region', async ({
+    context,
+    extensionId,
+  }) => {
+    test.setTimeout(30 * 60_000); // a fresh profile downloads about 1.7 GB
+    const net = watchNetwork(context);
+    const page = await context.newPage();
+    logPageProblems(page);
+    await page.goto(`chrome-extension://${extensionId}/app/app.html`);
+    await routeDanishAndEnglish(page, net);
     net.assertOnlyAllowed();
     net.stop();
   });

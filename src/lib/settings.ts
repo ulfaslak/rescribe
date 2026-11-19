@@ -1,3 +1,4 @@
+import { MODELS } from './asr/engine.ts';
 import {
   DEFAULT_SETTINGS,
   FRAME_RATES,
@@ -19,6 +20,18 @@ export function migrateSettings(stored: Partial<Settings>): Partial<Settings> {
     // `container: 'mp4'` into every stored object whether or not the human ever chose it, so the
     // value is dropped once and the new default applies; picking MP4 again is one click.
     const { container: _container, ...rest } = out;
+    out = rest;
+  }
+  if ((out.settingsVersion ?? 0) < 2) {
+    // 2 (2026-11-19): the Danish + English model became the default. The form wrote Parakeet into
+    // every stored object (it was the only option), so the stored value is dropped once and the
+    // new default applies; Parakeet alone is one click away.
+    const { model: _model, ...rest } = out;
+    out = rest;
+  }
+  // A model this build does not offer (an older or newer key) would fail every transcription.
+  if (out.model !== undefined && !(MODELS as readonly string[]).includes(out.model)) {
+    const { model: _model, ...rest } = out;
     out = rest;
   }
   // What is read back from storage is input: a stored frame rate outside the offered ones would

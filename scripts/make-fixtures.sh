@@ -7,3 +7,9 @@ TEXT="This is a Rescribe test recording. The quick brown fox jumps over the lazy
 say -v Samantha -o e2e/fixtures/speech.wav --file-format=WAVE --data-format=LEI16@16000 "$TEXT"
 echo "$TEXT" > e2e/fixtures/speech.txt
 ls -la e2e/fixtures/speech.wav
+
+# The Danish fixture for the Danish + English model's routing test (e2e/transcribe.spec.ts).
+TEXT_DA="Det her er en optagelse på dansk. Vi skal tale om kunder, kontrakter og databehandling i næste uge."
+say -v Sara -o e2e/fixtures/speech-da.wav --file-format=WAVE --data-format=LEI16@16000 "$TEXT_DA"
+echo "$TEXT_DA" > e2e/fixtures/speech-da.txt
+ls -la e2e/fixtures/speech-da.wav
