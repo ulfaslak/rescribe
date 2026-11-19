@@ -145,6 +145,7 @@ interface CachedSegments {
   model: string;
   backend: string;
   rescribeVersion: string;
+  danishBackend?: Backend;
   segments: Segment[];
 }
 
@@ -254,6 +255,8 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
   // 3. Transcribe, one channel at a time.
   const segments: Segment[] = [];
   let found = false;
+  /** Where Edda ran on the channels transcribed now (a kept channel says nothing). */
+  let danishRan: Backend | undefined;
   for (const { channel, cached } of channels) {
     const kept = cache.get(channel);
     if (cached && kept) {
@@ -279,6 +282,7 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
         last = p.phase;
         progress(t.report(channel, p, Date.now()));
       });
+      danishRan = transcriber.danishRanOn ?? danishRan;
     } catch (err) {
       const stage =
         last === 'transcribe'
@@ -295,7 +299,11 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
       await writeArtifact(
         id,
         segmentsArtifactName(channel),
-        JSON.stringify({ ...key, segments: out } satisfies CachedSegments),
+        JSON.stringify({
+          ...key,
+          danishBackend: transcriber.danishRanOn,
+          segments: out,
+        } satisfies CachedSegments),
       );
     } catch (err) {
       return fail(`Could not save the transcription of ${name(channel)}: ${message(err)}`);
@@ -330,6 +338,7 @@ async function run(id: string, earlier: string | undefined): Promise<Recording> 
       segments,
       events,
       rescribeVersion,
+      danishBackend: danishRan,
       now: transcribedAt,
     });
     await writeArtifact(id, 'transcript.md', assembled.markdown);

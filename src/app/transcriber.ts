@@ -8,7 +8,12 @@
 // every job posted behind the failed one fails too; the next job starts a fresh worker. Post the
 // channels one after another if the second should survive the first's failure.
 import type { ChannelId, Segment } from '../lib/types.ts';
-import { sameEngineOptions, type EngineOptions } from '../lib/asr/engine.ts';
+import {
+  DANISH_ENGLISH_MODEL,
+  sameEngineOptions,
+  type Backend,
+  type EngineOptions,
+} from '../lib/asr/engine.ts';
 import type { ProgressMessage, WorkerRequest, WorkerResponse } from '../workers/transcribe.ts';
 
 export interface TranscribeOptions extends EngineOptions {
@@ -46,6 +51,8 @@ export class Transcriber {
   private readonly createWorker: () => WorkerLike;
   private worker: WorkerLike | undefined;
   private readonly pending = new Map<string, Job>();
+  /** Where Edda's encoder ran in the last result (Danish + English), for meta.json. */
+  danishRanOn: Backend | undefined;
   /** The model the live worker holds loaded: what its last result was made with. */
   private loaded: EngineOptions | undefined;
   private disposed = false;
@@ -132,14 +139,18 @@ export class Transcriber {
       case 'result':
         this.pending.delete(job.id);
         this.loaded = job.options;
+        this.danishRanOn = msg.danishBackend;
         job.resolve(msg.segments);
         return;
       case 'error':
-        if (msg.stage === 'load') {
+        if (msg.stage === 'load' && job.options.model !== DANISH_ENGLISH_MODEL) {
           this.pending.delete(job.id);
           job.reject(new Error(msg.message));
           return;
         }
+        // Danish + English loads three models into one WASM heap: a failed third load may have
+        // aborted the runtime the other two live in, so it restarts the worker like a transcribe
+        // failure does.
         // The worker's runtime may be poisoned (an aborted WASM module throws on every later
         // call): drop it, so the next job starts from a clean one.
         this.pending.delete(job.id);
