@@ -8,13 +8,10 @@
 // every job posted behind the failed one fails too; the next job starts a fresh worker. Post the
 // channels one after another if the second should survive the first's failure.
 import type { ChannelId, Segment } from '../lib/types.ts';
-import { sameEngineOptions, type Backend, type EngineOptions } from '../lib/asr/engine.ts';
+import { sameEngineOptions, type EngineOptions } from '../lib/asr/engine.ts';
 import type { ProgressMessage, WorkerRequest, WorkerResponse } from '../workers/transcribe.ts';
 
-export interface TranscribeOptions {
-  /** Model key, e.g. Settings.model. */
-  model: string;
-  backend: Backend;
+export interface TranscribeOptions extends EngineOptions {
   /** Recording-relative seconds of the PCM's sample 0. Default 0. */
   offsetS?: number;
 }
@@ -80,6 +77,7 @@ export class Transcriber {
         pcm,
         model: opts.model,
         backend: opts.backend,
+        danishBackend: opts.danishBackend,
         offsetS: opts.offsetS ?? 0,
       };
       // A detached or shared buffer makes postMessage throw; that fails this job only (the
@@ -87,7 +85,7 @@ export class Transcriber {
       worker.postMessage(request, [pcm.buffer as ArrayBuffer]);
       this.pending.set(id, {
         id,
-        options: { model: opts.model, backend: opts.backend },
+        options: { model: opts.model, backend: opts.backend, danishBackend: opts.danishBackend },
         resolve,
         reject,
         onProgress,

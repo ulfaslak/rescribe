@@ -37,6 +37,8 @@ export interface TranscribeRequest {
   pcm: Float32Array | Int16Array;
   model: string;
   backend: Backend;
+  /** EngineOptions.danishBackend: where Edda's encoder runs. */
+  danishBackend?: Backend;
   /** Recording-relative seconds of `pcm[0]`; every segment and word time adds it. Default 0. */
   offsetS?: number;
 }
@@ -190,7 +192,10 @@ async function runJob(request: TranscribeRequest): Promise<void> {
 
   let rec: Recognisers;
   try {
-    rec = await ensureRecognisers({ model: request.model, backend: request.backend }, progress);
+    rec = await ensureRecognisers(
+      { model: request.model, backend: request.backend, danishBackend: request.danishBackend },
+      progress,
+    );
   } catch (err) {
     post({ type: 'error', jobId, stage: 'load', message: describe(err) });
     return;

@@ -2,8 +2,12 @@
 // greedy decoder with its key/value cache. Two uses (DECISIONS § Speech recognition):
 //   - Edda v0.2 (Whisper large-v3-turbo fine-tuned on Danish) transcribes Danish: `EddaEngine`.
 //   - whisper-base tells Danish from English, restricted to those two: `WhisperLanguageId`.
-// Both run on WASM whatever the backend setting: the int8 exports use DynamicQuantizeMatMul,
-// which ORT's WebGPU provider does not have.
+// The int8 exports run on WASM (ORT's WebGPU provider has no DynamicQuantizeMatMul). On WebGPU,
+// Edda's encoder, most of its time on WASM because Whisper always encodes a full 30 s window,
+// runs in fp16 instead; its decoder stays int8 on WASM, as parakeet.js's 'webgpu-hybrid' does.
+// Measured through the worker on 5 min of a real Danish call (2026-11-19, headless Chromium,
+// Apple Silicon): 81 s with the encoder on WebGPU, 303 s on WASM; Parakeet alone took 62 s.
+// The language ID is cheap and stays on WASM.
 //
 // Like parakeet.ts this needs ORT's WASM and the model, so it is covered by e2e/transcribe.spec.ts,
 // not by Node tests; its pure halves (mel.ts, tokens.ts) are. The files come through parakeet.js's
@@ -14,7 +18,8 @@
 // for every later token) because quantizing optimum's merged decoder breaks its If subgraph.
 import * as ort from 'onnxruntime-web';
 import { getModelFile } from 'parakeet.js';
-import type { AsrEngine, EngineOptions, Progress, Transcription } from './engine.ts';
+import type { AsrEngine, Backend, EngineOptions, Progress, Transcription } from './engine.ts';
+import { assertWebGpu, failOnDroppedWebGpu } from './webgpu.ts';
 import { logMel, WHISPER_SAMPLES } from './mel.ts';
 import { loopStart, spreadWords, WhisperVocab } from './tokens.ts';
 
@@ -29,17 +34,23 @@ export interface WhisperSpec {
   decoder: string;
   /** Needed to transcribe; language ID reads only the first step. */
   decoderWithPast?: string;
+  /** The encoder for the WebGPU backend: fp16, its weights as external data (over 1 GB). */
+  webgpuEncoder?: { model: string; data: string };
 }
 
 /** Edda v0.2 int8, converted and hosted for Rescribe (the repo's README says how). */
 export const EDDA: WhisperSpec = {
   name: 'edda',
   repoId: 'ulfaslak/edda-v0.2-onnx',
-  revision: '0a38379a20342deea230a8c580e1ff03355e3e91',
+  revision: 'ef0065cc797396f5bb0daa40012ef8fc0d09a889',
   nMels: 128,
   encoder: 'onnx/encoder_model_int8.onnx',
   decoder: 'onnx/decoder_model_int8.onnx',
   decoderWithPast: 'onnx/decoder_with_past_model_int8.onnx',
+  webgpuEncoder: {
+    model: 'onnx/encoder_model_fp16.onnx',
+    data: 'onnx/encoder_model_fp16.onnx.data',
+  },
 };
 
 /** whisper-base int8 from onnx-community, for language ID only. */
@@ -77,9 +88,15 @@ export class WhisperModel {
   static async load(
     spec: WhisperSpec,
     wasmPaths: string,
+    backend: Backend,
     onProgress?: (p: Progress) => void,
   ): Promise<WhisperModel> {
     ort.env.wasm.wasmPaths = wasmPaths;
+    const gpu = backend === 'webgpu' ? spec.webgpuEncoder : undefined;
+    if (gpu) await assertWebGpu();
+    // ORT reads the thread count once, when the first session of the worker is created, and this
+    // may be that session (the language ID loads before Parakeet). Same count as parakeet.js sets.
+    ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
     const urls: string[] = [];
     const sessions: ort.InferenceSession[] = [];
     try {
@@ -100,14 +117,29 @@ export class WhisperModel {
       };
       const vocabJson = await (await fetch(await fetchFile('vocab.json'))).json();
       const addedJson = await (await fetch(await fetchFile('added_tokens.json'))).json();
-      const files = [spec.encoder, spec.decoder, spec.decoderWithPast];
-      const fileUrls: (string | undefined)[] = [];
-      for (const f of files) fileUrls.push(f ? await fetchFile(f) : undefined);
+      const encoderUrl = await fetchFile(gpu ? gpu.model : spec.encoder);
+      const encoderDataUrl = gpu ? await fetchFile(gpu.data) : undefined;
+      const decoderUrl = await fetchFile(spec.decoder);
+      const pastUrl = spec.decoderWithPast ? await fetchFile(spec.decoderWithPast) : undefined;
 
       onProgress?.({ phase: 'load', loaded: 0, total: 1 });
-      const options: ort.InferenceSession.SessionOptions = { executionProviders: ['wasm'] };
-      for (const url of fileUrls)
-        if (url) sessions.push(await ort.InferenceSession.create(url, options));
+      const wasm: ort.InferenceSession.SessionOptions = { executionProviders: ['wasm'] };
+      const encoder =
+        gpu && encoderDataUrl
+          ? await failOnDroppedWebGpu(
+              'webgpu',
+              (s) => void s.release().catch(() => undefined),
+              () =>
+                ort.InferenceSession.create(encoderUrl, {
+                  executionProviders: ['webgpu'],
+                  // The graph names its weights file by its bare name, next to the model.
+                  externalData: [{ path: gpu.data.split('/').pop()!, data: encoderDataUrl }],
+                }),
+            )
+          : await ort.InferenceSession.create(encoderUrl, wasm);
+      sessions.push(encoder);
+      sessions.push(await ort.InferenceSession.create(decoderUrl, wasm));
+      if (pastUrl) sessions.push(await ort.InferenceSession.create(pastUrl, wasm));
       onProgress?.({ phase: 'load', loaded: 1, total: 1 });
       return new WhisperModel(
         spec,
@@ -221,8 +253,21 @@ export class EddaEngine implements AsrEngine {
     this.wasmPaths = config.wasmPaths;
   }
 
+  /**
+   * On `danishBackend` (else `backend`). WebGPU the app picked because an adapter exists, not
+   * because the human chose it, falls back to WASM when ONNX Runtime refuses it: slower, but a
+   * transcript. WebGPU the human chose fails loudly, as Parakeet's does.
+   */
   async load(onProgress?: (p: Progress) => void): Promise<void> {
-    this.model = await WhisperModel.load(EDDA, this.wasmPaths, onProgress);
+    const { backend } = this.options;
+    const preferred = this.options.danishBackend ?? backend;
+    try {
+      this.model = await WhisperModel.load(EDDA, this.wasmPaths, preferred, onProgress);
+    } catch (err) {
+      if (preferred !== 'webgpu' || backend === 'webgpu') throw err;
+      console.warn('[rescribe] Edda on WebGPU failed, loading it on WASM instead:', err);
+      this.model = await WhisperModel.load(EDDA, this.wasmPaths, 'wasm', onProgress);
+    }
   }
 
   async transcribe(pcm: Float32Array, sampleRate: 16000): Promise<Transcription> {
@@ -249,7 +294,7 @@ export class WhisperLanguageId {
   }
 
   async load(onProgress?: (p: Progress) => void): Promise<void> {
-    this.model = await WhisperModel.load(WHISPER_BASE, this.wasmPaths, onProgress);
+    this.model = await WhisperModel.load(WHISPER_BASE, this.wasmPaths, 'wasm', onProgress);
   }
 
   /** P(Danish) against English for up to 30 s of speech. */

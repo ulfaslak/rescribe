@@ -57,6 +57,7 @@ interface JobSpec {
   kind: 'int16' | 'float32';
   model: string;
   backend: 'wasm' | 'webgpu';
+  danishBackend?: 'wasm' | 'webgpu';
   offsetS?: number;
   /** Plant a non-finite sample inside the audio: parakeet.js rejects it at transcribe time. */
   poison?: boolean;
@@ -99,6 +100,7 @@ function runJob(page: Page, job: JobSpec): Promise<JobReport> {
         pcm,
         model: job.model,
         backend: job.backend,
+        danishBackend: job.danishBackend,
         offsetS: job.offsetS,
       };
       worker.postMessage(request, [pcm.buffer]);
@@ -133,7 +135,8 @@ function assertWellFormed(segments: Segment[], from: number, to: number): void {
     expect(s.channel).toBe('mic');
     expect(s.start).toBeGreaterThanOrEqual(prevEnd);
     expect(s.end).toBeGreaterThan(s.start);
-    expect(s.end).toBeLessThanOrEqual(to);
+    // Times are rounded to the millisecond (regions.ts), so an end may pass the audio by half a ms.
+    expect(s.end).toBeLessThanOrEqual(to + 0.0005);
     expect(s.text.length).toBeGreaterThan(0);
     expect(s.words?.length ?? 0).toBeGreaterThan(0);
     let prev = s.start;
@@ -301,18 +304,23 @@ const danishWords = (text: string): string[] => text.toLowerCase().match(/[a-zæ
  * channel with a pause between: Danish regions go to Edda and come out Danish, English regions
  * to Parakeet, each segment says which, and a fresh worker loads all three models from the cache.
  */
-async function routeDanishAndEnglish(page: Page, net: NetworkWatch): Promise<void> {
+async function routeDanishAndEnglish(
+  page: Page,
+  net: NetworkWatch,
+  backend: 'wasm' | 'webgpu',
+  danishBackend: 'wasm' | 'webgpu',
+): Promise<void> {
   const da = Array.from(readWav16kMono('e2e/fixtures/speech-da.wav'));
   const en = Array.from(readWav16kMono('e2e/fixtures/speech.wav'));
   const daText = danishWords(readFileSync('e2e/fixtures/speech-da.txt', 'utf8'));
-  const log = (msg: string) => console.log(`[danish-english] ${msg}`);
+  const log = (msg: string) => console.log(`[danish-english ${backend}/${danishBackend}] ${msg}`);
   const daHits = (segments: Segment[]) => {
     const got = new Set(danishWords(segments.map((s) => s.text).join(' ')));
     return daText.filter((w) => got.has(w)).length / daText.length;
   };
   const model = 'danish-english';
 
-  const danish = await runJob(page, { samples: da, kind: 'int16', model, backend: 'wasm' });
+  const danish = await runJob(page, { samples: da, kind: 'int16', model, backend, danishBackend });
   const daS = da.length / SAMPLE_RATE;
   const daTranscribeMs =
     danish.ms - (danish.progress.find((p) => p.phase === 'transcribe')?.at ?? 0);
@@ -327,7 +335,7 @@ async function routeDanishAndEnglish(page: Page, net: NetworkWatch): Promise<voi
   assertWellFormed(danish.segments, 0, daS);
 
   // Same worker: nothing loads again.
-  const english = await runJob(page, { samples: en, kind: 'int16', model, backend: 'wasm' });
+  const english = await runJob(page, { samples: en, kind: 'int16', model, backend, danishBackend });
   log(
     `english: ${english.ms} ms, ${JSON.stringify(english.segments.map((s) => [s.language, s.text]))}`,
   );
@@ -343,9 +351,10 @@ async function routeDanishAndEnglish(page: Page, net: NetworkWatch): Promise<voi
     samples: [...da, ...gap, ...en],
     kind: 'int16',
     model,
-    backend: 'wasm',
+    backend,
+    danishBackend,
   });
-  log(`both: ${JSON.stringify(both.segments.map((s) => [s.start, s.language]))}`);
+  log(`both: ${both.ms} ms, ${JSON.stringify(both.segments.map((s) => [s.start, s.language]))}`);
   expect(both.error, both.error).toBeUndefined();
   expect(both.segments.map((s) => s.language)).toEqual(['da', 'en']);
   expect(daHits([both.segments[0]!])).toBeGreaterThan(0.8);
@@ -354,7 +363,7 @@ async function routeDanishAndEnglish(page: Page, net: NetworkWatch): Promise<voi
   // A fresh worker loads all three from the cache with no request at all.
   await terminateWorker(page);
   const before = net.networkRequests().length;
-  const fresh = await runJob(page, { samples: da, kind: 'int16', model, backend: 'wasm' });
+  const fresh = await runJob(page, { samples: da, kind: 'int16', model, backend, danishBackend });
   log(`fresh worker: ${fresh.ms} ms`);
   expect(fresh.error, fresh.error).toBeUndefined();
   expect(daHits(fresh.segments)).toBeGreaterThan(0.8);
@@ -394,7 +403,39 @@ test.describe('transcribe worker', () => {
     const page = await context.newPage();
     logPageProblems(page);
     await page.goto(`chrome-extension://${extensionId}/app/app.html`);
-    await routeDanishAndEnglish(page, net);
+    await routeDanishAndEnglish(page, net, 'wasm', 'wasm');
+    net.assertOnlyAllowed();
+    net.stop();
+  });
+
+  test('danish-english, Edda on WebGPU and Parakeet on WASM: the default with a GPU', async ({
+    context,
+    extensionId,
+  }) => {
+    test.setTimeout(30 * 60_000); // a fresh profile downloads the 1.3 GB fp16 encoder as well
+    const net = watchNetwork(context);
+    const page = await context.newPage();
+    logPageProblems(page);
+    await page.goto(`chrome-extension://${extensionId}/app/app.html`);
+    await routeDanishAndEnglish(page, net, 'wasm', 'webgpu');
+    net.assertOnlyAllowed();
+    net.stop();
+  });
+
+  test('danish-english on webgpu: the Edda encoder in fp16 on the GPU', async ({
+    context,
+    extensionId,
+  }) => {
+    test.skip(
+      !process.env['RESCRIBE_E2E_WEBGPU'],
+      'downloads the 2.4 GB Parakeet and 1.3 GB Edda encoders; set RESCRIBE_E2E_WEBGPU=1 to run',
+    );
+    test.setTimeout(60 * 60_000);
+    const net = watchNetwork(context);
+    const page = await context.newPage();
+    logPageProblems(page);
+    await page.goto(`chrome-extension://${extensionId}/app/app.html`);
+    await routeDanishAndEnglish(page, net, 'webgpu', 'webgpu');
     net.assertOnlyAllowed();
     net.stop();
   });

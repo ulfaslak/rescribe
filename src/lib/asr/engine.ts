@@ -19,6 +19,12 @@ export interface EngineOptions {
   /** A key from `MODELS`. */
   model: string;
   backend: Backend;
+  /**
+   * Where Edda's encoder runs, for the Danish + English model: the app decides (WebGPU when the
+   * setting says so or the browser has an adapter, DECISIONS § Speech recognition). Absent: as
+   * `backend`.
+   */
+  danishBackend?: Backend;
 }
 
 export type ProgressPhase = 'download' | 'load' | 'transcribe';
@@ -51,5 +57,5 @@ export interface AsrEngine {
 }
 
 export function sameEngineOptions(a: EngineOptions, b: EngineOptions): boolean {
-  return a.model === b.model && a.backend === b.backend;
+  return a.model === b.model && a.backend === b.backend && a.danishBackend === b.danishBackend;
 }
