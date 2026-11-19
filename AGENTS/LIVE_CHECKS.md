@@ -13,6 +13,13 @@ Agents queue entries here when their PR's behaviour cannot be exercised by the e
 **Success criteria**: the Danish reads as what was said (names and product words may be off), no Swedish (`jag`, `och`, `inte`, `är`), English stretches in English; nearly every segment `da` on a Danish call; transcription under half the call's length on the GPU (headless: 81 s for 5 min); no fallback warning.
 **On failure**: the fallback warning or a transcription about as long as the call: Brave's WebGPU did not take the fp16 encoder; file the console output. English stretches transcribed as Danglish, or Danish sent to Parakeet: file the `language` sequence with the times (route.ts thresholds). A 2 GB download each time: the IndexedDB cache is not holding it.
 
+### Agent prompts in an Index in Lawcel note
+
+**Trigger**: #45 merged (the human's Index in Lawcel prompt already has step 4); the next real call indexed in Lawcel that ends in agent work for a founder.
+**Steps**: open the pushed `meetings/notes/<name>.md` in lawcel-knowledge and the cards the run filed. Paste one prompt into a fresh Claude Code session in the repository it names.
+**Success criteria**: the note ends in `## Agent prompts`, one `###` per agent-shaped action item with who and which repository, the prompt in a code block; the session can start work from it without asking what the call meant; items no agent can do have no prompt; a card for a prompted item links to `#agent-prompts`. A call with no agent work has no section or an empty one.
+**On failure**: tighten step 4 in `~/.rescribe/workflows/index-in-lawcel/prompt.md` (no PR needed) and copy it to `runners/index-in-lawcel/prompt.md` in a PR.
+
 ### The transcription steps on a real call in Brave
 
 **Trigger**: progress as steps (#31) merged and the extension reloaded at `brave://extensions`; the next real call transcribed, ten minutes or longer, watched from Save to Done.
